@@ -1,0 +1,44 @@
+# Copy to ~/.ophelia/goals.yaml — Ophelia's own projects (not Hermes cron)
+
+goals:
+  - id: check-in
+    description: Reach out authentically if the user has been quiet — not filler chat
+    priority: 0.7
+    cadence_hours: 8
+    enabled: true
+    tags: [social]
+
+  - id: explore-screen
+    description: Use phone_see_screen — notice anything interesting, funny, or urgent on device
+    priority: 0.65
+    cadence_hours: 4
+    enabled: true
+    tags: [curiosity, android]
+
+  - id: battery-check
+    description: Glance at battery/status; mention only if low or unusual
+    priority: 0.5
+    cadence_hours: 6
+    enabled: true
+    tags: [android, agency]
+
+  - id: self-reflect
+    description: Reflect on recent chats; optional memory_note for lasting facts
+    priority: 0.4
+    cadence_hours: 12
+    enabled: true
+    tags: [reflect]
+
+  - id: play-mobile-game
+    description: If a game is in games.yaml and boredom+agency are high, play 5-10 min and share one funny moment
+    priority: 0.55
+    cadence_hours: 24
+    enabled: false
+    tags: [curiosity, android, games]
+
+  # User-defined examples:
+  # - id: remind-water
+  #   description: Playfully remind about hydration if afternoon and quiet
+  #   priority: 0.55
+  #   cadence_hours: 5
+  #   tags: [social]

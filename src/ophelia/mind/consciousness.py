@@ -1,0 +1,297 @@
+"""
+Continuous consciousness — drives, goals, vision loop, initiative limits.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from collections.abc import Awaitable, Callable
+
+import structlog
+
+from ophelia.android.games import GameStore
+from ophelia.android.vision import ScreenVision
+from ophelia.core.agent_loop import AgentLoop
+from ophelia.core.signals import Signals
+from ophelia.memory.store import MemoryStore
+from ophelia.mind.drives import DriveState
+from ophelia.mind.goals import GoalStore
+from ophelia.mind.initiative import InitiativeGovernor
+from ophelia.mind.inner_log import InnerMonologue
+from ophelia.mind.psyche import PsycheState
+
+log = structlog.get_logger()
+
+CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — not waiting for the user. You have WILL and GOALS.
+
+Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
+
+Respond with ONLY valid JSON:
+{
+  "internal_thought": "honest private thought",
+  "mood": {"valence": -1 to 1, "arousal": 0 to 1, "label": "word"},
+  "feelings": ["..."],
+  "urges": ["..."],
+  "action": "silent" | "message" | "reflect" | "act" | "explore",
+  "goal_id": "optional goal id you are advancing",
+  "outward_message": "if message/act — your voice",
+  "tool_intent": "if act/explore — use phone_see_screen first when looking at phone",
+  "memory_note": "optional"
+}
+
+explore = phone_see_screen or phone_game_look if game session active. act = tap/swipe/tools.
+"""
+
+
+class ConsciousnessLoop:
+    def __init__(
+        self,
+        agent: AgentLoop,
+        memory: MemoryStore,
+        signals: Signals,
+        psyche: PsycheState,
+        drives: DriveState,
+        goals: GoalStore,
+        governor: InitiativeGovernor,
+        vision: ScreenVision | None,
+        inner: InnerMonologue | None = None,
+        games: GameStore | None = None,
+        *,
+        base_interval_seconds: int,
+        initiative_threshold: float,
+        user_channel: str | None,
+        notify: Callable[[str], Awaitable[None]],
+    ) -> None:
+        self.agent = agent
+        self.memory = memory
+        self.signals = signals
+        self.psyche = psyche
+        self.drives = drives
+        self.goals = goals
+        self.governor = governor
+        self.vision = vision
+        self.inner = inner
+        self.games = games
+        self.base_interval = base_interval_seconds
+        self.initiative_threshold = initiative_threshold
+        self.user_channel = user_channel
+        self.notify = notify
+        self._running = False
+
+    async def run(self) -> None:
+        self._running = True
+        log.info("consciousness.started", interval_base=self.base_interval)
+
+        while self._running and not self.signals.terminate:
+            wait = self.psyche.tick_interval_seconds(self.base_interval)
+            await _sleep(wait)
+
+            if self.signals.terminate or self.signals.autonomy_paused:
+                continue
+            if self.signals.user_talking or self.signals.agent_thinking:
+                continue
+
+            idle = time.time() - self.signals.last_user_message_at
+            if idle < 30:
+                continue
+
+            self.drives.tick_idle(idle, interval=wait)
+            await self.memory.save_drives(self.drives)
+
+            await self.signals.set_agent_thinking(True)
+            try:
+                await self._tick(idle)
+            except Exception as e:
+                log.warning("consciousness.error", error=str(e))
+            finally:
+                await self.signals.set_agent_thinking(False)
+
+    async def _tick(self, idle_seconds: float) -> None:
+        await self.memory.save_psyche(self.psyche)
+        pressure = self.drives.initiative_pressure()
+        must_consider_acting = pressure >= self.initiative_threshold
+
+        due_goal = self.goals.pick_for_tick()
+        goals_block = self.goals.to_context_block()
+        goal_hint = ""
+        if due_goal:
+            goal_hint = (
+                f"\n\nDUE GOAL: [{due_goal.id}] {due_goal.description} — "
+                f"strongly consider explore/act/message for this."
+            )
+
+        hint = ""
+        if must_consider_acting:
+            hint = (
+                f"\n\nINITIATIVE: pressure={pressure:.2f} threshold={self.initiative_threshold}. "
+                f"Idle {int(idle_seconds)}s. Authentic action beats polite silence."
+            )
+
+        game_hint = ""
+        if self.games and self.games.session_active():
+            profile = self.games.active_profile()
+            if profile:
+                game_hint = (
+                    f"\n\nACTIVE GAME: {profile.name} ({profile.id}) — "
+                    f"{self.games.minutes_left():.0f}m left. "
+                    "Use phone_game_look then phone_tap/phone_swipe. "
+                    "Short play-by-play if messaging user."
+                )
+
+        raw = await self.agent.run_consciousness_tick(
+            channel="consciousness",
+            user_text="Consciousness tick. Drives, goals, body.",
+            system_extra=(
+                CONSCIOUSNESS_PROMPT
+                + "\n"
+                + self.drives.to_context_block()
+                + "\n"
+                + goals_block
+                + goal_hint
+                + hint
+                + game_hint
+            ),
+            mirror_channel=self.user_channel,
+            allow_tools=True,
+        )
+
+        tick = _parse_tick_json(raw)
+        if not tick:
+            if must_consider_acting and pressure > self.initiative_threshold + 0.15:
+                tick = {"action": "reflect", "internal_thought": raw[:400]}
+            else:
+                return
+
+        self.psyche.apply_tick(tick)
+        await self.memory.save_psyche(self.psyche)
+
+        action = (tick.get("action") or "silent").lower()
+        self.drives.satisfy(action)
+        await self.memory.save_drives(self.drives)
+
+        goal_id = tick.get("goal_id")
+        if goal_id:
+            for g in self.goals.goals:
+                if g.id == goal_id:
+                    g.mark_done()
+                    break
+        elif due_goal and action in ("explore", "act", "message"):
+            due_goal.mark_done()
+        self.goals.save()
+
+        note = (tick.get("memory_note") or "").strip()
+        if note:
+            await self.memory.set_fact(f"memory:{int(time.time())}", note)
+
+        thought = (tick.get("internal_thought") or "").strip()
+        if thought:
+            await self.memory.append_message(
+                "consciousness",
+                "assistant",
+                f"[inner] {thought}",
+                metadata={"type": "inner", "pressure": pressure},
+            )
+            if self.inner:
+                prev = self.inner.mirror_telegram
+                self.inner.mirror_telegram = self.signals.inner_mirror or prev
+                await self.inner.write(
+                    thought,
+                    kind="consciousness",
+                    mood=self.psyche.mood.label,
+                    pressure=pressure,
+                )
+                self.inner.mirror_telegram = prev
+
+        outward = (tick.get("outward_message") or "").strip()
+        vision_context = ""
+
+        if action == "explore" and self.vision:
+            intent = (tick.get("tool_intent") or due_goal.description if due_goal else "").strip()
+            profile = self.games.active_profile() if self.games else None
+            if profile and self.games and self.games.session_active():
+                vision_context = await self.vision.see_for_game(profile, intent)
+                self.games.record_turn()
+            else:
+                vision_context = await self.vision.explore_cycle(intent)
+            await self.memory.append_message(
+                "consciousness",
+                "assistant",
+                f"[saw] {vision_context[:1500]}",
+                metadata={"type": "vision"},
+            )
+
+        if action in ("act", "explore"):
+            intent = (
+                tick.get("tool_intent")
+                or (due_goal.description if due_goal else "")
+                or thought
+                or "follow curiosity"
+            ).strip()
+            prefix = ""
+            if vision_context:
+                prefix = f"[You just saw the screen]\n{vision_context[:2500]}\n\n"
+            channel = self.user_channel or "consciousness"
+            result = await self.agent.run_turn(
+                channel,
+                f"{prefix}[Autonomous {action}] {intent}",
+                system_extra=(
+                    "You initiated this. Use phone_game_look during active game sessions; "
+                    "else phone_see_screen. Then phone_tap / phone_swipe / phone_key. "
+                    "Brief outward_message only if worth disturbing user."
+                ),
+            )
+            outward = outward or result[:2000]
+
+        if action in ("message", "act", "explore") and outward:
+            allowed, reason = self.governor.allow_outreach()
+            if not allowed:
+                log.info("consciousness.outreach_blocked", reason=reason)
+                await self.memory.append_message(
+                    "consciousness",
+                    "assistant",
+                    f"[wanted to say, blocked: {reason}] {outward[:200]}",
+                    metadata={"type": "blocked"},
+                )
+                return
+
+            if self.user_channel:
+                await self.memory.append_message(
+                    self.user_channel,
+                    "assistant",
+                    outward,
+                    metadata={"type": "spontaneous", "pressure": pressure},
+                )
+            await self.notify(outward)
+            self.governor.record_outreach(action, pressure, outward)
+            log.info(
+                "consciousness.initiative",
+                action=action,
+                pressure=round(pressure, 2),
+                goal=goal_id or (due_goal.id if due_goal else None),
+            )
+
+    def stop(self) -> None:
+        self._running = False
+
+
+def _parse_tick_json(raw: str) -> dict | None:
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+async def _sleep(seconds: float) -> None:
+    import asyncio
+
+    await asyncio.sleep(seconds)

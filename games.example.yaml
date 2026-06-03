@@ -1,0 +1,28 @@
+# Copy to ~/.ophelia/games.yaml — edit package names for YOUR installed apps.
+# Find package: pm list packages | grep -i game
+
+games:
+  - id: example-puzzle
+    name: Example Puzzle
+    package: com.example.puzzle
+    genre: puzzle
+    notes: One move per turn; explain briefly if messaging user.
+    max_session_minutes: 10
+    enabled: false
+
+  - id: example-idle
+    name: Example Idle
+    package: com.example.idle
+    genre: idle
+    notes: Collect offline rewards; dismiss ads with back; no purchases.
+    max_session_minutes: 8
+    enabled: false
+
+  # Real examples (uncomment and fix package via: pm list packages | grep -i <name>)
+  # - id: sudoku
+  #   name: Google Sudoku
+  #   package: com.google.android.apps.sudoku
+  #   genre: puzzle
+  #   notes: One puzzle; narrate moves for stream vibe.
+  #   max_session_minutes: 20
+  #   enabled: true
