@@ -12,7 +12,7 @@ from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.memory.bootstrap import load_hermes_memories, parse_hermes_memory_file
 from ophelia.memory.hermes_sessions import search_hermes_sessions
 from ophelia.memory.store import MemoryStore
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 
 log = structlog.get_logger()
 
@@ -92,14 +92,18 @@ class MemoryCurator:
             if hits:
                 hermes_ctx = "\nOld sessions:\n" + "\n".join(h.content[:200] for h in hits)
 
-        backend = build_backend(self.settings)
-        if not isinstance(backend, XAIBackend):
-            return 0
+        stack = build_provider_stack(self.settings)
+        backend = stack.backend("curator")
+        model = stack.model("curator")
 
-        client = await backend.async_client_fresh()
+        if isinstance(backend, XAIBackend):
+            client = await backend.async_client_fresh()
+        else:
+            client = backend.async_client()
+
         try:
             resp = await client.chat.completions.create(
-                model=self.settings.xai_model,
+                model=model,
                 messages=[
                     {"role": "system", "content": CURATOR_PROMPT},
                     {

@@ -1,4 +1,4 @@
-"""Screenshot → Grok vision — closed perception loop for the Android body."""
+"""Screenshot -> vision model — closed perception loop for the Android body."""
 
 from __future__ import annotations
 
@@ -11,7 +11,11 @@ import structlog
 from ophelia.android.games import GameProfile
 from ophelia.android.shizuku import AndroidBody
 from ophelia.config import Settings
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import (
+    ProviderStack,
+    XAIBackend,
+    build_provider_stack,
+)
 
 log = structlog.get_logger()
 
@@ -22,9 +26,15 @@ Be concise. This is your body — not a user request."""
 
 
 class ScreenVision:
-    def __init__(self, settings: Settings, android: AndroidBody | None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        android: AndroidBody | None,
+        stack: ProviderStack | None = None,
+    ) -> None:
         self.settings = settings
         self.android = android
+        self.stack = stack or build_provider_stack(settings)
         self.shots_dir = settings.data_dir / "screenshots"
 
     async def capture(self) -> Path | None:
@@ -38,6 +48,20 @@ class ScreenVision:
         log.warning("vision.capture_failed", result=result[:200])
         return None
 
+    async def _vision_client(self) -> tuple[object, str]:
+        if not self.stack.supports_vision():
+            raise RuntimeError(
+                "No vision-capable provider. Set OPHELIA_PROVIDER_VISION=xai-oauth, openai, "
+                "or OLLAMA_VISION_MODEL with Ollama."
+            )
+        backend = self.stack.backend("vision")
+        model = self.stack.model("vision")
+        if isinstance(backend, XAIBackend):
+            client = await backend.async_client_fresh()
+        else:
+            client = backend.async_client()
+        return client, model
+
     async def see(
         self,
         *,
@@ -45,7 +69,10 @@ class ScreenVision:
         include_ui_dump: bool = True,
     ) -> str:
         if not self.android or self.android.mode == "termux_only":
-            return "Vision unavailable — set up Shizuku (scripts/termux-shizuku-setup.sh)."
+            return (
+                "Vision unavailable on this runtime — Android body requires Termux + Shizuku. "
+                "On PC use ophelia chat without phone tools."
+            )
 
         path = await self.capture()
         ui_text = ""
@@ -57,13 +84,14 @@ class ScreenVision:
                 return f"No screenshot; UI tree only:\n{ui_text[:4000]}"
             return ui_text or "Could not capture screen."
 
-        backend = build_backend(self.settings)
-        if not isinstance(backend, XAIBackend):
-            return f"Screenshot at {path} (vision requires xAI provider)."
+        if not self.stack.supports_vision():
+            return (
+                f"Screenshot saved {path}. Vision provider not configured "
+                f"(resolved: {self.stack.name('vision')}). UI dump:\n{ui_text[:3000]}"
+            )
 
         b64 = base64.standard_b64encode(path.read_bytes()).decode("ascii")
-        client = await backend.async_client_fresh()
-        model = self.settings.vision_model or self.settings.xai_model
+        client, model = await self._vision_client()
 
         content: list[dict] = [
             {"type": "text", "text": f"{VISION_PROMPT}\n\nQuestion: {question}"},
@@ -106,6 +134,6 @@ class ScreenVision:
         )
 
     async def explore_cycle(self, intent: str = "") -> str:
-        """Full Tier-1 loop: see → brief for consciousness/act."""
+        """Full Tier-1 loop: see -> brief for consciousness/act."""
         q = intent or "What do you see? Anything you want to do or tell the user?"
         return await self.see(question=q, include_ui_dump=True)

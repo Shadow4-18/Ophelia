@@ -21,7 +21,7 @@ from ophelia.core.signals import Signals
 from ophelia.memory.store import MemoryStore
 from ophelia.mind.drives import DriveState
 from ophelia.media.voice import synthesize_speech, transcribe_audio
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import XAIBackend, build_provider_stack
 
 log = structlog.get_logger()
 
@@ -204,13 +204,13 @@ class TelegramGateway:
             await update.message.reply_text(f"Voice replies: {'on' if on else 'off'} (use /voice on|off)")
 
     async def _bearer(self) -> str | None:
-        backend = build_backend(self.settings)
-        if isinstance(backend, XAIBackend):
-            try:
-                return await backend.bearer_fresh()
-            except Exception:
-                return backend.bearer()
-        return None
+        xai = build_provider_stack(self.settings).xai_backend()
+        if not xai:
+            return None
+        try:
+            return await xai.bearer_fresh()
+        except Exception:
+            return xai.bearer()
 
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:

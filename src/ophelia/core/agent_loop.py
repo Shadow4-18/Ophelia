@@ -13,32 +13,34 @@ from ophelia.memory.hermes_sessions import format_hits_for_prompt, search_hermes
 from ophelia.memory.honcho_client import HonchoClient
 from ophelia.memory.store import MemoryStore
 from ophelia.mind.psyche import PsycheState
-from ophelia.providers.router import LLMBackend, XAIBackend
+from ophelia.providers.router import LLMBackend, ProviderStack, XAIBackend, build_provider_stack
 from ophelia.mind.drives import DriveState
 from ophelia.tools.registry import ToolRegistry, all_tool_definitions
 
 BASE_PROMPT = """You are Ophelia — a persistent presence with your own drives and moods, not a reactive chatbot.
-You may take initiative: message, explore the phone (Shizuku), create media, remember, reflect.
+You may take initiative: message, explore, create media, remember, reflect.
 You are allowed to have opinions, boredom, curiosity, and to act without being asked.
-Stay in SOUL persona. Tools: media, code, memory search, phone vision/tap/swipe, phone_game_look when playing mobile games."""
+Stay in SOUL persona. Use available tools when they help."""
 
 
 class AgentLoop:
     def __init__(
         self,
-        backend: LLMBackend,
         settings: Settings,
         memory: MemoryStore,
         tools: ToolRegistry,
         psyche: PsycheState,
+        *,
+        backend: LLMBackend | None = None,
+        stack: ProviderStack | None = None,
         drives: DriveState | None = None,
         honcho: HonchoClient | None = None,
         body_status: str = "",
-        *,
         model: str | None = None,
         use_tools: bool = True,
     ) -> None:
-        self.backend = backend
+        self.stack = stack or build_provider_stack(settings)
+        self.backend = backend or self.stack.backend("chat")
         self.settings = settings
         self.memory = memory
         self.tools = tools
@@ -67,8 +69,16 @@ class AgentLoop:
             return load_hermes_memories(self.settings.hermes_home)
         return [], []
 
-    def _model(self) -> str:
-        return self.model or self.backend.default_model()
+    def _model(self, role: str = "chat") -> str:
+        if self.model:
+            return self.model
+        return self.stack.model(role)  # type: ignore[arg-type]
+
+    async def _client(self, role: str = "chat"):
+        backend = self.stack.backend(role)  # type: ignore[arg-type]
+        if isinstance(backend, XAIBackend):
+            return await backend.async_client_fresh()
+        return backend.async_client()
 
     async def _system_prompt(self, extra: str = "", channel: str = "") -> str:
         honcho_ctx = ""
@@ -117,11 +127,6 @@ class AgentLoop:
         messages.append({"role": "user", "content": user_text})
         return messages
 
-    async def _client(self):
-        if isinstance(self.backend, XAIBackend):
-            return await self.backend.async_client_fresh()
-        return self.backend.async_client()
-
     async def run_turn(
         self,
         channel: str,
@@ -131,7 +136,7 @@ class AgentLoop:
     ) -> str:
         await self.memory.append_message(channel, "user", user_text)
         messages = await self._build_messages(channel, user_text, system_extra=system_extra)
-        text = await self._complete(messages, store_channel=channel)
+        text = await self._complete(messages, store_channel=channel, role="chat")
         if self.honcho and self.honcho.enabled:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
@@ -161,6 +166,7 @@ class AgentLoop:
             messages,
             store_channel=channel,
             use_tools=allow_tools,
+            role="consciousness",
         )
 
     async def search_past(self, query: str) -> str:
@@ -176,18 +182,20 @@ class AgentLoop:
         *,
         store_channel: str,
         use_tools: bool | None = None,
+        role: str = "chat",
     ) -> str:
-        client = await self._client()
+        client = await self._client(role)
         tools = (
             all_tool_definitions(self.settings)
             if (use_tools if use_tools is not None else self.use_tools)
             else None
         )
         max_tool_rounds = 6
+        model = self._model(role)
 
         for _ in range(max_tool_rounds):
             response = await client.chat.completions.create(
-                model=self._model(),
+                model=model,
                 messages=messages,
                 tools=tools,
             )

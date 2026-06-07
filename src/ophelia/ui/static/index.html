@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ophelia — Workstation</title>
+  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="status-dot" id="statusDot"></span>
+      <h1>OPHELIA</h1>
+      <span class="tag">workstation</span>
+    </div>
+    <div class="topbar-meta">
+      <span id="runtimeLabel">connecting…</span>
+      <span id="providerLabel">—</span>
+      <button type="button" class="btn ghost" id="pauseBtn">pause mind</button>
+    </div>
+  </header>
+
+  <main class="grid">
+    <aside class="panel psyche-panel">
+      <h2>State</h2>
+      <div class="mood-ring">
+        <div class="mood-core" id="moodCore">
+          <span id="moodLabel">—</span>
+        </div>
+      </div>
+      <div class="metric-row">
+        <label>valence</label>
+        <div class="bar"><div class="fill valence" id="valenceBar"></div></div>
+      </div>
+      <div class="metric-row">
+        <label>arousal</label>
+        <div class="bar"><div class="fill arousal" id="arousalBar"></div></div>
+      </div>
+      <div class="chips" id="feelings"></div>
+      <h3>Drives</h3>
+      <div id="drives"></div>
+      <h3>Urges</h3>
+      <ul class="list" id="urges"></ul>
+      <p class="thought" id="thought"></p>
+    </aside>
+
+    <section class="panel chat-panel">
+      <h2>Channel</h2>
+      <div class="messages" id="messages"></div>
+      <form class="composer" id="chatForm">
+        <textarea id="chatInput" rows="2" placeholder="Talk to Ophelia…" autocomplete="off"></textarea>
+        <button type="submit" class="btn primary" id="sendBtn">Send</button>
+      </form>
+    </section>
+
+    <aside class="panel inner-panel">
+      <h2>Inner monologue</h2>
+      <pre class="inner-stream" id="innerStream">(waiting for thoughts…)</pre>
+      <h2>System</h2>
+      <pre class="sys-log" id="sysLog"></pre>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="footModel">model —</span>
+    <span id="footPressure">pressure —</span>
+    <span id="footMind">mind active</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -44,13 +44,27 @@ When she **chooses** to message (not on a fixed spam schedule), it is written to
 
 Higher arousal → faster ticks (restless). Low arousal → slower (calm).
 
-## Provider roadmap
+## Providers (API, OAuth, local)
 
-| Provider | Use |
-|----------|-----|
-| `xai-oauth` | SuperGrok today (default) |
-| `xai` | Paid API fallback |
-| `ollama` | Local fine-tunes / training later |
+| Provider | Env | Use |
+|----------|-----|-----|
+| `auto` | `OPHELIA_PROVIDER=auto` | Best available credentials |
+| `xai-oauth` | default on phone | SuperGrok subscription |
+| `xai` | `XAI_API_KEY` | Paid xAI API |
+| `ollama` | `OLLAMA_*` | Local models |
+| `openai` | `OPENAI_API_KEY` | OpenAI API |
+| `compat` | `OPHELIA_COMPAT_*` | OpenRouter, LM Studio, vLLM |
+
+Per-role overrides: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`.
+
+```bash
+ophelia providers          # show resolved routing
+ophelia doctor --chat-only # PC dev without Telegram
+ophelia chat "hello"
+```
+
+**PC setup:** [docs/pc-setup.md](docs/pc-setup.md)  
+**Workstation UI:** [docs/pc-ui.md](docs/pc-ui.md) — `ophelia ui` (browser command center)
 
 ## Migrate from Hermes (old phone only)
 
@@ -97,7 +111,11 @@ See `scripts/termux-install.sh` and `scripts/termux-boot.sh`.
 
 | Command | Purpose |
 |---------|---------|
-| `ophelia run` | Telegram + consciousness |
+| `ophelia ui` | PC workstation web UI (browser) |
+| `ophelia run` | Telegram + consciousness (phone or PC) |
+| `ophelia chat` | One-shot message (PC-friendly) |
+| `ophelia providers` | Show AI routing |
+| `ophelia doctor --chat-only` | PC check without Telegram |
 | `ophelia migrate hermes` | Import personality & memories |
 | `ophelia auth import-hermes` | SuperGrok OAuth + refresh token from Hermes |
 | `ophelia auth refresh` | Refresh OAuth now |

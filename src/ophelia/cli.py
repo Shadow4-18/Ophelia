@@ -16,7 +16,7 @@ from ophelia.providers.auth import (
     token_from_grok_cli,
 )
 from ophelia.providers.oauth_refresh import load_oauth_state
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import ROLE_ENV, build_provider_stack
 
 structlog.configure(
     processors=[
@@ -25,6 +25,19 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
+
+
+def cmd_ui(args: argparse.Namespace) -> int:
+    settings = Settings()
+    ensure_dirs(settings)
+    from ophelia.ui.server import run_ui
+
+    open_browser = not args.no_browser
+    try:
+        asyncio.run(run_ui(settings, open_browser=open_browser))
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
 
 def cmd_run(_: argparse.Namespace) -> int:
@@ -104,31 +117,57 @@ def cmd_migrate_hermes(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_doctor(_: argparse.Namespace) -> int:
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from ophelia.platform import is_termux
+
     settings = Settings()
     ensure_dirs(settings)
-    backend = build_backend(settings)
+    stack = build_provider_stack(settings)
     ok = True
+    chat_ok = True
     print(f"Ophelia home: {OPHELIA_HOME}")
-    print(f"Provider:     {settings.provider} ({backend.label()})")
-    if isinstance(backend, XAIBackend):
-        if backend.bearer():
-            print("xAI auth:     OK (OAuth/API)")
-        else:
-            print("xAI auth:     MISSING — ophelia auth import-hermes")
-            ok = False
+    print(settings.runtime_line())
+    print(stack.describe())
+
+    async def _check_roles() -> None:
+        nonlocal ok, chat_ok
+        for role in ("chat", "consciousness", "vision", "curator"):
+            good, msg = await stack.check(role)
+            mark = "OK" if good else "FAIL"
+            print(f"  {role:14} [{mark}] {msg}")
+            if role == "chat" and not good:
+                chat_ok = False
+                ok = False
+            elif role in ("consciousness", "curator") and not good:
+                print(
+                    f"               (optional role — set {ROLE_ENV[role]} or fix backend)"
+                )
+
+    asyncio.run(_check_roles())
+
     if (OPHELIA_HOME / "SOUL.md").is_file():
         print("Persona:      SOUL.md loaded")
     elif (settings.hermes_home / "SOUL.md").is_file():
         print("Persona:      in Hermes only — run: ophelia migrate hermes")
+
     if settings.telegram_bot_token:
         print("Telegram:     token set")
     else:
-        print("Telegram:     TELEGRAM_BOT_TOKEN missing")
-        ok = False
+        if is_termux() and not getattr(args, "chat_only", False):
+            print("Telegram:     TELEGRAM_BOT_TOKEN missing")
+            ok = False
+        else:
+            print("Telegram:     not set (OK for PC chat-only — use: ophelia chat)")
+
     ch = settings.primary_user_channel()
-    print(f"Consciousness: {'on' if settings.consciousness_on() else 'off'} -> {ch or 'set TELEGRAM_ALLOWED_USER_IDS'}")
-    print(f"Initiative:    threshold={settings.initiative_threshold} max/h={settings.max_spontaneous_per_hour} quiet={settings.quiet_hours or 'off'}")
+    print(
+        f"Consciousness: {'on' if settings.consciousness_on() else 'off'} "
+        f"-> {ch or 'set TELEGRAM_ALLOWED_USER_IDS for outreach'}"
+    )
+    print(
+        f"Initiative:    threshold={settings.initiative_threshold} "
+        f"max/h={settings.max_spontaneous_per_hour} quiet={settings.quiet_hours or 'off'}"
+    )
     goals_path = OPHELIA_HOME / "goals.yaml"
     print(f"Goals:         {goals_path} ({'exists' if goals_path.is_file() else 'missing'})")
     print(f"Vision:        {'on' if settings.vision_enabled else 'off'}")
@@ -137,16 +176,42 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
         body = AndroidBody(Path(str(settings.phone_control_path)).expanduser())
         print(f"Android body:  {body.status_line()}")
-    print(f"Inner log:    {'on' if settings.inner_log_enabled else 'off'} -> {OPHELIA_HOME / 'data' / 'inner_monologue.md'}")
-    print(f"Listen loop:  default={'on' if settings.listen_enabled_default else 'off'} (Termux:API)")
-    print(f"Curator:      {'on' if settings.curator_enabled else 'off'} every {settings.curator_interval_hours}h")
+    else:
+        print("Android body:  off (expected on PC)")
+    print(
+        f"Inner log:    {'on' if settings.inner_log_enabled else 'off'} "
+        f"-> {OPHELIA_HOME / 'data' / 'inner_monologue.md'}"
+    )
+    print(
+        f"Listen loop:  default={'on' if settings.listen_enabled_default else 'off'} "
+        f"(Termux:API only)"
+    )
+    print(
+        f"Curator:      {'on' if settings.curator_enabled else 'off'} "
+        f"every {settings.curator_interval_hours}h"
+    )
     print(f"Prompter:     {(OPHELIA_HOME / 'PROMPTER.md').is_file()}")
     games_path = OPHELIA_HOME / "games.yaml"
     print(
         f"Games:        {'on' if settings.games_enabled else 'off'} "
         f"({games_path.name} {'exists' if games_path.is_file() else 'missing'})"
     )
+
+    if chat_ok and not is_termux():
+        print("\nPC ready: ophelia chat \"hello\"")
     return 0 if ok else 1
+
+
+def cmd_providers(_: argparse.Namespace) -> int:
+    settings = Settings()
+    stack = build_provider_stack(settings)
+    print(settings.runtime_line())
+    print()
+    print(stack.describe())
+    print()
+    print("Supported providers: xai-oauth, xai, ollama, openai, compat, auto")
+    print("Per-role overrides: OPHELIA_PROVIDER_CHAT, _CONSCIOUSNESS, _VISION, _CURATOR")
+    return 0
 
 
 def cmd_curator_run(_: argparse.Namespace) -> int:
@@ -181,18 +246,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
         from ophelia.core.agent_loop import AgentLoop
         from ophelia.memory.store import MemoryStore
         from ophelia.mind.psyche import PsycheState
-        from ophelia.providers.router import build_backend
+        from ophelia.providers.router import build_provider_stack
         from ophelia.tools.registry import ToolRegistry
 
         mem = MemoryStore(settings.memory_db)
         await mem.init()
         psyche = await mem.load_psyche()
-        backend = build_backend(settings)
+        stack = build_provider_stack(settings)
         from ophelia.android.shizuku import AndroidBody
 
         android = AndroidBody() if settings.android_enabled else None
-        tools = ToolRegistry(settings, settings.data_dir / "artifacts", android=android)
-        agent = AgentLoop(backend, settings, mem, tools, psyche, drives=await mem.load_drives())
+        tools = ToolRegistry(
+            settings, settings.data_dir / "artifacts", stack=stack, android=android
+        )
+        agent = AgentLoop(
+            settings,
+            mem,
+            tools,
+            psyche,
+            stack=stack,
+            drives=await mem.load_drives(),
+        )
         print(await agent.run_turn("cli", args.message))
 
     asyncio.run(_once())
@@ -204,7 +278,24 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run").set_defaults(func=cmd_run)
-    sub.add_parser("doctor").set_defaults(func=cmd_doctor)
+    p_doc = sub.add_parser("doctor")
+    p_doc.add_argument(
+        "--chat-only",
+        action="store_true",
+        help="Do not require Telegram (PC dev mode)",
+    )
+    p_doc.set_defaults(func=cmd_doctor)
+    sub.add_parser("providers", help="Show resolved AI provider routing").set_defaults(
+        func=cmd_providers
+    )
+
+    p_ui = sub.add_parser("ui", help="Launch PC workstation web UI")
+    p_ui.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open browser automatically",
+    )
+    p_ui.set_defaults(func=cmd_ui)
 
     p_chat = sub.add_parser("chat")
     p_chat.add_argument("message")

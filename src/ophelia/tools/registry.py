@@ -7,7 +7,7 @@ from ophelia.android.games import GameStore, game_tool_definitions
 from ophelia.android.shizuku import AndroidBody
 from ophelia.android.vision import ScreenVision
 from ophelia.config import Settings
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
 
 ToolHandler = Callable[..., Awaitable[str]]
@@ -112,6 +112,8 @@ class ToolRegistry:
         self,
         settings: Settings,
         artifacts_dir: Any,
+        *,
+        stack: ProviderStack | None = None,
         android: AndroidBody | None = None,
         vision: ScreenVision | None = None,
         games: GameStore | None = None,
@@ -119,7 +121,8 @@ class ToolRegistry:
         from pathlib import Path
 
         self.settings = settings
-        self._backend = build_backend(settings)
+        self.stack = stack or build_provider_stack(settings)
+        self._backend = self.stack.backend("chat")
         self.android = android
         self.games = games
         self.vision = vision or (
@@ -154,9 +157,13 @@ class ToolRegistry:
         return await handler(**args)
 
     def _xai(self) -> XAIBackend:
-        if not isinstance(self._backend, XAIBackend):
-            raise RuntimeError("Media tools require OPHELIA_PROVIDER=xai-oauth or xai")
-        return self._backend
+        xai = self.stack.xai_backend()
+        if not xai:
+            raise RuntimeError(
+                "Media tools (image/video/TTS) require an xAI provider "
+                "(OPHELIA_PROVIDER=xai-oauth or xai on chat or vision role)"
+            )
+        return xai
 
     async def _generate_image(self, prompt: str, aspect_ratio: str = "1:1") -> str:
         client = self._xai().async_client()

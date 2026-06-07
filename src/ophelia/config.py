@@ -1,7 +1,10 @@
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ophelia.platform import is_termux, platform_summary
 
 OPHELIA_HOME = Path.home() / ".ophelia"
 
@@ -13,8 +16,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Provider: xai-oauth (SuperGrok, default) | xai (API key) | ollama (local)
-    provider: str = Field(default="xai-oauth", alias="OPHELIA_PROVIDER")
+    # Provider routing: auto | xai-oauth | xai | ollama | openai | compat
+    provider: str = Field(default="auto", alias="OPHELIA_PROVIDER")
+    provider_chat: str | None = Field(default=None, alias="OPHELIA_PROVIDER_CHAT")
+    provider_consciousness: str | None = Field(
+        default=None, alias="OPHELIA_PROVIDER_CONSCIOUSNESS"
+    )
+    provider_vision: str | None = Field(default=None, alias="OPHELIA_PROVIDER_VISION")
+    provider_curator: str | None = Field(default=None, alias="OPHELIA_PROVIDER_CURATOR")
+    auto_local_consciousness: bool = Field(
+        default=True,
+        alias="OPHELIA_AUTO_LOCAL_CONSCIOUSNESS",
+        description="When provider=auto, use Ollama for consciousness ticks if reachable",
+    )
 
     # xAI / Grok
     xai_api_key: str | None = Field(default=None, alias="XAI_API_KEY")
@@ -38,12 +52,29 @@ class Settings(BaseSettings):
         alias="HERMES_HOME",
     )
 
-    # Local (future training / tuning)
+    # OpenAI
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(
+        default="https://api.openai.com/v1", alias="OPENAI_BASE_URL"
+    )
+    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_vision_model: str | None = Field(default=None, alias="OPENAI_VISION_MODEL")
+
+    # Generic OpenAI-compatible (OpenRouter, LM Studio, vLLM, etc.)
+    compat_api_key: str | None = Field(default=None, alias="OPHELIA_COMPAT_API_KEY")
+    compat_base_url: str | None = Field(default=None, alias="OPHELIA_COMPAT_BASE_URL")
+    compat_model: str | None = Field(default=None, alias="OPHELIA_COMPAT_MODEL")
+    compat_vision_model: str | None = Field(
+        default=None, alias="OPHELIA_COMPAT_VISION_MODEL"
+    )
+
+    # Ollama (local)
     ollama_base_url: str = Field(
         default="http://127.0.0.1:11434/v1",
         alias="OLLAMA_BASE_URL",
     )
     ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
+    ollama_vision_model: str | None = Field(default=None, alias="OLLAMA_VISION_MODEL")
 
     # Telegram
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
@@ -87,21 +118,21 @@ class Settings(BaseSettings):
     # Tier 2: inner log, listen, curator
     inner_log_enabled: bool = Field(default=True, alias="OPHELIA_INNER_LOG")
     inner_mirror_telegram: bool = Field(default=False, alias="OPHELIA_INNER_MIRROR_TELEGRAM")
-    listen_enabled_default: bool = Field(default=False, alias="OPHELIA_LISTEN")
+    listen_enabled_default: bool | None = Field(default=None, alias="OPHELIA_LISTEN")
     listen_seconds: int = Field(default=5, alias="OPHELIA_LISTEN_SECONDS")
     listen_interval_seconds: int = Field(default=45, alias="OPHELIA_LISTEN_INTERVAL")
     curator_enabled: bool = Field(default=True, alias="OPHELIA_CURATOR")
     curator_interval_hours: float = Field(default=6.0, alias="OPHELIA_CURATOR_HOURS")
 
     # Games layer (vision + tap/swipe; turn-based / idle friendly)
-    games_enabled: bool = Field(default=True, alias="OPHELIA_GAMES")
+    games_enabled: bool | None = Field(default=None, alias="OPHELIA_GAMES")
     game_session_minutes: float = Field(
         default=15.0, alias="OPHELIA_GAME_SESSION_MINUTES"
     )
     game_max_turns: int = Field(default=40, alias="OPHELIA_GAME_MAX_TURNS")
 
-    # Android body (Shizuku / phone_control.sh)
-    android_enabled: bool = Field(default=True, alias="OPHELIA_ANDROID_ENABLED")
+    # Android body (Shizuku / phone_control.sh) — auto-off on PC
+    android_enabled: bool | None = Field(default=None, alias="OPHELIA_ANDROID_ENABLED")
     phone_control_path: Path = Field(
         default=Path.home() / "phone_control.sh",
         alias="OPHELIA_PHONE_CONTROL",
@@ -110,6 +141,22 @@ class Settings(BaseSettings):
     # Paths
     data_dir: Path = Field(default=OPHELIA_HOME / "data")
     memory_db: Path = Field(default=OPHELIA_HOME / "data" / "memory.db")
+
+    # Workstation UI (PC)
+    ui_host: str = Field(default="127.0.0.1", alias="OPHELIA_UI_HOST")
+    ui_port: int = Field(default=8765, alias="OPHELIA_UI_PORT")
+    ui_open_browser: bool = Field(default=True, alias="OPHELIA_UI_OPEN_BROWSER")
+
+    @model_validator(mode="after")
+    def apply_platform_defaults(self) -> Self:
+        on_phone = is_termux()
+        if self.android_enabled is None:
+            self.android_enabled = on_phone
+        if self.games_enabled is None:
+            self.games_enabled = bool(self.android_enabled)
+        if self.listen_enabled_default is None:
+            self.listen_enabled_default = on_phone
+        return self
 
     def consciousness_on(self) -> bool:
         if self.autonomy_enabled is not None:
@@ -133,6 +180,10 @@ class Settings(BaseSettings):
             return None
         uid = next(iter(users))
         return f"telegram:{uid}"
+
+    def runtime_line(self) -> str:
+        mode = "phone" if is_termux() else "pc"
+        return f"Runtime: {platform_summary()} ({mode} mode)"
 
 
 def ensure_dirs(settings: Settings) -> None:

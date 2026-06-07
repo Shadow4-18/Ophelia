@@ -13,7 +13,7 @@ from ophelia.config import Settings
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
 from ophelia.media.voice import synthesize_speech, transcribe_audio
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
 
@@ -75,11 +75,11 @@ class LocalListenLoop:
         if not wav.is_file() or wav.stat().st_size < 500:
             return
 
-        backend = build_backend(self.settings)
-        if not isinstance(backend, XAIBackend):
+        xai = build_provider_stack(self.settings).xai_backend()
+        if not xai:
             return
         try:
-            token = await backend.bearer_fresh()
+            token = await xai.bearer_fresh()
         except Exception as e:
             log.warning("listen.auth", error=str(e))
             return

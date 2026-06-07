@@ -23,7 +23,7 @@ from ophelia.mind.goals import GoalStore
 from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.mind.inner_log import InnerMonologue
 from ophelia.mind.psyche import PsycheState
-from ophelia.providers.router import XAIBackend, build_backend
+from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.registry import ToolRegistry
 
 log = structlog.get_logger()
@@ -39,7 +39,7 @@ class Orchestrator:
         self._ensure_prompter_file()
         self._ensure_games_file()
 
-        self.backend = build_backend(settings)
+        self.stack = build_provider_stack(settings)
         self.memory = MemoryStore(settings.memory_db)
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
@@ -55,13 +55,20 @@ class Orchestrator:
             else None
         )
         self.vision = (
-            ScreenVision(settings, self.android)
+            ScreenVision(settings, self.android, stack=self.stack)
             if settings.vision_enabled and self.android
             else None
         )
-        body_status = self.android.status_line() if self.android else ""
-        if self.vision and self.android and self.android.mode != "termux_only":
-            body_status += " | vision=on"
+        status_parts = [settings.runtime_line()]
+        body_status = ""
+        if self.android:
+            body_status = self.android.status_line()
+            if self.vision and self.android.mode != "termux_only":
+                body_status += " | vision=on"
+        elif not settings.android_enabled:
+            body_status = "Android body: off (PC mode — chat/Telegram without phone tools)"
+        if body_status:
+            status_parts.append(body_status)
 
         self.goals = GoalStore.load()
         self.games = (
@@ -80,7 +87,7 @@ class Orchestrator:
         self.drives = DriveState()
         goals_block = self.goals.to_context_block()
         games_block = self.games.to_context_block() if self.games else ""
-        status_parts = [body_status]
+        status_parts.append(self.stack.describe())
         if goals_block:
             status_parts.append(goals_block)
         if games_block:
@@ -88,16 +95,17 @@ class Orchestrator:
         self.tools = ToolRegistry(
             settings,
             artifacts,
+            stack=self.stack,
             android=self.android,
             vision=self.vision,
             games=self.games,
         )
         self.agent = AgentLoop(
-            self.backend,
             settings,
             self.memory,
             self.tools,
             self.psyche,
+            stack=self.stack,
             drives=self.drives,
             honcho=self.honcho if self.honcho.enabled else None,
             body_status="\n".join(status_parts),
@@ -149,13 +157,14 @@ class Orchestrator:
             shutil.copy2(example, dest)
 
     async def _oauth_refresh_loop(self) -> None:
-        if self.settings.provider != "xai-oauth":
+        if not self.stack.uses_xai_oauth():
             return
-        if not isinstance(self.backend, XAIBackend):
+        xai = self.stack.xai_backend()
+        if not xai:
             return
         while not self.signals.terminate:
             try:
-                await self.backend.bearer_fresh()
+                await xai.bearer_fresh()
             except Exception as e:
                 log.warning("oauth.refresh_background_failed", error=str(e))
             await asyncio.sleep(600)
@@ -187,8 +196,10 @@ class Orchestrator:
         self.agent.psyche = self.psyche
         self.agent.drives = self.drives
 
-        if isinstance(self.backend, XAIBackend):
-            await self.backend.bearer_fresh()
+        if self.stack.uses_xai_oauth():
+            xai = self.stack.xai_backend()
+            if xai:
+                await xai.bearer_fresh()
 
         app = self.telegram.build_app()
         tasks: list[asyncio.Task] = [
