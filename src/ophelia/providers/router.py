@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import asyncio
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -12,21 +11,15 @@ from ophelia.config import Settings
 from ophelia.providers.auth import resolve_xai_bearer
 from ophelia.providers.oauth_refresh import ensure_fresh_token, load_oauth_state
 
-ProviderRole = Literal["chat", "consciousness", "vision", "curator"]
-ProviderName = Literal[
-    "auto",
-    "xai-oauth",
-    "xai",
-    "ollama",
-    "openai",
-    "compat",
-]
+ProviderRole = Literal["chat", "consciousness", "vision", "curator", "image", "video"]
 
 ROLE_ENV: dict[ProviderRole, str] = {
     "chat": "OPHELIA_PROVIDER_CHAT",
     "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
     "vision": "OPHELIA_PROVIDER_VISION",
     "curator": "OPHELIA_PROVIDER_CURATOR",
+    "image": "OPHELIA_PROVIDER_IMAGE",
+    "video": "OPHELIA_PROVIDER_VIDEO",
 }
 
 VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "compat", "ollama"})
@@ -143,9 +136,9 @@ class OpenAICompatibleBackend:
 
 
 class OllamaBackend:
-    def __init__(self, settings: Settings, *, vision: bool = False) -> None:
+    def __init__(self, settings: Settings, *, role: ProviderRole = "chat") -> None:
         self.settings = settings
-        self.vision = vision
+        self.role = role
         self._client: AsyncOpenAI | None = None
 
     def provider_name(self) -> str:
@@ -160,13 +153,23 @@ class OllamaBackend:
         return self._client
 
     def default_model(self) -> str:
-        if self.vision and self.settings.ollama_vision_model:
-            return self.settings.ollama_vision_model
-        return self.settings.ollama_model
+        return resolve_ollama_model(self.settings, self.role)
 
     def label(self) -> str:
-        suffix = " vision" if self.vision else ""
-        return f"Ollama{suffix} @ {self.settings.ollama_base_url}"
+        return f"Ollama ({self.role}) @ {self.settings.ollama_base_url}"
+
+
+def resolve_ollama_model(settings: Settings, role: ProviderRole) -> str:
+    by_role: dict[ProviderRole, str | None] = {
+        "vision": settings.ollama_vision_model,
+        "consciousness": settings.ollama_consciousness_model,
+        "curator": settings.ollama_curator_model,
+        "image": settings.ollama_image_model,
+    }
+    specific = by_role.get(role)
+    if specific:
+        return specific
+    return settings.ollama_model
 
 
 def _ollama_reachable(settings: Settings, timeout: float = 2.0) -> bool:
@@ -191,11 +194,11 @@ def _xai_oauth_available(settings: Settings) -> bool:
 
 
 def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
-    if role == "consciousness" and settings.auto_local_consciousness:
-        if _ollama_reachable(settings):
-            return "ollama"
+    """Local-first: prefer Ollama when reachable, cloud as fallback."""
 
     if role == "vision":
+        if _ollama_reachable(settings) and settings.ollama_vision_model:
+            return "ollama"
         if _xai_oauth_available(settings):
             return "xai-oauth"
         if settings.xai_api_key:
@@ -204,20 +207,45 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
             return "openai"
         if settings.compat_api_key and settings.compat_base_url:
             return "compat"
-        if _ollama_reachable(settings) and settings.ollama_vision_model:
+
+    if role == "image":
+        if _ollama_reachable(settings) and settings.ollama_image_model:
+            return "ollama"
+        if _xai_oauth_available(settings):
+            return "xai-oauth"
+        if settings.xai_api_key:
+            return "xai"
+        if settings.openai_api_key:
+            return "openai"
+        return "xai-oauth"
+
+    if role == "video":
+        if _xai_oauth_available(settings):
+            return "xai-oauth"
+        if settings.xai_api_key:
+            return "xai"
+        return "xai-oauth"
+
+    if role == "consciousness":
+        if settings.ollama_consciousness_model and _ollama_reachable(settings):
+            return "ollama"
+        if settings.auto_local_consciousness and _ollama_reachable(settings):
             return "ollama"
 
+    if _ollama_reachable(settings):
+        return "ollama"
     if _xai_oauth_available(settings):
         return "xai-oauth"
     if settings.xai_api_key:
         return "xai"
-    if _ollama_reachable(settings):
-        return "ollama"
     if settings.openai_api_key:
         return "openai"
     if settings.compat_api_key and settings.compat_base_url and settings.compat_model:
         return "compat"
-    return "xai-oauth"
+    return "ollama"
+
+
+MEDIA_ROLES = frozenset({"image", "video"})
 
 
 def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> str:
@@ -226,9 +254,14 @@ def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> st
         "consciousness": settings.provider_consciousness,
         "vision": settings.provider_vision,
         "curator": settings.provider_curator,
+        "image": settings.provider_image,
+        "video": settings.provider_video,
     }[role]
     if role_attr and role_attr.strip().lower() != "auto":
         return role_attr.strip().lower()
+
+    if role in MEDIA_ROLES:
+        return _auto_pick_provider(settings, role)
 
     primary = (settings.provider or "auto").strip().lower()
     if primary != "auto":
@@ -241,7 +274,7 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
     if n in ("xai-oauth", "xai"):
         return XAIBackend(settings, prefer_oauth=(n == "xai-oauth"))
     if n == "ollama":
-        return OllamaBackend(settings, vision=(role == "vision"))
+        return OllamaBackend(settings, role=role)
     if n == "openai":
         key = settings.openai_api_key
         if not key:
@@ -274,7 +307,12 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
 
 
 class ProviderStack:
-    """Route chat, consciousness, vision, and curator to different backends."""
+    """Route chat, consciousness, vision, curator, and media to different backends.
+
+    Ensemble v0: each role can be a different model; ModelGate ensures one runs
+    at a time on local hardware. Future minds (director, filter, reaction, …)
+    extend this — see ophelia.mind.ensemble and docs/neuro-ensemble.md.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -292,6 +330,15 @@ class ProviderStack:
 
     def model(self, role: ProviderRole = "chat") -> str:
         name = self.name(role)
+        if role == "image":
+            if name in ("xai-oauth", "xai"):
+                return self.settings.xai_image_model
+            if name == "openai":
+                return self.settings.openai_image_model
+            if name == "ollama":
+                return self.settings.ollama_image_model or "flux"
+        if role == "video":
+            return self.settings.xai_video_model
         if name in ("xai-oauth", "xai") and role == "vision":
             return self.settings.vision_model or self.settings.xai_model
         if name == "openai" and role == "vision":
@@ -309,19 +356,56 @@ class ProviderStack:
         return True
 
     def uses_xai_oauth(self) -> bool:
-        for role in ("chat", "consciousness", "vision", "curator"):
+        for role in ("chat", "consciousness", "vision", "curator", "image", "video"):
             if self.name(role) == "xai-oauth":
                 return True
         return False
 
     def xai_backend(self) -> XAIBackend | None:
-        for role in ("chat", "vision", "consciousness", "curator"):
+        for role in ("chat", "vision", "consciousness", "curator", "image", "video"):
             b = self.backend(role)
             if isinstance(b, XAIBackend):
                 return b
         return None
 
+    def media_configured(self, role: ProviderRole) -> bool:
+        if role == "image":
+            name = self.name("image")
+            if name == "ollama":
+                return bool(self.settings.ollama_image_model)
+            if name in ("xai-oauth", "xai"):
+                return bool(self.xai_backend())
+            if name == "openai":
+                return bool(self.settings.openai_api_key)
+            return False
+        if role == "video":
+            return self.name("video") in ("xai-oauth", "xai") and bool(self.xai_backend())
+        return False
+
     async def check(self, role: ProviderRole = "chat") -> tuple[bool, str]:
+        if role in ("image", "video"):
+            if not self.media_configured(role):
+                return False, f"not configured — set {ROLE_ENV[role]} and model env"
+            if role == "video":
+                name = self.name("video")
+                if name in ("xai-oauth", "xai"):
+                    xai = self.xai_backend()
+                    if not xai or not xai.bearer():
+                        return False, "missing xAI credentials for video"
+                    return True, f"OK ({self.model('video')})"
+            if role == "image":
+                name = self.name("image")
+                if name in ("xai-oauth", "xai"):
+                    xai = self.xai_backend()
+                    if not xai or not xai.bearer():
+                        return False, "missing xAI credentials for image"
+                    return True, f"OK ({self.model('image')})"
+                if name == "ollama":
+                    if not _ollama_reachable(self.settings):
+                        return False, f"Ollama not reachable at {self.settings.ollama_base_url}"
+                    return True, f"OK ({self.model('image')})"
+                if name == "openai":
+                    return True, f"OK ({self.model('image')})"
         name = self.name(role)
         try:
             backend = self.backend(role)
@@ -353,8 +437,15 @@ class ProviderStack:
             return False, str(e)[:120]
 
     def describe(self) -> str:
-        lines = ["Provider routing:"]
-        for role in ("chat", "consciousness", "vision", "curator"):
+        lines = ["Provider routing (one model active at a time):"]
+        for role in (
+            "chat",
+            "consciousness",
+            "vision",
+            "curator",
+            "image",
+            "video",
+        ):
             name = self.name(role)
             model = self.model(role)
             lines.append(f"  {role:14} {name:12} -> {model}")

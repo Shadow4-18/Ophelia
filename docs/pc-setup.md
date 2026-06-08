@@ -6,7 +6,8 @@ Ophelia runs on PC for **development**, **Telegram bot hosting**, and **chat wit
 
 ```powershell
 cd e:\Projects\Ophelia
-pip install -e .
+.\scripts\install.ps1
+# or: pip install -e . ; ophelia setup --do ; ophelia setup
 ```
 
 Copy config:

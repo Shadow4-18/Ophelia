@@ -12,6 +12,7 @@ from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.memory.bootstrap import load_hermes_memories, parse_hermes_memory_file
 from ophelia.memory.hermes_sessions import search_hermes_sessions
 from ophelia.memory.store import MemoryStore
+from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 
 log = structlog.get_logger()
@@ -102,17 +103,19 @@ class MemoryCurator:
             client = backend.async_client()
 
         try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": CURATOR_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Recent conversation:\n{blob}\n{hermes_ctx}",
-                    },
-                ],
-                max_tokens=300,
-            )
+            gate = get_model_gate()
+            async with gate.session("curator", model, stack.name("curator")):
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": CURATOR_PROMPT},
+                        {
+                            "role": "user",
+                            "content": f"Recent conversation:\n{blob}\n{hermes_ctx}",
+                        },
+                    ],
+                    max_tokens=300,
+                )
             raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             log.warning("curator.llm_failed", error=str(e))

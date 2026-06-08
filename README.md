@@ -1,103 +1,102 @@
-# Ophelia
+# The Ophelia Project
 
-A **willful, phone-bodied AI** for **Termux** + **Telegram** — built because Hermes is excellent but **reactive and lifeless** for a Neuro-like vision.
+**Ophelia** is a willful, Neuro-sama-style autonomous AI — continuous consciousness, drives, inner life, and an optional **phone body**. Built to evolve from Hermes toward **local models + streaming**, not another reactive chatbot.
 
-**SuperGrok OAuth** · **Hermes soul import** · **continuous consciousness + drives** · **Shizuku/ADB body** (OpenClaw-style)
+**Local Ollama first** · **PC + phone parity** · **Telegram + Discord** · **ADB remote body** · **Hermes soul import**
 
-Read why Hermes isn't enough: [docs/why-not-hermes.md](docs/why-not-hermes.md)
+Read the pivot rationale: [docs/local-first.md](docs/local-first.md) · Why not Hermes: [docs/why-not-hermes.md](docs/why-not-hermes.md)
 
-## Why Ophelia vs Hermes cron
+## PC and phone — equal footing
 
-Hermes cron jobs run in **fresh, isolated sessions**. Deliveries are **not mirrored** into your live Telegram chat, so you cannot naturally continue ("what did you just say?"). Ophelia uses one **continuous consciousness loop** that shares the **same SQLite conversation** as your Telegram thread.
+| Host | Brain | Body |
+|------|-------|------|
+| **PC** | Ollama / cloud via `ophelia ui` or `ophelia run` | Phone over **ADB** ([remote-adb.md](docs/remote-adb.md)) |
+| **Phone (Termux)** | Ollama or xAI OAuth | **Shizuku** on-device |
 
-| Hermes cron | Ophelia consciousness |
-|-------------|----------------------|
-| New session every tick | Same memory + user channel |
-| Self-contained prompt only | Sees recent chat + inner thoughts |
-| Broadcast-only delivery | Outbound messages stored as `assistant` in your thread |
-| Schedule-driven | **Feeling-driven** (mood, urges, boredom, curiosity) |
+Cloud (SuperGrok OAuth) is optional fallback — not the default anymore.
 
-## SuperGrok OAuth (your subscription)
+**Chat:** Telegram and/or Discord — see [docs/channels.md](docs/channels.md). Run both at once with `ophelia run`.
 
 ```bash
-# On PC or phone where Hermes is already logged in:
-ophelia migrate hermes          # SOUL, MEMORY, USER, skills, state.db archive
-ophelia auth import-hermes      # copies ~/.hermes/auth.json → OAuth bearer
-
-# Or from Grok CLI:
-grok login
-ophelia auth import-grok
-```
-
-Set `OPHELIA_PROVIDER=xai-oauth` (default). API key is fallback only (`OPHELIA_PROVIDER=xai`).
-
-## Neuro-like inner life
-
-Each consciousness tick updates:
-
-- **Mood** (valence, arousal, label)
-- **Feelings** and **urges**
-- **Internal thought** (logged to `consciousness` channel)
-- **Action**: `silent` | `message` | `reflect`
-
-When she **chooses** to message (not on a fixed spam schedule), it is written to **your** `telegram:{id}` channel so the next reply has full context.
-
-Higher arousal → faster ticks (restless). Low arousal → slower (calm).
-
-## Providers (API, OAuth, local)
-
-| Provider | Env | Use |
-|----------|-----|-----|
-| `auto` | `OPHELIA_PROVIDER=auto` | Best available credentials |
-| `xai-oauth` | default on phone | SuperGrok subscription |
-| `xai` | `XAI_API_KEY` | Paid xAI API |
-| `ollama` | `OLLAMA_*` | Local models |
-| `openai` | `OPENAI_API_KEY` | OpenAI API |
-| `compat` | `OPHELIA_COMPAT_*` | OpenRouter, LM Studio, vLLM |
-
-Per-role overrides: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`.
-
-```bash
-ophelia providers          # show resolved routing
-ophelia doctor --chat-only # PC dev without Telegram
+ophelia setup               # step-by-step install guide (start here)
+ophelia models              # hardware-aware Ollama picks
+ophelia doctor --chat-only
+ophelia ui                  # PC workstation
 ophelia chat "hello"
 ```
 
-**PC setup:** [docs/pc-setup.md](docs/pc-setup.md)  
-**Workstation UI:** [docs/pc-ui.md](docs/pc-ui.md) — `ophelia ui` (browser command center)
+**Install scripts:** `scripts/install.ps1` (Windows) · `scripts/install.sh` (Mac/Linux) · `scripts/termux-install.sh` (phone)
 
-## Migrate from Hermes (old phone only)
+## Local-first providers
 
-**Hermes on old Termux phone → S21:** see [docs/migrate-old-phone.md](docs/migrate-old-phone.md)
+| Provider | Env | Use |
+|----------|-----|-----|
+| `ollama` | **default** | Local chat, consciousness, vision (`llava`) |
+| `auto` | `OPHELIA_PROVIDER=auto` | Ollama if up, else cloud |
+| `xai-oauth` | Hermes import | SuperGrok when you need Grok |
+| `openai` / `compat` | API keys | OpenAI, OpenRouter, LM Studio |
 
-```bash
-# Old phone
-bash scripts/termux-export-hermes.sh
-# Copy ophelia-hermes-bundle.tar.gz to S21 Download/
+Per-role: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IMAGE`, `_VIDEO`.
 
-# S21
-bash scripts/termux-import-hermes.sh
+**One model at a time** — all inference (chat, consciousness, vision, image, video) queues through a model gate so Ollama never loads two models simultaneously.
+
+**Future:** [Neuro-style ensemble](docs/neuro-ensemble.md) — multiple specialized minds (director, filter, reaction, voice, avatar) coordinated into one character on stream. Today's per-role routing is ensemble v0.
+
+## PC controls the phone (ADB)
+
+From your PC, Ophelia can tap, swipe, screenshot, and shell — **with or without root**:
+
+```env
+OPHELIA_ANDROID_ENABLED=true
+OPHELIA_ADB_DEVICE=192.168.1.50:5555
+OPHELIA_ADB_ROOT=false
 ```
 
-Imports:
+Full setup: [docs/remote-adb.md](docs/remote-adb.md)
 
-- `SOUL.md` → `~/.ophelia/SOUL.md`
-- `memories/MEMORY.md`, `USER.md` (§ entries)
-- `auth.json` (SuperGrok OAuth)
-- `skills/` → `~/.ophelia/skills/hermes-import/`
-- `state.db` → archive for future session search
-- `.env` / config hints
+## Neuro-like inner life
+
+Continuous consciousness (not Hermes cron isolation):
+
+- **Mood**, **feelings**, **urges**, **internal thought**
+- **Drives** build while idle → initiative to message / explore
+- Outbound messages land in **your Telegram thread** (same SQLite memory)
+
+## New tools
+
+| Tool | Notes |
+|------|-------|
+| `web_search` / `fetch_url` | DuckDuckGo, no API key |
+| `save_skill` | Learn procedures → `~/.ophelia/skills/` |
+| MCP bridge | `~/.ophelia/mcp.json` + `pip install mcp` |
+| Phone body | Shizuku (on-phone) or ADB (from PC) |
+
+## Migrate from Hermes
 
 ```bash
-ophelia migrate hermes --dry-run   # preview
 ophelia migrate hermes
-ophelia auth import-hermes
-# Merge ~/.ophelia/from-hermes.env into ~/.ophelia/.env
-ophelia doctor
-ophelia run
+ophelia auth import-hermes      # optional SuperGrok OAuth
+ophelia transfer cloud-upload   # phone → PC bundle
 ```
 
-## Termux (S21 Ultra)
+See [docs/transfer.md](docs/transfer.md), [docs/migrate-old-phone.md](docs/migrate-old-phone.md).
+
+## Commands
+
+| Command | Purpose |
+|---------|---------|
+| `ophelia setup` | **Step-by-step install guide** (idiot-proof checklist) |
+| `ophelia ui` | PC workstation (browser) |
+| `ophelia run` | Telegram + Discord + consciousness |
+| `ophelia chat` | One-shot message |
+| `ophelia models` | Local model cookbook |
+| `ophelia providers` | Show AI routing |
+| `ophelia check` / `ophelia doctor` | **Self-check** — version, deps, providers, services |
+| `ophelia transfer *` | Phone ↔ PC data move |
+
+**Docs:** [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble (future)](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
+
+## Termux (S21)
 
 ```bash
 termux-wake-lock
@@ -105,64 +104,7 @@ tmux new -s ophelia
 ophelia run
 ```
 
-See `scripts/termux-install.sh` and `scripts/termux-boot.sh`.
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `ophelia ui` | PC workstation web UI (browser) |
-| `ophelia run` | Telegram + consciousness (phone or PC) |
-| `ophelia chat` | One-shot message (PC-friendly) |
-| `ophelia providers` | Show AI routing |
-| `ophelia doctor --chat-only` | PC check without Telegram |
-| `ophelia migrate hermes` | Import personality & memories |
-| `ophelia auth import-hermes` | SuperGrok OAuth + refresh token from Hermes |
-| `ophelia auth refresh` | Refresh OAuth now |
-| `/pause` `/resume` | Pause spontaneous consciousness outreach |
-| `/voice on` | Reply with TTS voice notes |
-| Voice message | Telegram → xAI STT → Ophelia |
-
-## Mobile games
-
-[docs/games.md](docs/games.md) — `games.yaml`, `/game play`, `phone_game_look`, swipe/tap, bounded sessions.
-
-## Tier 2 (inner log, listen, prompter, curator)
-
-[docs/tier2-setup.md](docs/tier2-setup.md) — inner monologue file, `/listen` mic loop, `PROMPTER.md`, auto MEMORY curation.
-
-## Tier 1 (vision, survival, goals, initiative)
-
-See [docs/tier1-setup.md](docs/tier1-setup.md) — run on S21:
-
-```bash
-bash scripts/termux-survival.sh
-bash scripts/termux-shizuku-setup.sh
-# edit ~/.ophelia/goals.yaml
-ophelia run
-```
-
-## Will + body (vs Hermes)
-
-| Layer | What |
-|-------|------|
-| **Drives** | social, boredom, curiosity, agency — build while idle |
-| **Initiative** | `OPHELIA_INITIATIVE_THRESHOLD` — when pressure is high, she *must* consider acting |
-| **Shizuku** | `phone_ui_dump`, `phone_tap`, `phone_shell` via `~/phone_control.sh` + `rish` |
-| **One mind** | No cron isolation — Telegram thread is her continuous self |
-
-```bash
-bash scripts/termux-shizuku-setup.sh   # after Shizuku export to Termux
-bash ~/phone_control.sh ui-dump | head
-```
-
-## Features
-
-- **OAuth refresh** — SuperGrok, Hermes-compatible `auth.json`
-- **Hermes `state.db` search** — past conversations
-- **Honcho** — optional
-- **Voice** — Telegram STT/TTS
-- **Consciousness** — message / act / **explore** (screen via Shizuku)
+`scripts/install.ps1` · `scripts/install.sh` · `scripts/termux-install.sh` · `scripts/termux-shizuku-setup.sh`
 
 ## License
 

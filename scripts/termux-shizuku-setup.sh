@@ -42,4 +42,4 @@ EOF
 
 echo ""
 echo "Test: bash ~/phone_control.sh ui-dump | head"
-echo "Then: ophelia doctor"
+echo "Then: ophelia setup"

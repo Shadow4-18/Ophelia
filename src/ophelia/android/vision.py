@@ -11,6 +11,7 @@ import structlog
 from ophelia.android.games import GameProfile
 from ophelia.android.shizuku import AndroidBody
 from ophelia.config import Settings
+from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import (
     ProviderStack,
     XAIBackend,
@@ -110,11 +111,13 @@ class ScreenVision:
             )
 
         try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": content}],
-                max_tokens=800,
-            )
+            gate = get_model_gate()
+            async with gate.session("vision", model, self.stack.name("vision")):
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=800,
+                )
             text = (resp.choices[0].message.content or "").strip()
             log.info("vision.ok", model=model, chars=len(text))
             return text

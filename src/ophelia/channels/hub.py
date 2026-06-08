@@ -1,0 +1,100 @@
+"""Run multiple chat gateways (Telegram, Discord, …) together."""
+
+from __future__ import annotations
+
+import asyncio
+
+import structlog
+
+from ophelia.channels.base import ChatGateway
+from ophelia.channels.discord_bot import DiscordGateway
+from ophelia.channels.session import ChannelSession
+from ophelia.channels.telegram_bot import TelegramGateway
+from ophelia.config import Settings
+from ophelia.core.agent_loop import AgentLoop
+from ophelia.core.signals import Signals
+from ophelia.memory.store import MemoryStore
+from ophelia.mind.drives import DriveState
+
+log = structlog.get_logger()
+
+
+class ChannelHub:
+    def __init__(
+        self,
+        settings: Settings,
+        agent: AgentLoop,
+        signals: Signals,
+        memory: MemoryStore,
+        drives: DriveState,
+        *,
+        games=None,
+        vision=None,
+    ) -> None:
+        self.settings = settings
+        self.signals = signals
+        self.session = ChannelSession(
+            agent, signals, memory, drives, games=games, vision=vision
+        )
+        self._gateways: list[ChatGateway] = []
+
+        if settings.telegram_enabled:
+            self._gateways.append(
+                TelegramGateway(
+                    settings,
+                    self.session,
+                    signals,
+                    games=games,
+                    vision=vision,
+                )
+            )
+        if settings.discord_enabled:
+            self._gateways.append(
+                DiscordGateway(
+                    settings,
+                    self.session,
+                    signals,
+                )
+            )
+
+    def gateways(self) -> list[ChatGateway]:
+        return list(self._gateways)
+
+    def configured_names(self) -> list[str]:
+        return [g.platform for g in self._gateways if g.is_configured()]
+
+    def require_any(self) -> None:
+        active = [g for g in self._gateways if g.is_configured()]
+        if not active:
+            raise RuntimeError(
+                "No chat channels configured. Set at least one:\n"
+                "  TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_IDS\n"
+                "  DISCORD_BOT_TOKEN + DISCORD_ALLOWED_USER_IDS\n"
+                "Or use: ophelia ui / ophelia chat (no bot needed)"
+            )
+
+    async def broadcast_proactive(self, text: str) -> None:
+        for gw in self._gateways:
+            if gw.is_configured():
+                try:
+                    await gw.send_proactive(text)
+                except Exception as e:
+                    log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
+
+    async def run(self) -> None:
+        self.require_any()
+        active = [g for g in self._gateways if g.is_configured()]
+        log.info("hub.starting", platforms=[g.platform for g in active])
+        tasks = [asyncio.create_task(g.run()) for g in active]
+        try:
+            while not self.signals.terminate:
+                await asyncio.sleep(1)
+        finally:
+            for gw in active:
+                try:
+                    await gw.stop()
+                except Exception as e:
+                    log.warning("hub.stop_failed", platform=gw.platform, error=str(e))
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

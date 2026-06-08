@@ -9,8 +9,8 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore
-from ophelia.android.shizuku import AndroidBody
 from ophelia.android.vision import ScreenVision
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.core.agent_loop import AgentLoop
@@ -51,11 +51,7 @@ class Workstation:
             else HonchoClient({"hosts": {"hermes": {"enabled": False}}}, api_key=None)
         )
 
-        self.android = (
-            AndroidBody(Path(str(settings.phone_control_path)).expanduser())
-            if settings.android_enabled
-            else None
-        )
+        self.android = build_android_body(settings)
         self.vision = (
             ScreenVision(settings, self.android, stack=self.stack)
             if settings.vision_enabled and self.android
@@ -252,12 +248,17 @@ class Workstation:
             "expressiveness": round(self.drives.expressiveness, 2),
             "pressure": round(self.drives.initiative_pressure(), 2),
         }
+        from ophelia.providers.model_gate import get_model_gate
+
         return {
             "ready": self._ready,
             "runtime": platform_summary(),
             "providers": self.stack.describe(),
             "chat_provider": self.stack.name("chat"),
             "chat_model": self.stack.model("chat"),
+            "image_model": self.stack.model("image"),
+            "video_model": self.stack.model("video"),
+            "model_gate": get_model_gate().status(),
             "consciousness": self.settings.consciousness_on(),
             "consciousness_paused": self.signals.autonomy_paused,
             "mood": mood,
@@ -272,3 +273,63 @@ class Workstation:
         if not self.inner:
             return ""
         return self.inner.tail(lines)
+
+    async def models_info(self) -> dict:
+        from ophelia.providers.cookbook import detect_system, list_ollama_models, recommend
+
+        profile = detect_system()
+        installed = await list_ollama_models(self.settings)
+        return {
+            "profile": {
+                "ram_gb": profile.ram_gb,
+                "gpu": profile.gpu_name,
+                "os": profile.os_name,
+            },
+            "installed": installed,
+            "recommended": [
+                {"pull": r[3], "role": r[2], "ram_gb": r[1]}
+                for r in recommend(profile)
+            ],
+            "routing": {
+                "chat": self.stack.model("chat"),
+                "consciousness": self.stack.model("consciousness"),
+                "vision": self.stack.model("vision"),
+                "image": self.stack.model("image"),
+                "video": self.stack.model("video"),
+            },
+            "chat_model": self.stack.model("chat"),
+            "chat_provider": self.stack.name("chat"),
+        }
+
+    async def compare_models(self, message: str, models: list[str]) -> dict:
+        """Run the same prompt against multiple Ollama model names (no tools)."""
+        from ophelia.providers.router import OllamaBackend
+
+        message = message.strip()
+        if not message:
+            return {"results": []}
+        targets = models or [self.stack.model("chat")]
+        backend = OllamaBackend(self.settings)
+        client = backend.async_client()
+        from ophelia.providers.model_gate import get_model_gate
+
+        gate = get_model_gate()
+        results = []
+        for model in targets[:4]:
+            try:
+                async with gate.session("compare", model, "ollama"):
+                    resp = await client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "Reply briefly in character as Ophelia.",
+                            },
+                            {"role": "user", "content": message},
+                        ],
+                    )
+                text = (resp.choices[0].message.content or "").strip()
+            except Exception as e:
+                text = f"Error: {e}"
+            results.append({"model": model, "reply": text[:2000]})
+        return {"results": results}

@@ -38,6 +38,7 @@ if [[ -f "$OPHELIA/from-hermes.env" ]]; then
 fi
 
 ophelia doctor
+ophelia setup
 echo ""
 echo "Done. Start with:"
 echo "  termux-wake-lock"

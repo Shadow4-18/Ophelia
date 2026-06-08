@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable
 
+from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore, game_tool_definitions
-from ophelia.android.shizuku import AndroidBody
 from ophelia.android.vision import ScreenVision
 from ophelia.config import Settings
+from ophelia.providers.media import generate_image, generate_video
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
+from ophelia.tools.web_search import fetch_url, search_web
+from ophelia.tools.mcp_bridge import MCPBridge, load_mcp_config
+from ophelia.mind.skills import save_skill
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -18,7 +22,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "generate_image",
-            "description": "Generate an image from a text prompt using Grok Imagine.",
+            "description": "Generate an image from a text prompt (xAI, OpenAI, or Ollama flux).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -36,7 +40,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "generate_video",
-            "description": "Start async video generation from a text prompt.",
+            "description": "Start async video generation from a text prompt (xAI Grok Imagine).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -93,17 +97,71 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current information (no API key).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 12},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "Fetch and read text from a web page URL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer", "minimum": 500, "maximum": 16000},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_skill",
+            "description": "Save a reusable skill/procedure to ~/.ophelia/skills/ for future turns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "content": {"type": "string", "description": "Steps or knowledge to reuse"},
+                },
+                "required": ["name", "description", "content"],
+            },
+        },
+    },
 ]
 
 
 def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
+    stack = build_provider_stack(settings)
     tools = list(TOOL_DEFINITIONS)
+    skip: set[str] = set()
+    if not settings.web_search_enabled:
+        skip.update({"web_search", "fetch_url"})
+    if not stack.media_configured("image"):
+        skip.add("generate_image")
+    if not stack.media_configured("video"):
+        skip.add("generate_video")
+    if skip:
+        tools = [t for t in tools if t.get("function", {}).get("name") not in skip]
     if settings.android_enabled:
         tools.extend(ANDROID_TOOL_DEFINITIONS)
         if settings.games_enabled:
             tools.extend(game_tool_definitions())
-    elif settings.vision_enabled:
-        tools = [t for t in tools if t.get("function", {}).get("name") != "phone_see_screen"]
     return tools
 
 
@@ -114,7 +172,7 @@ class ToolRegistry:
         artifacts_dir: Any,
         *,
         stack: ProviderStack | None = None,
-        android: AndroidBody | None = None,
+        android: Any | None = None,
         vision: ScreenVision | None = None,
         games: GameStore | None = None,
     ) -> None:
@@ -130,11 +188,16 @@ class ToolRegistry:
         )
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.mcp = MCPBridge(config=load_mcp_config(settings.mcp_config_path))
+        self._mcp_ready = False
         self._handlers: dict[str, ToolHandler] = {
             "generate_image": self._generate_image,
             "generate_video": self._generate_video,
             "text_to_speech": self._text_to_speech,
             "run_code": self._run_code,
+            "web_search": self._web_search,
+            "fetch_url": self._fetch_url,
+            "save_skill": self._save_skill,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
             "phone_tap": self._phone_tap,
@@ -146,14 +209,29 @@ class ToolRegistry:
             "phone_game_open": self._phone_game_open,
         }
 
+    async def ensure_mcp(self) -> None:
+        if not self._mcp_ready:
+            await self.mcp.initialize()
+            self._mcp_ready = True
+
+    async def tool_definitions(self) -> list[dict[str, Any]]:
+        tools = all_tool_definitions(self.settings)
+        await self.ensure_mcp()
+        tools.extend(self.mcp.definitions())
+        return tools
+
     async def dispatch(self, name: str, arguments: str) -> str:
-        handler = self._handlers.get(name)
-        if not handler:
-            return f"Unknown tool: {name}"
+        await self.ensure_mcp()
         try:
             args = json.loads(arguments) if arguments else {}
         except json.JSONDecodeError:
             return "Invalid tool arguments JSON"
+        mcp_result = await self.mcp.dispatch(name, args)
+        if mcp_result is not None:
+            return mcp_result
+        handler = self._handlers.get(name)
+        if not handler:
+            return f"Unknown tool: {name}"
         return await handler(**args)
 
     def _xai(self) -> XAIBackend:
@@ -166,44 +244,22 @@ class ToolRegistry:
         return xai
 
     async def _generate_image(self, prompt: str, aspect_ratio: str = "1:1") -> str:
-        client = self._xai().async_client()
-        resp = await client.images.generate(
-            model="grok-imagine-image",
-            prompt=prompt,
-            extra_body={"aspect_ratio": aspect_ratio},
+        return await generate_image(
+            self.settings,
+            self.stack,
+            prompt,
+            aspect_ratio=aspect_ratio,
+            artifacts_dir=self.artifacts_dir,
         )
-        url = resp.data[0].url if resp.data else None
-        if not url:
-            return "Image generation returned no URL."
-        return f"Image generated: {url}"
 
     async def _generate_video(
         self, prompt: str, duration_seconds: int = 6
     ) -> str:
-        import httpx
-
-        xai = self._xai()
-        token = xai.bearer()
-        if not token:
-            return "No xAI credentials for video."
-
-        async with httpx.AsyncClient(timeout=120.0) as http:
-            r = await http.post(
-                f"{xai.settings.xai_base_url.rstrip('/')}/videos/generations",
-                headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "model": "grok-imagine-video",
-                    "prompt": prompt,
-                    "duration": duration_seconds,
-                },
-            )
-            r.raise_for_status()
-            data = r.json()
-
-        request_id = data.get("request_id") or data.get("id")
-        return (
-            f"Video job started (request_id={request_id}). "
-            "Poll xAI video API or ask Ophelia to check status in a follow-up."
+        return await generate_video(
+            self.settings,
+            self.stack,
+            prompt,
+            duration_seconds=duration_seconds,
         )
 
     async def _text_to_speech(self, text: str, voice_id: str = "eve") -> str:
@@ -257,6 +313,16 @@ class ToolRegistry:
         if proc.returncode != 0:
             return f"exit {proc.returncode}\n{err or out}"
         return out or "(no output)"
+
+    async def _web_search(self, query: str, max_results: int = 8) -> str:
+        return await search_web(query, max_results=max_results)
+
+    async def _fetch_url(self, url: str, max_chars: int = 8000) -> str:
+        return await fetch_url(url, max_chars=max_chars)
+
+    async def _save_skill(self, name: str, description: str, content: str) -> str:
+        path = save_skill(name, description, content)
+        return f"Skill saved to {path}"
 
     async def _phone_see_screen(self, question: str = "") -> str:
         if not self.vision:

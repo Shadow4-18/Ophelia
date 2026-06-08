@@ -1,0 +1,22 @@
+{
+  "servers": {
+    "filesystem": {
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/you/Documents"],
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "Read a file from the allowed directory",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" }
+            },
+            "required": ["path"]
+          }
+        }
+      ]
+    }
+  }
+}

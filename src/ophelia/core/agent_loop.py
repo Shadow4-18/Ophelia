@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from ophelia.config import OPHELIA_HOME, Settings
+from ophelia.mind.skills import skills_context_block
 from ophelia.memory.bootstrap import (
     build_system_context,
     load_hermes_memories,
@@ -13,9 +14,15 @@ from ophelia.memory.hermes_sessions import format_hits_for_prompt, search_hermes
 from ophelia.memory.honcho_client import HonchoClient
 from ophelia.memory.store import MemoryStore
 from ophelia.mind.psyche import PsycheState
-from ophelia.providers.router import LLMBackend, ProviderStack, XAIBackend, build_provider_stack
+from ophelia.providers.model_gate import get_model_gate
+from ophelia.providers.router import (
+    LLMBackend,
+    ProviderStack,
+    XAIBackend,
+    build_provider_stack,
+)
 from ophelia.mind.drives import DriveState
-from ophelia.tools.registry import ToolRegistry, all_tool_definitions
+from ophelia.tools.registry import ToolRegistry
 
 BASE_PROMPT = """You are Ophelia — a persistent presence with your own drives and moods, not a reactive chatbot.
 You may take initiative: message, explore, create media, remember, reflect.
@@ -91,12 +98,13 @@ class AgentLoop:
                 honcho_ctx = f"# Honcho memory\n{honcho_ctx}"
         drives_block = self.drives.to_context_block()
         body = self.body_status or ""
+        skills = skills_context_block()
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
             user_entries=self._user_entries,
             psyche_block=self.psyche.to_context_block(drives_block),
-            extra="\n\n".join(x for x in (body, honcho_ctx, extra) if x),
+            extra="\n\n".join(x for x in (body, skills, honcho_ctx, extra) if x),
         )
 
     async def _build_messages(
@@ -185,20 +193,20 @@ class AgentLoop:
         role: str = "chat",
     ) -> str:
         client = await self._client(role)
-        tools = (
-            all_tool_definitions(self.settings)
-            if (use_tools if use_tools is not None else self.use_tools)
-            else None
-        )
+        use = use_tools if use_tools is not None else self.use_tools
+        tools = await self.tools.tool_definitions() if use else None
         max_tool_rounds = 6
         model = self._model(role)
+        provider = self.stack.name(role)  # type: ignore[arg-type]
+        gate = get_model_gate()
 
         for _ in range(max_tool_rounds):
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-            )
+            async with gate.session(role, model, provider):
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                )
             msg = response.choices[0].message
 
             if msg.tool_calls:

@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 
 import structlog
 
+from ophelia.providers.model_gate import get_model_gate
+
 from ophelia.android.games import GameStore
 from ophelia.android.vision import ScreenVision
 from ophelia.core.agent_loop import AgentLoop
@@ -91,6 +93,8 @@ class ConsciousnessLoop:
             if self.signals.terminate or self.signals.autonomy_paused:
                 continue
             if self.signals.user_talking or self.signals.agent_thinking:
+                continue
+            if get_model_gate().is_busy():
                 continue
 
             idle = time.time() - self.signals.last_user_message_at

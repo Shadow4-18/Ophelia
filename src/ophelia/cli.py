@@ -118,88 +118,26 @@ def cmd_migrate_hermes(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    from ophelia.platform import is_termux
+    from ophelia.diagnostics.self_check import format_report, run_self_check
 
     settings = Settings()
     ensure_dirs(settings)
-    stack = build_provider_stack(settings)
-    ok = True
-    chat_ok = True
-    print(f"Ophelia home: {OPHELIA_HOME}")
-    print(settings.runtime_line())
-    print(stack.describe())
 
-    async def _check_roles() -> None:
-        nonlocal ok, chat_ok
-        for role in ("chat", "consciousness", "vision", "curator"):
-            good, msg = await stack.check(role)
-            mark = "OK" if good else "FAIL"
-            print(f"  {role:14} [{mark}] {msg}")
-            if role == "chat" and not good:
-                chat_ok = False
-                ok = False
-            elif role in ("consciousness", "curator") and not good:
-                print(
-                    f"               (optional role — set {ROLE_ENV[role]} or fix backend)"
-                )
+    async def _run():
+        return await run_self_check(
+            settings,
+            chat_only=getattr(args, "chat_only", False),
+            quick=getattr(args, "quick", False),
+        )
 
-    asyncio.run(_check_roles())
+    report = asyncio.run(_run())
+    print(format_report(report, verbose=getattr(args, "verbose", False)))
+    return 0 if report.ok else 1
 
-    if (OPHELIA_HOME / "SOUL.md").is_file():
-        print("Persona:      SOUL.md loaded")
-    elif (settings.hermes_home / "SOUL.md").is_file():
-        print("Persona:      in Hermes only — run: ophelia migrate hermes")
 
-    if settings.telegram_bot_token:
-        print("Telegram:     token set")
-    else:
-        if is_termux() and not getattr(args, "chat_only", False):
-            print("Telegram:     TELEGRAM_BOT_TOKEN missing")
-            ok = False
-        else:
-            print("Telegram:     not set (OK for PC chat-only — use: ophelia chat)")
-
-    ch = settings.primary_user_channel()
-    print(
-        f"Consciousness: {'on' if settings.consciousness_on() else 'off'} "
-        f"-> {ch or 'set TELEGRAM_ALLOWED_USER_IDS for outreach'}"
-    )
-    print(
-        f"Initiative:    threshold={settings.initiative_threshold} "
-        f"max/h={settings.max_spontaneous_per_hour} quiet={settings.quiet_hours or 'off'}"
-    )
-    goals_path = OPHELIA_HOME / "goals.yaml"
-    print(f"Goals:         {goals_path} ({'exists' if goals_path.is_file() else 'missing'})")
-    print(f"Vision:        {'on' if settings.vision_enabled else 'off'}")
-    if settings.android_enabled:
-        from ophelia.android.shizuku import AndroidBody
-
-        body = AndroidBody(Path(str(settings.phone_control_path)).expanduser())
-        print(f"Android body:  {body.status_line()}")
-    else:
-        print("Android body:  off (expected on PC)")
-    print(
-        f"Inner log:    {'on' if settings.inner_log_enabled else 'off'} "
-        f"-> {OPHELIA_HOME / 'data' / 'inner_monologue.md'}"
-    )
-    print(
-        f"Listen loop:  default={'on' if settings.listen_enabled_default else 'off'} "
-        f"(Termux:API only)"
-    )
-    print(
-        f"Curator:      {'on' if settings.curator_enabled else 'off'} "
-        f"every {settings.curator_interval_hours}h"
-    )
-    print(f"Prompter:     {(OPHELIA_HOME / 'PROMPTER.md').is_file()}")
-    games_path = OPHELIA_HOME / "games.yaml"
-    print(
-        f"Games:        {'on' if settings.games_enabled else 'off'} "
-        f"({games_path.name} {'exists' if games_path.is_file() else 'missing'})"
-    )
-
-    if chat_ok and not is_termux():
-        print("\nPC ready: ophelia chat \"hello\"")
-    return 0 if ok else 1
+def cmd_check(args: argparse.Namespace) -> int:
+    """Alias for doctor — full install/runtime self-check."""
+    return cmd_doctor(args)
 
 
 def cmd_providers(_: argparse.Namespace) -> int:
@@ -210,7 +148,7 @@ def cmd_providers(_: argparse.Namespace) -> int:
     print(stack.describe())
     print()
     print("Supported providers: xai-oauth, xai, ollama, openai, compat, auto")
-    print("Per-role overrides: OPHELIA_PROVIDER_CHAT, _CONSCIOUSNESS, _VISION, _CURATOR")
+    print("Per-role overrides: OPHELIA_PROVIDER_CHAT, _CONSCIOUSNESS, _VISION, _CURATOR, _IMAGE, _VIDEO")
     return 0
 
 
@@ -253,9 +191,9 @@ def cmd_chat(args: argparse.Namespace) -> int:
         await mem.init()
         psyche = await mem.load_psyche()
         stack = build_provider_stack(settings)
-        from ophelia.android.shizuku import AndroidBody
+        from ophelia.android.factory import build_android_body
 
-        android = AndroidBody() if settings.android_enabled else None
+        android = build_android_body(settings)
         tools = ToolRegistry(
             settings, settings.data_dir / "artifacts", stack=stack, android=android
         )
@@ -273,20 +211,166 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_models(_: argparse.Namespace) -> int:
+    from ophelia.providers.cookbook import detect_system, format_cookbook, list_ollama_models
+
+    settings = Settings()
+
+    async def _once() -> None:
+        profile = detect_system()
+        installed = await list_ollama_models(settings)
+        print(format_cookbook(settings, profile, installed))
+
+    asyncio.run(_once())
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from ophelia.setup.wizard import run_setup_wizard
+
+    phone = True if args.phone else False if args.pc else None
+    return run_setup_wizard(
+        phone=phone,
+        interactive=args.interactive,
+        do_auto=args.do_auto,
+        step_num=args.step,
+    )
+
+
+def cmd_transfer_receive(args: argparse.Namespace) -> int:
+    from ophelia.transfer.receive import run_receive_server
+
+    dest = Path(args.dest).expanduser()
+    try:
+        asyncio.run(
+            run_receive_server(
+                host=args.host,
+                port=args.port,
+                token=args.token,
+                dest_dir=dest,
+                auto_import=not args.no_import,
+            )
+        )
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_transfer_send(args: argparse.Namespace) -> int:
+    from ophelia.transfer.send import send_bundle
+
+    hermes = Path(args.hermes_home).expanduser()
+    asyncio.run(
+        send_bundle(
+            args.url,
+            hermes_home=hermes,
+            token=args.token,
+        )
+    )
+    return 0
+
+
+def cmd_transfer_cloud_upload(args: argparse.Namespace) -> int:
+    from ophelia.transfer.bundle import create_hermes_bundle
+    from ophelia.transfer.cloud import cloud_upload
+
+    hermes = Path(args.hermes_home).expanduser()
+
+    async def _once() -> None:
+        bundle = create_hermes_bundle(hermes)
+        print(f"Packing {bundle} ({bundle.stat().st_size // 1024} KB)...")
+        link = await cloud_upload(bundle)
+        print()
+        print("Free temp cloud link (~14 days, one HTTPS URL):")
+        print(link)
+        print()
+        print("On PC:")
+        print(f"  ophelia transfer cloud-download \"{link}\"")
+
+    asyncio.run(_once())
+    return 0
+
+
+def cmd_transfer_cloud_download(args: argparse.Namespace) -> int:
+    from ophelia.transfer.cloud import cloud_download
+    from ophelia.transfer.import_bundle import import_bundle
+
+    dest = Path(args.output or OPHELIA_HOME / "data" / "hermes-download.tar.gz")
+
+    async def _once() -> None:
+        print(f"Downloading to {dest}...")
+        await cloud_download(args.url, dest)
+        if args.no_import:
+            print(f"Saved: {dest}")
+        else:
+            print(import_bundle(dest))
+
+    asyncio.run(_once())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ophelia")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run").set_defaults(func=cmd_run)
-    p_doc = sub.add_parser("doctor")
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="Step-by-step install guide (idiot-proof checklist)",
+    )
+    p_setup.add_argument(
+        "--do",
+        dest="do_auto",
+        action="store_true",
+        help="Auto-create ~/.ophelia, copy .env and example files",
+    )
+    p_setup.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Pause after each incomplete step (press Enter)",
+    )
+    p_setup.add_argument("--step", type=int, default=None, help="Show one step only")
+    p_setup.add_argument("--pc", action="store_true", help="Force PC guide")
+    p_setup.add_argument("--phone", action="store_true", help="Force Termux guide")
+    p_setup.set_defaults(func=cmd_setup)
+
+    p_doc = sub.add_parser(
+        "doctor",
+        help="Self-check: version, deps, providers, services",
+    )
     p_doc.add_argument(
         "--chat-only",
         action="store_true",
         help="Do not require Telegram (PC dev mode)",
     )
+    p_doc.add_argument(
+        "--quick",
+        action="store_true",
+        help="Skip network probes (providers, Telegram, Ollama, ADB)",
+    )
+    p_doc.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show hints even for passing checks",
+    )
     p_doc.set_defaults(func=cmd_doctor)
+
+    p_check = sub.add_parser(
+        "check",
+        help="Same as doctor — verify install, version, and runtime",
+    )
+    p_check.add_argument("--chat-only", action="store_true")
+    p_check.add_argument("--quick", action="store_true")
+    p_check.add_argument("-v", "--verbose", action="store_true")
+    p_check.set_defaults(func=cmd_check)
     sub.add_parser("providers", help="Show resolved AI provider routing").set_defaults(
         func=cmd_providers
+    )
+    sub.add_parser("models", help="Local model cookbook (RAM/GPU → Ollama picks)").set_defaults(
+        func=cmd_models
     )
 
     p_ui = sub.add_parser("ui", help="Launch PC workstation web UI")
@@ -326,6 +410,37 @@ def main(argv: list[str] | None = None) -> int:
     auth_sub.add_parser("refresh", help="Refresh SuperGrok OAuth now").set_defaults(
         func=cmd_auth_refresh
     )
+
+    xfer = sub.add_parser("transfer", help="Move Hermes data phone ↔ PC")
+    xfer_sub = xfer.add_subparsers(dest="transfer_cmd", required=True)
+
+    p_recv = xfer_sub.add_parser("receive", help="PC: wait for phone upload (same Wi-Fi)")
+    p_recv.add_argument("--host", default="0.0.0.0")
+    p_recv.add_argument("--port", type=int, default=8777)
+    p_recv.add_argument("--token", default=None)
+    p_recv.add_argument("--dest", default=str(OPHELIA_HOME / "data"))
+    p_recv.add_argument("--no-import", action="store_true", help="Save file only")
+    p_recv.set_defaults(func=cmd_transfer_receive)
+
+    p_send = xfer_sub.add_parser("send", help="Phone: upload bundle to PC URL")
+    p_send.add_argument("url", help="http://PC_IP:8777 from transfer receive")
+    p_send.add_argument("--token", default=None)
+    p_send.add_argument("--hermes-home", default=str(Path.home() / ".hermes"))
+    p_send.set_defaults(func=cmd_transfer_send)
+
+    p_up = xfer_sub.add_parser(
+        "cloud-upload", help="Phone: upload to free temp cloud (any network)"
+    )
+    p_up.add_argument("--hermes-home", default=str(Path.home() / ".hermes"))
+    p_up.set_defaults(func=cmd_transfer_cloud_upload)
+
+    p_down = xfer_sub.add_parser(
+        "cloud-download", help="PC: download from cloud link and import"
+    )
+    p_down.add_argument("url")
+    p_down.add_argument("--output", default=None)
+    p_down.add_argument("--no-import", action="store_true")
+    p_down.set_defaults(func=cmd_transfer_cloud_download)
 
     args = parser.parse_args(argv)
     return args.func(args)

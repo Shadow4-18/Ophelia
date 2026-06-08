@@ -6,10 +6,10 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore
-from ophelia.android.shizuku import AndroidBody
 from ophelia.android.vision import ScreenVision
-from ophelia.channels.telegram_bot import TelegramGateway
+from ophelia.channels.hub import ChannelHub
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
@@ -48,12 +48,7 @@ class Orchestrator:
             else HonchoClient({"hosts": {"hermes": {"enabled": False}}}, api_key=None)
         )
 
-        phone_control = Path(str(settings.phone_control_path)).expanduser()
-        self.android = (
-            AndroidBody(phone_control=phone_control)
-            if settings.android_enabled
-            else None
-        )
+        self.android = build_android_body(settings)
         self.vision = (
             ScreenVision(settings, self.android, stack=self.stack)
             if settings.vision_enabled and self.android
@@ -66,7 +61,10 @@ class Orchestrator:
             if self.vision and self.android.mode != "termux_only":
                 body_status += " | vision=on"
         elif not settings.android_enabled:
-            body_status = "Android body: off (PC mode — chat/Telegram without phone tools)"
+            hint = ""
+            if settings.adb_device:
+                hint = " — set OPHELIA_ANDROID_ENABLED=true and install adb"
+            body_status = f"Android body: off (PC mode{hint})"
         if body_status:
             status_parts.append(body_status)
 
@@ -110,7 +108,7 @@ class Orchestrator:
             honcho=self.honcho if self.honcho.enabled else None,
             body_status="\n".join(status_parts),
         )
-        self.telegram = TelegramGateway(
+        self.hub = ChannelHub(
             settings,
             self.agent,
             self.signals,
@@ -184,10 +182,10 @@ class Orchestrator:
                 log.warning("curator.error", error=str(e))
 
     async def _notify_spontaneous(self, text: str) -> None:
-        await self.telegram.send_proactive(text)
+        await self.hub.broadcast_proactive(text)
 
     async def _notify_inner_mirror(self, text: str) -> None:
-        await self.telegram.send_proactive(text)
+        await self.hub.broadcast_proactive(text)
 
     async def start(self) -> None:
         await self.memory.init()
@@ -201,7 +199,11 @@ class Orchestrator:
             if xai:
                 await xai.bearer_fresh()
 
-        app = self.telegram.build_app()
+        if self.stack.uses_xai_oauth():
+            xai = self.stack.xai_backend()
+            if xai:
+                await xai.bearer_fresh()
+
         tasks: list[asyncio.Task] = [
             asyncio.create_task(self._oauth_refresh_loop()),
         ]
@@ -241,24 +243,21 @@ class Orchestrator:
         log.info(
             "ophelia.starting",
             provider=self.settings.provider,
+            channels=self.hub.configured_names(),
             consciousness=self.settings.consciousness_on(),
             listen=self.listen.available(),
             curator=bool(self.curator),
             inner=bool(self.inner),
             games=bool(self.games),
         )
-        async with app:
-            await app.start()
-            await app.updater.start_polling(drop_pending_updates=True)
-            try:
-                while not self.signals.terminate:
-                    await asyncio.sleep(1)
-            finally:
-                await app.updater.stop()
-                await app.stop()
-                if self.consciousness:
-                    self.consciousness.stop()
-                if self.listen:
-                    self.listen.stop()
-                for t in tasks:
-                    t.cancel()
+        try:
+            await self.hub.run()
+        finally:
+            self.signals.terminate = True
+            if self.consciousness:
+                self.consciousness.stop()
+            if self.listen:
+                self.listen.stop()
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

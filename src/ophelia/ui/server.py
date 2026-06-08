@@ -24,6 +24,11 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class CompareRequest(BaseModel):
+    message: str
+    models: list[str] = []
+
+
 def create_app(workstation: Workstation) -> FastAPI:
     app = FastAPI(title="Ophelia Workstation", docs_url=None, redoc_url=None)
 
@@ -42,6 +47,14 @@ def create_app(workstation: Workstation) -> FastAPI:
     @app.get("/api/inner")
     async def inner() -> dict[str, str]:
         return {"text": workstation.inner_full_tail(100)}
+
+    @app.get("/api/models")
+    async def models_info() -> dict[str, Any]:
+        return await workstation.models_info()
+
+    @app.post("/api/compare")
+    async def compare(body: CompareRequest) -> dict[str, Any]:
+        return await workstation.compare_models(body.message, body.models)
 
     @app.post("/api/chat")
     async def chat(body: ChatRequest) -> dict[str, str]:
