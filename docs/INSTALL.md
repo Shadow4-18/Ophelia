@@ -200,7 +200,7 @@ cd Ophelia
 bash scripts/termux-install.sh
 ```
 
-This installs Python deps, the `ophelia` CLI, creates `~/.ophelia/`, and prints the step-by-step wizard.
+This installs Python deps (including compiling **jiter** for `openai` — first run may take 10–30 min), the `ophelia` CLI, creates `~/.ophelia/`, and prints the step-by-step wizard.
 
 ### Step 3 — Configure brain
 
@@ -357,6 +357,19 @@ ophelia check --chat-only
 - Enable **Message Content Intent** in Discord Developer Portal
 - Bot needs permission to read/send in the channel or DM
 - Commands use `!` prefix: `!start`, `!pause`
+
+### `jiter` / `maturin` / `ANDROID_API_LEVEL` (Termux)
+
+The `openai` package depends on **jiter**, a Rust extension. Termux has no pre-built wheel, so pip compiles it. **maturin** needs your Android API level:
+
+```bash
+export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
+pkg install -y rust binutils clang make
+python -m pip install -U setuptools wheel maturin
+python -m pip install -e ~/Ophelia
+```
+
+Or re-run `bash scripts/termux-install.sh` (it sets this automatically). First compile can take **10–30 minutes**.
 
 ### Shizuku / ADB body fails
 

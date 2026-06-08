@@ -178,10 +178,10 @@ def _steps_phone() -> list[SetupStep]:
         SetupStep(
             1,
             "Install Termux packages",
-            "Python, git, tmux, and Termux:API for mic/listen.",
+            "Python, git, tmux, Termux:API, and Rust toolchain (for openai/jiter).",
             [
                 "pkg update -y",
-                "pkg install -y python git tmux termux-api",
+                "pkg install -y python git tmux termux-api rust binutils clang make",
                 f"cd {root}",
                 "bash scripts/termux-install.sh",
             ],
