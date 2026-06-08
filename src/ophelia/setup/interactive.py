@@ -505,11 +505,12 @@ def _section_features(on_phone: bool) -> None:
 def _section_health_check() -> None:
     print("\n  Running ophelia check...\n")
     try:
-        from ophelia.diagnostics.self_check import run_self_check
+        from ophelia.diagnostics.self_check import format_report, run_self_check
 
-        code = asyncio.run(run_self_check(chat_only=False, quick=False, verbose=False))
+        report = asyncio.run(run_self_check(chat_only=False, quick=False))
+        print(format_report(report))
         print()
-        if code == 0:
+        if report.ok:
             print("  Health check passed.\n")
         else:
             print("  Fix FAIL lines above, then re-run setup.\n")
