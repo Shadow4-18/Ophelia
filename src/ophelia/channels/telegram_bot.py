@@ -57,9 +57,13 @@ class TelegramGateway:
         if update.message:
             await update.message.reply_text(text[:4000])
 
+    def _remember_user(self, user_id: int) -> None:
+        self.signals.last_telegram_user_id = user_id
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not self._allowed(update.effective_user.id):
             return
+        self._remember_user(update.effective_user.id)
         await self._reply_text(update, self.session.WELCOME)
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -132,6 +136,7 @@ class TelegramGateway:
         if not user or not self._allowed(user.id):
             await update.message.reply_text("Unauthorized.")
             return
+        self._remember_user(user.id)
         channel = f"telegram:{user.id}"
         await update.message.chat.send_action("typing")
         await self.session.handle_chat(
@@ -147,6 +152,7 @@ class TelegramGateway:
         if not user or not self._allowed(user.id):
             return
 
+        self._remember_user(user.id)
         channel = f"telegram:{user.id}"
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
@@ -231,10 +237,20 @@ class TelegramGateway:
         self._app = app
         return app
 
-    async def run(self) -> None:
+    async def prepare(self) -> None:
+        """Initialize bot API before consciousness can send proactive messages."""
+        if self._app is not None:
+            return
         app = self.build_app()
         await app.initialize()
         await app.start()
+        log.info("telegram.ready")
+
+    async def run(self) -> None:
+        await self.prepare()
+        app = self._app
+        if app is None:
+            raise RuntimeError("Telegram app failed to initialize")
         await app.updater.start_polling(drop_pending_updates=True)
         try:
             while not self.signals.terminate:
@@ -248,15 +264,41 @@ class TelegramGateway:
     async def stop(self) -> None:
         pass
 
+    def _proactive_recipients(self) -> list[int]:
+        allowed = self.settings.allowed_telegram_users()
+        if allowed:
+            return sorted(allowed)
+        if self.signals.last_telegram_user_id is not None:
+            return [self.signals.last_telegram_user_id]
+        return []
+
     async def send_proactive(self, text: str) -> None:
         if not self._app:
+            log.warning(
+                "telegram.notify_skipped",
+                reason="bot not ready — Telegram still starting",
+            )
             return
-        allowed = self.settings.allowed_telegram_users()
-        if not allowed:
-            log.warning("telegram.notify_skipped", reason="no TELEGRAM_ALLOWED_USER_IDS")
+        recipients = self._proactive_recipients()
+        if not recipients:
+            log.warning(
+                "telegram.notify_skipped",
+                reason="no TELEGRAM_ALLOWED_USER_IDS and no user has /start yet",
+                hint="message @userinfobot for your ID, add to ~/.ophelia/.env, send /start to your bot",
+            )
             return
-        for uid in allowed:
+        for uid in recipients:
             try:
                 await self._app.bot.send_message(chat_id=uid, text=text[:4000])
+                log.info("telegram.notify_sent", user=uid, chars=len(text))
             except Exception as e:
-                log.warning("telegram.notify_failed", user=uid, error=str(e))
+                err = str(e)
+                hint = ""
+                if "can't initiate conversation" in err.lower() or "forbidden" in err.lower():
+                    hint = "send /start to your bot in Telegram first"
+                log.warning(
+                    "telegram.notify_failed",
+                    user=uid,
+                    error=err,
+                    hint=hint or None,
+                )

@@ -215,6 +215,21 @@ class Orchestrator:
             except Exception as e:
                 log.warning("curator.startup", error=str(e))
 
+        if self.hub.configured_names():
+            try:
+                await self.hub.prepare()
+            except Exception as e:
+                log.warning("hub.prepare_failed", error=str(e))
+            if (
+                self.settings.telegram_enabled
+                and self.settings.telegram_bot_token
+                and not self.settings.allowed_telegram_users()
+            ):
+                log.warning(
+                    "telegram.allowlist_missing",
+                    hint="set TELEGRAM_ALLOWED_USER_IDS in ~/.ophelia/.env and /start your bot",
+                )
+
         if self.settings.consciousness_on():
             self.consciousness = ConsciousnessLoop(
                 self.agent,

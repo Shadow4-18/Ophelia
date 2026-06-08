@@ -12,6 +12,7 @@ class Signals:
     agent_thinking: bool = False
     last_user_message_at: float = 0.0
     last_agent_message_at: float = 0.0
+    last_telegram_user_id: int | None = None
     autonomy_paused: bool = False
     listen_enabled: bool = False
     inner_mirror: bool = False

@@ -81,6 +81,16 @@ class ChannelHub:
                 except Exception as e:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
 
+    async def prepare(self) -> None:
+        """Start gateway APIs (e.g. Telegram bot) before consciousness outreach."""
+        self.require_any()
+        for gw in self._gateways:
+            if not gw.is_configured():
+                continue
+            prepare = getattr(gw, "prepare", None)
+            if callable(prepare):
+                await prepare()
+
     async def run(self) -> None:
         self.require_any()
         active = [g for g in self._gateways if g.is_configured()]
