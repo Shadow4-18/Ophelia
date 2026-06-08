@@ -11,10 +11,16 @@ echo ""
 
 echo "[1/4] Termux packages..."
 pkg update -y
-pkg install -y python git tmux termux-api
+# rust + binutils are needed to build jiter (a Rust dep of the openai SDK);
+# Termux/Android has no prebuilt jiter wheel, so pip compiles it from source.
+pkg install -y python git tmux termux-api rust binutils
 
 echo "[2/4] Python package..."
 # Termux manages pip via pkg; do not self-upgrade pip.
+# pyo3/maturin cannot auto-detect the Android API level, so we set it
+# explicitly — otherwise the jiter build fails with
+# "Failed to determine Android API level". Override via env if needed.
+export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
 python -m pip install -U setuptools wheel
 python -m pip install -e .
 

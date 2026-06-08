@@ -202,6 +202,19 @@ bash scripts/termux-install.sh
 
 This installs Python deps, the `ophelia` CLI, creates `~/.ophelia/`, and prints the step-by-step wizard.
 
+> **Why it installs `rust`:** the `openai` SDK depends on `jiter`, a Rust JSON
+> parser. PyPI ships no prebuilt wheel for Android, so pip compiles it from
+> source. The script installs `rust`/`binutils` and exports `ANDROID_API_LEVEL`
+> so the build succeeds — see [Termux: `jiter` build fails](#termux-jiter-build-fails).
+
+#### Manual install (if you don't use the script)
+
+```bash
+pkg install -y python git rust binutils
+export ANDROID_API_LEVEL=24   # pyo3 can't auto-detect this on Termux
+pip install -e .
+```
+
 ### Step 3 — Configure brain
 
 Edit `~/.ophelia/.env`:
@@ -357,6 +370,29 @@ ophelia check --chat-only
 - Enable **Message Content Intent** in Discord Developer Portal
 - Bot needs permission to read/send in the channel or DM
 - Commands use `!` prefix: `!start`, `!pause`
+
+### Termux: `jiter` build fails
+
+Symptom (during `pip install`):
+
+```
+error running maturin ... Failed to determine Android API level.
+Please set the ANDROID_API_LEVEL environment variable.
+... error: metadata-generation-failed (jiter)
+```
+
+`jiter` is a Rust dependency of the `openai` SDK. Android has no prebuilt
+wheel, so pip compiles it — which needs the Rust toolchain and an explicit
+API level (pyo3 can't auto-detect it on Termux). Fix:
+
+```bash
+pkg install -y rust binutils
+export ANDROID_API_LEVEL=24
+pip install -e .
+```
+
+`scripts/termux-install.sh` already does this for you. If you still hit a
+build error, run `pkg update -y && pkg upgrade -y` first.
 
 ### Shizuku / ADB body fails
 
