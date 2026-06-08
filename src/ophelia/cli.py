@@ -63,25 +63,65 @@ def cmd_auth_import_grok(_: argparse.Namespace) -> int:
 
 
 def cmd_auth_import_hermes(args: argparse.Namespace) -> int:
+    from ophelia.providers.auth import sync_oauth_from_hermes_home
+
     settings = Settings()
     hermes = Path(args.hermes_home).expanduser()
-    auth = hermes / "auth.json"
-    if not auth.is_file():
-        print(f"No {auth}. On old phone: hermes auth add xai-oauth")
-        return 1
-    if import_hermes_auth_full(auth, settings.hermes_auth_path):
-        state = load_oauth_state(settings.hermes_auth_path)
-        if state:
-            save_oauth_token(
-                settings.xai_oauth_token_path,
-                state["access_token"],
-                state.get("refresh_token"),
-            )
-        print("SuperGrok OAuth imported (with refresh support).")
+    ok, msg = sync_oauth_from_hermes_home(
+        hermes,
+        ophelia_auth_path=settings.hermes_auth_path,
+        ophelia_oauth_path=settings.xai_oauth_token_path,
+    )
+    print(msg)
+    if ok:
         print(f"  {settings.hermes_auth_path}")
         return 0
-    print("auth.json copied but no xai-oauth token found.")
     return 1
+
+
+def cmd_auth_login(_: argparse.Namespace) -> int:
+    """Fresh xAI browser login via Hermes CLI, then import into Ophelia."""
+    import shutil
+    import subprocess
+
+    from ophelia.providers.auth import sync_oauth_from_hermes_home
+
+    settings = Settings()
+    print()
+    print("SuperGrok OAuth comes from xAI (accounts.x.ai) — not Hermes-specific.")
+    print("Hermes runs the browser login; Ophelia imports the same token.")
+    print()
+
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        print("Opening Hermes browser login...")
+        print("Sign in at accounts.x.ai, approve access, then return here.\n")
+        result = subprocess.run([hermes_bin, "auth", "add", "xai-oauth"])
+        if result.returncode != 0:
+            print("Hermes login cancelled or failed.")
+            return 1
+    else:
+        print("Hermes CLI not in PATH. In another Termux tab run:")
+        print("  hermes auth add xai-oauth")
+        print()
+        try:
+            input("Press Enter after browser login finishes... ")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 1
+
+    ok, msg = sync_oauth_from_hermes_home(
+        settings.hermes_home,
+        ophelia_auth_path=settings.hermes_auth_path,
+        ophelia_oauth_path=settings.xai_oauth_token_path,
+    )
+    print(msg)
+    if not ok:
+        return 1
+    print()
+    print("Next: ophelia auth refresh   # optional test")
+    print("       ophelia check")
+    return 0
 
 
 def cmd_auth_refresh(_: argparse.Namespace) -> int:
@@ -94,7 +134,7 @@ def cmd_auth_refresh(_: argparse.Namespace) -> int:
         oauth_path=settings.xai_oauth_token_path,
     )
     if not path:
-        print("No OAuth auth file found. Run: ophelia auth import-hermes")
+        print("No OAuth auth file found. Run: ophelia auth login")
         return 1
     try:
         token = asyncio.run(ensure_fresh_token(path))
@@ -119,7 +159,7 @@ def cmd_migrate_hermes(args: argparse.Namespace) -> int:
     print(format_report(report))
     if not args.dry_run:
         print(f"\nReport: {OPHELIA_HOME / 'migration_report.json'}")
-        print("Next: ophelia auth import-hermes  (if not already)")
+        print("Next: ophelia auth login  (or import-hermes if Hermes already logged in)")
         print("       merge from-hermes.env into ~/.ophelia/.env")
     return 0
 
@@ -413,6 +453,10 @@ def main(argv: list[str] | None = None) -> int:
 
     auth = sub.add_parser("auth")
     auth_sub = auth.add_subparsers(dest="auth_cmd", required=True)
+    auth_sub.add_parser(
+        "login",
+        help="Fresh SuperGrok OAuth via Hermes browser login, import to Ophelia",
+    ).set_defaults(func=cmd_auth_login)
     auth_sub.add_parser("import-grok").set_defaults(func=cmd_auth_import_grok)
     p_ih = auth_sub.add_parser("import-hermes")
     p_ih.add_argument("--hermes-home", default=str(Path.home() / ".hermes"))

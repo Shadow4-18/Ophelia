@@ -99,7 +99,8 @@ class XAIBackend:
     def _auth_help(self) -> str:
         return (
             "No xAI credentials. Options:\n"
-            "  ophelia auth import-hermes   (SuperGrok OAuth from Hermes)\n"
+            "  ophelia auth login           (fresh SuperGrok OAuth via browser)\n"
+            "  ophelia auth import-hermes   (re-sync from ~/.hermes/auth.json)\n"
             "  ophelia auth import-grok     (Grok CLI login)\n"
             "  set XAI_API_KEY + OPHELIA_PROVIDER=xai"
         )
@@ -420,7 +421,7 @@ class ProviderStack:
             if isinstance(backend, XAIBackend):
                 if name == "xai-oauth":
                     if not backend.bearer():
-                        return False, "missing OAuth — ophelia auth import-grok or import-hermes"
+                        return False, "missing OAuth — ophelia auth login"
                     return True, "OK (OAuth token present)"
                 if not backend.bearer():
                     return False, "missing xAI API key"

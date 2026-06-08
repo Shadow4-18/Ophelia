@@ -81,7 +81,8 @@ Continuous consciousness (not Hermes cron isolation):
 
 ```bash
 ophelia migrate hermes
-ophelia auth import-hermes      # optional SuperGrok OAuth
+ophelia auth login              # fresh SuperGrok OAuth (browser)
+ophelia auth import-hermes      # re-sync if Hermes already logged in
 ophelia transfer cloud-upload   # phone → PC bundle
 ```
 

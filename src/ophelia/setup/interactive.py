@@ -180,51 +180,74 @@ def _configure_xai_oauth() -> bool:
         pick = radiolist(
             "SuperGrok / xAI OAuth",
             [
-                "Import / re-import from Hermes (~/.hermes/auth.json)",
-                "Import / re-import from Grok CLI (~/.grok/auth.json)",
+                "Get NEW token (Hermes browser login)",
+                "Import / re-sync from ~/.hermes/auth.json",
+                "Import / re-sync from Grok CLI (~/.grok)",
                 "Verify OAuth connection",
                 "Done — use xAI OAuth",
                 "Back (don't change provider)",
             ],
-            description=status + "\n\nPick an action, read the result, then Enter to continue.",
+            description=(
+                status
+                + "\n\nOAuth is from xAI, not Hermes-branded."
+                + "\nStale copied tokens need a fresh login (option 1)."
+            ),
         )
-        if pick < 0 or pick == 4:
+        if pick < 0 or pick == 5:
             return False
         if pick == 0:
-            _import_hermes_oauth(settings)
+            _oauth_browser_login(settings)
         elif pick == 1:
-            _import_grok_oauth(settings)
+            _import_hermes_oauth(settings)
         elif pick == 2:
-            _verify_xai_oauth()
+            _import_grok_oauth(settings)
         elif pick == 3:
+            _verify_xai_oauth()
+        elif pick == 4:
             return True
         pause()
 
 
-def _import_hermes_oauth(settings: Settings) -> bool:
-    from ophelia.providers.auth import import_hermes_auth_full, save_oauth_token
-    from ophelia.providers.oauth_refresh import load_oauth_state
+def _oauth_browser_login(settings: Settings) -> bool:
+    import shutil
+    import subprocess
 
-    auth = settings.hermes_home / "auth.json"
-    if not auth.is_file():
-        print(f"\n  No {auth}")
-        print("  On this phone run: hermes auth add xai-oauth")
-        print("  Or: ophelia auth import-hermes after copying auth.json\n")
-        return False
-    if not import_hermes_auth_full(auth, settings.hermes_auth_path):
-        print("\n  auth.json found but no xai-oauth block inside.")
-        print("  Re-login: hermes auth add xai-oauth\n")
-        return False
-    state = load_oauth_state(settings.hermes_auth_path)
-    if state:
-        save_oauth_token(
-            settings.xai_oauth_token_path,
-            state["access_token"],
-            state.get("refresh_token"),
-        )
-    print(f"\n  [OK] Imported SuperGrok OAuth from Hermes")
-    print(f"       {settings.hermes_auth_path}\n")
-    return True
+    from ophelia.providers.auth import sync_oauth_from_hermes_home
+
+    print("\n  Fresh login: Hermes opens accounts.x.ai in your browser.")
+    print("  Ophelia imports the new xAI token when done.\n")
+    hermes = shutil.which("hermes")
+    if hermes:
+        pause("Press Enter to start Hermes browser login...")
+        result = subprocess.run([hermes, "auth", "add", "xai-oauth"])
+        if result.returncode != 0:
+            print("  Login cancelled or failed.\n")
+            return False
+    else:
+        print("  Hermes not installed. Run in another tab:")
+        print("    hermes auth add xai-oauth")
+        pause("Press Enter after browser login finishes...")
+    ok, msg = sync_oauth_from_hermes_home(
+        settings.hermes_home,
+        ophelia_auth_path=settings.hermes_auth_path,
+        ophelia_oauth_path=settings.xai_oauth_token_path,
+    )
+    print(f"  {'[OK]' if ok else '[FAIL]'} {msg}\n")
+    return ok
+
+
+def _import_hermes_oauth(settings: Settings) -> bool:
+    from ophelia.providers.auth import sync_oauth_from_hermes_home
+
+    ok, msg = sync_oauth_from_hermes_home(
+        settings.hermes_home,
+        ophelia_auth_path=settings.hermes_auth_path,
+        ophelia_oauth_path=settings.xai_oauth_token_path,
+    )
+    print(f"\n  {'[OK]' if ok else '[FAIL]'} {msg}")
+    if not ok:
+        print("  Get a fresh token: ophelia auth login\n")
+    return ok
 
 
 def _import_grok_oauth(settings: Settings) -> bool:

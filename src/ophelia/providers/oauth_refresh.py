@@ -205,8 +205,7 @@ def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
     endpoint = str(state.get("token_endpoint") or "").strip() or _discover_token_endpoint()
     if not refresh_token:
         raise OAuthRefreshError(
-            "No refresh_token — re-authenticate: hermes auth add xai-oauth "
-            "or ophelia auth import-hermes",
+            "No refresh_token — re-authenticate: ophelia auth login",
             relogin=True,
         )
 
@@ -235,7 +234,7 @@ def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
         if detail:
             msg += f": {detail}"
         if relogin:
-            msg += " — run: ophelia auth import-hermes  or  hermes auth add xai-oauth"
+            msg += " — run: ophelia auth login"
         raise OAuthRefreshError(msg, relogin=relogin)
 
     payload = resp.json()

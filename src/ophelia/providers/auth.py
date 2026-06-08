@@ -78,6 +78,28 @@ def import_hermes_auth_full(hermes_auth: Path, ophelia_auth: Path) -> bool:
     return bool(state and state.get("access_token"))
 
 
+def sync_oauth_from_hermes_home(
+    hermes_home: Path,
+    *,
+    ophelia_auth_path: Path,
+    ophelia_oauth_path: Path,
+) -> tuple[bool, str]:
+    """Copy live ~/.hermes/auth.json into Ophelia's auth stores."""
+    auth = hermes_home.expanduser() / "auth.json"
+    if not auth.is_file():
+        return False, f"No {auth} — run: hermes auth add xai-oauth"
+    if not import_hermes_auth_full(auth, ophelia_auth_path):
+        return False, "auth.json found but no xai-oauth tokens inside"
+    state = load_oauth_state(ophelia_auth_path)
+    if state:
+        save_oauth_token(
+            ophelia_oauth_path,
+            state["access_token"],
+            state.get("refresh_token"),
+        )
+    return True, f"Synced xAI OAuth from {auth} -> Ophelia"
+
+
 def save_oauth_token(path: Path, access_token: str, refresh_token: str | None = None) -> None:
     save_oauth_state(
         path,
