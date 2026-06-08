@@ -335,8 +335,9 @@ ophelia setup                  # human checklist with [OK] / [  ]
 
 ```bash
 pip install -e .
-# or on Termux:
-pip install -e ~/Ophelia
+# Termux (must cap openai — see jiter error below):
+cd ~/Ophelia
+python -m pip install --no-cache-dir -e . -c scripts/termux-constraints.txt
 ```
 
 ### Ollama not reachable
@@ -357,6 +358,24 @@ ophelia check --chat-only
 - Enable **Message Content Intent** in Discord Developer Portal
 - Bot needs permission to read/send in the channel or DM
 - Commands use `!` prefix: `!start`, `!pause`
+
+### `jiter` / `maturin` / `ANDROID_API_LEVEL` on Termux
+
+**Why:** Termux reports itself as **Linux**, not Android, so pip cannot auto-detect Termux. Newer `openai` (≥1.40) depends on **jiter**, a Rust package with **no prebuilt wheel** for Termux Python 3.13 — pip tries to compile it and fails.
+
+Hermes/OpenClaw often avoid this because they pin older deps or ship a bundled environment instead of resolving latest `openai` on install.
+
+**Fix:** always use the Termux install script or constraints file:
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-install.sh
+# or manually:
+python -m pip install --no-cache-dir -e . -c scripts/termux-constraints.txt
+```
+
+This installs `openai` 1.39.x (last version without `jiter`). Ollama, xAI OAuth, and OpenAI-compatible APIs still work.
 
 ### Shizuku / ADB body fails
 

@@ -1,0 +1,3 @@
+# Termux is Linux userland (not platform_system=Android), so pyproject markers
+# cannot target it. Cap openai here: >=1.40 pulls jiter (Rust) with no Termux wheel.
+openai>=1.35,<1.40

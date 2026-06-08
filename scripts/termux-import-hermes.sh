@@ -26,7 +26,7 @@ mkdir -p "$HOME/.hermes"
 cp -a "$HERMES_SRC/"* "$HOME/.hermes/" 2>/dev/null || true
 
 cd "${OPHELIA_PROJECT:-$HOME/Ophelia}"
-pip install -e . -q
+python -m pip install --no-cache-dir -e . -q -c scripts/termux-constraints.txt
 
 ophelia migrate hermes --source "$HOME/.hermes"
 ophelia auth import-hermes --hermes-home "$HOME/.hermes"
