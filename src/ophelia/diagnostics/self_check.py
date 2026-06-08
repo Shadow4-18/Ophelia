@@ -54,6 +54,16 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
 MIN_PYTHON = (3, 11)
 
 
+def _required_packages() -> list[tuple[str, str]]:
+    """Platform-aware minimum versions (Termux uses capped openai without jiter)."""
+    if not is_termux():
+        return REQUIRED_PACKAGES
+    return [
+        (name, "1.35" if name == "openai" else min_ver)
+        for name, min_ver in REQUIRED_PACKAGES
+    ]
+
+
 @dataclass
 class CheckResult:
     category: str
@@ -193,7 +203,7 @@ def _check_dependencies(report: SelfCheckReport) -> None:
         "pydantic_settings": "pydantic_settings",
         "discord": "discord",
     }
-    for pkg, min_ver in REQUIRED_PACKAGES:
+    for pkg, min_ver in _required_packages():
         import_name = import_map.get(pkg, pkg)
         dist = DIST_NAMES.get(pkg, pkg)
         try:
@@ -204,7 +214,7 @@ def _check_dependencies(report: SelfCheckReport) -> None:
                 name=pkg,
                 ok=ok,
                 detail=f"{ver} (need >={min_ver})",
-                hint="pip install -e ." if not ok else "",
+                hint=_dep_install_hint(pkg) if not ok else "",
             )
         except importlib.metadata.PackageNotFoundError:
             spec = importlib.util.find_spec(import_name)
@@ -213,8 +223,35 @@ def _check_dependencies(report: SelfCheckReport) -> None:
                 name=pkg,
                 ok=spec is not None,
                 detail="missing" if spec is None else "importable (version unknown)",
-                hint="pip install -e ." if spec is None else "",
+                hint=_dep_install_hint(pkg) if spec is None else "",
             )
+
+    if is_termux():
+        try:
+            import pydantic_core  # noqa: F401
+
+            report.add(
+                category="dependencies",
+                name="pydantic_core (Termux)",
+                ok=True,
+                detail="importable",
+                required=False,
+            )
+        except ImportError:
+            report.add(
+                category="dependencies",
+                name="pydantic_core (Termux)",
+                ok=False,
+                detail="missing — PyPI wheel incompatible on Termux",
+                hint="bash scripts/termux-install.sh",
+                required=True,
+            )
+
+
+def _dep_install_hint(pkg: str) -> str:
+    if is_termux():
+        return "bash scripts/termux-install.sh"
+    return "pip install -e ."
 
 
 def _check_paths(report: SelfCheckReport, settings: Settings) -> None:

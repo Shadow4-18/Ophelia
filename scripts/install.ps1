@@ -12,6 +12,7 @@ Set-Location $Root
 
 Write-Host "[1/3] Installing Python package..." -ForegroundColor Yellow
 pip install -e .
+pip install "uvicorn[standard]>=0.32"
 
 Write-Host "[2/3] Auto-setup (~/.ophelia, .env)..." -ForegroundColor Yellow
 ophelia setup --do

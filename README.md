@@ -28,7 +28,7 @@ ophelia ui                  # PC workstation
 ophelia chat "hello"
 ```
 
-**Install scripts:** `scripts/install.ps1` (Windows) · `scripts/install.sh` (Mac/Linux) · `scripts/termux-install.sh` (phone)
+**Install scripts:** `scripts/install.ps1` (Windows) · `scripts/install.sh` (Mac/Linux) · `scripts/termux-install.sh` (phone — **required** on Termux; plain `pip install` fails on Rust wheels)
 
 ## Local-first providers
 

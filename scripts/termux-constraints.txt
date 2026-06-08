@@ -1,3 +1,13 @@
-# Termux is Linux userland (not platform_system=Android), so pyproject markers
-# cannot target it. Cap openai here: >=1.40 pulls jiter (Rust) with no Termux wheel.
+# Termux / Android pip constraints for Ophelia.
+#
+# Termux is Linux userland — PEP 508 cannot target it. PyPI manylinux wheels
+# often do not match Termux's libc, so pip falls back to Rust/C source builds
+# (maturin) which fail without ANDROID_API_LEVEL + a full NDK toolchain.
+#
+# Usage (from repo root):
+#   source scripts/termux-pip-env.sh
+#   termux_preinstall_native_wheels
+#   termux_pip_install -e . -c scripts/termux-constraints.txt
+#
+# openai>=1.40 depends on jiter (Rust) — no reliable Termux wheel on PyPI.
 openai>=1.35,<1.40

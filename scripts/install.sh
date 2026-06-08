@@ -11,6 +11,7 @@ echo ""
 
 echo "[1/3] Installing Python package..."
 pip install -e .
+pip install "uvicorn[standard]>=0.32"
 
 echo "[2/3] Auto-setup (~/.ophelia, .env)..."
 ophelia setup --do

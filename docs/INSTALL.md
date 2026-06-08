@@ -359,23 +359,34 @@ ophelia check --chat-only
 - Bot needs permission to read/send in the channel or DM
 - Commands use `!` prefix: `!start`, `!pause`
 
-### `jiter` / `maturin` / `ANDROID_API_LEVEL` on Termux
+### `jiter`, `pydantic-core`, `maturin`, or `ANDROID_API_LEVEL` on Termux
 
-**Why:** Termux reports itself as **Linux**, not Android, so pip cannot auto-detect Termux. Newer `openai` (≥1.40) depends on **jiter**, a Rust package with **no prebuilt wheel** for Termux Python 3.13 — pip tries to compile it and fails.
+**Why:** Termux is **not** a standard Linux glibc target. PyPI `manylinux` wheels often **do not install**, so pip tries to **compile Rust/C packages from source** (`pydantic-core`, `jiter`, `uvloop`, …). That fails with `maturin` / `ANDROID_API_LEVEL` errors.
 
-Hermes/OpenClaw often avoid this because they pin older deps or ship a bundled environment instead of resolving latest `openai` on install.
+Hermes/OpenClaw avoid this by:
+- Using the **Termux User Repository** (TUR) for Android-native wheels
+- Capping `openai<1.40` (no `jiter`)
+- Installing build tools + `ANDROID_API_LEVEL` when compilation is unavoidable
+- Skipping `uvicorn[standard]` extras that pull `uvloop`/`httptools`
 
-**Fix:** always use the Termux install script or constraints file:
+**Fix:** always use the Termux install script (do not plain `pip install -e .`):
 
 ```bash
 cd ~/Ophelia
 git pull
 bash scripts/termux-install.sh
-# or manually:
-python -m pip install --no-cache-dir -e . -c scripts/termux-constraints.txt
 ```
 
-This installs `openai` 1.39.x (last version without `jiter`). Ollama, xAI OAuth, and OpenAI-compatible APIs still work.
+Manual equivalent:
+
+```bash
+source scripts/termux-pip-env.sh
+pkg install -y clang rust binutils libffi openssl pkg-config
+termux_preinstall_native_wheels
+termux_pip_install -e . -c scripts/termux-constraints.txt
+```
+
+This installs `pydantic-core` from TUR, caps `openai` at 1.39.x, and uses plain `uvicorn` (no `uvloop`). Ollama, xAI OAuth, Telegram, and Discord still work.
 
 ### Shizuku / ADB body fails
 
