@@ -16,6 +16,7 @@ NAV_NONE = "none"
 
 
 def flush_stdin() -> None:
+    """Drain stray keypresses after curses (Enter/arrow bytes confuse the next menu)."""
     try:
         if not sys.stdin.isatty():
             return
@@ -24,6 +25,14 @@ def flush_stdin() -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
+
+
+def pause(message: str = "Press Enter to continue...") -> None:
+    flush_stdin()
+    try:
+        input(f"\n{message}")
+    except (KeyboardInterrupt, EOFError):
+        print()
 
 
 def prompt_text(
@@ -68,6 +77,7 @@ def radiolist(
         cancel_returns = -1
     if not items:
         return cancel_returns
+    flush_stdin()
     if not sys.stdin.isatty():
         return _radio_numbered_fallback(title, items, selected, cancel_returns, description)
 
@@ -147,6 +157,7 @@ def checkbox(
         cancel_returns = set(chosen)
     if not items:
         return cancel_returns
+    flush_stdin()
     if not sys.stdin.isatty():
         return _checkbox_numbered_fallback(title, items, chosen, cancel_returns, description)
 

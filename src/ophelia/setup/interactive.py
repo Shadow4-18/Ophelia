@@ -9,7 +9,7 @@ from pathlib import Path
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.platform import is_termux, platform_summary
 from ophelia.setup.env_io import read_env_key, write_env_updates
-from ophelia.setup.tui import checkbox, prompt_text, radiolist
+from ophelia.setup.tui import checkbox, pause, prompt_text, radiolist
 from ophelia.setup.wizard import _auto_setup, run_setup_wizard
 
 
@@ -63,9 +63,10 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         elif idx == 6:
             print()
             run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-            print()
         elif idx == 7:
             break
+        if idx != 7:
+            pause()
 
     print()
     print("Setup complete. Next:")
@@ -144,7 +145,7 @@ def _section_provider(on_phone: bool) -> None:
             updates["OPHELIA_COMPAT_API_KEY"] = key
 
     touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}\n")
+    print(f"\n  Saved: {', '.join(touched)}")
 
 
 def _oauth_status_lines() -> list[str]:
@@ -172,30 +173,32 @@ def _oauth_status_lines() -> list[str]:
 
 
 def _configure_xai_oauth() -> bool:
-    """Sub-menu for SuperGrok OAuth. Returns False if user cancelled."""
+    """Sub-menu for SuperGrok OAuth. Loops until Done or Back."""
     settings = Settings()
-    status = "\n".join(_oauth_status_lines())
-
-    pick = radiolist(
-        "SuperGrok / xAI OAuth",
-        [
-            "Import from Hermes (~/.hermes/auth.json)",
-            "Import from Grok CLI (~/.grok/auth.json)",
-            "Verify OAuth connection",
-            "Skip — token already set",
-        ],
-        description=status,
-    )
-    if pick < 0:
-        return False
-
-    if pick == 0:
-        return _import_hermes_oauth(settings)
-    if pick == 1:
-        return _import_grok_oauth(settings)
-    if pick == 2:
-        return _verify_xai_oauth()
-    return True
+    while True:
+        status = "\n".join(_oauth_status_lines())
+        pick = radiolist(
+            "SuperGrok / xAI OAuth",
+            [
+                "Import / re-import from Hermes (~/.hermes/auth.json)",
+                "Import / re-import from Grok CLI (~/.grok/auth.json)",
+                "Verify OAuth connection",
+                "Done — use xAI OAuth",
+                "Back (don't change provider)",
+            ],
+            description=status + "\n\nPick an action, read the result, then Enter to continue.",
+        )
+        if pick < 0 or pick == 4:
+            return False
+        if pick == 0:
+            _import_hermes_oauth(settings)
+        elif pick == 1:
+            _import_grok_oauth(settings)
+        elif pick == 2:
+            _verify_xai_oauth()
+        elif pick == 3:
+            return True
+        pause()
 
 
 def _import_hermes_oauth(settings: Settings) -> bool:
@@ -206,10 +209,11 @@ def _import_hermes_oauth(settings: Settings) -> bool:
     if not auth.is_file():
         print(f"\n  No {auth}")
         print("  On this phone run: hermes auth add xai-oauth")
-        print("  Or copy auth.json from your old phone.\n")
+        print("  Or: ophelia auth import-hermes after copying auth.json\n")
         return False
     if not import_hermes_auth_full(auth, settings.hermes_auth_path):
-        print("\n  auth.json found but no xai-oauth block inside.\n")
+        print("\n  auth.json found but no xai-oauth block inside.")
+        print("  Re-login: hermes auth add xai-oauth\n")
         return False
     state = load_oauth_state(settings.hermes_auth_path)
     if state:
@@ -376,7 +380,7 @@ def _section_channels() -> None:
         updates["OPHELIA_DISCORD_ENABLED"] = "false"
 
     touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}\n")
+    print(f"\n  Saved: {', '.join(touched)}")
 
 
 def _section_persona() -> None:
