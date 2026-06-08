@@ -326,27 +326,27 @@ class ToolRegistry:
 
     async def _phone_see_screen(self, question: str = "") -> str:
         if not self.vision:
-            return "Vision disabled or no Android body."
+            return "Vision disabled or no phone body."
         return await self.vision.see(question=question or "What is on screen?")
 
     async def _phone_ui_dump(self) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.ui_dump()
 
     async def _phone_tap(self, x: int, y: int) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.tap(x, y)
 
     async def _phone_open_app(self, package: str) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.open_app(package)
 
     async def _phone_shell(self, command: str) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.shell(command)
 
     async def _phone_swipe(
@@ -358,17 +358,17 @@ class ToolRegistry:
         duration_ms: int = 300,
     ) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.swipe(x1, y1, x2, y2, duration_ms)
 
     async def _phone_key(self, key: str) -> str:
         if not self.android:
-            return "Android body disabled."
+            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.key(key)
 
     async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:
         if not self.vision:
-            return "Vision disabled or no Android body."
+            return "Vision disabled or no phone body."
         if not self.games:
             return "Games layer disabled (OPHELIA_GAMES=false)."
         profile = None

@@ -233,7 +233,7 @@ def _steps_phone() -> list[SetupStep]:
         SetupStep(
             6,
             "Telegram bot",
-            "How you talk to Ophelia on the go.",
+            "Optional — chat from anywhere (same on PC or Termux host).",
             [
                 "# 1. Telegram -> @BotFather -> /newbot -> copy token",
                 "# 2. Message @userinfobot -> copy your numeric ID",
@@ -253,8 +253,8 @@ def _steps_phone() -> list[SetupStep]:
         ),
         SetupStep(
             8,
-            "Android body (Shizuku)",
-            "Tap, swipe, see screen — Ophelia's phone hands.",
+            "Phone body (Shizuku) — optional",
+            "Only if you want screen/tap on this device. Skip for chat-only.",
             [
                 "# On phone: install Shizuku app",
                 "# Shizuku -> Start -> Export to Termux",
@@ -297,7 +297,7 @@ def _steps_pc() -> list[SetupStep]:
         SetupStep(
             1,
             "Install Ophelia (Python package)",
-            "From the folder where you cloned Ophelia.",
+            "Works on PC, laptop, home server, or VPS — no phone needed.",
             [
                 f"cd {root}",
                 _pip_install_cmd(),
@@ -367,11 +367,13 @@ def _steps_pc() -> list[SetupStep]:
         ),
         SetupStep(
             7,
-            "Telegram (optional)",
-            "Same bot as phone — run ophelia run on PC.",
+            "Telegram / Discord (optional)",
+            "Run ophelia run on this host for 24/7 bots — no phone body required.",
             [
                 "TELEGRAM_BOT_TOKEN=...",
                 "TELEGRAM_ALLOWED_USER_IDS=your_id",
+                "DISCORD_BOT_TOKEN=...",
+                "DISCORD_ALLOWED_USER_IDS=your_id",
                 "ophelia run",
             ],
             _check_telegram,
@@ -379,8 +381,8 @@ def _steps_pc() -> list[SetupStep]:
         ),
         SetupStep(
             8,
-            "Control phone from PC (optional)",
-            "ADB body — Ophelia on PC, hands on S21.",
+            "Phone body via ADB (optional)",
+            "Attach a separate Android for screen/tap — skip for software-only Ophelia.",
             [
                 "# Enable USB debugging on phone",
                 "adb devices",
@@ -479,7 +481,7 @@ def run_setup_wizard(
     step_num: int | None = None,
 ) -> int:
     on_phone = is_termux() if phone is None else phone
-    mode = "phone (Termux)" if on_phone else "PC / terminal"
+    mode = "phone host (Termux)" if on_phone else "PC / server / VPS"
     steps = _steps_phone() if on_phone else _steps_pc()
 
     _banner(mode)

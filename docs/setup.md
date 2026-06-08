@@ -1,6 +1,8 @@
-# Setup wizard (`ophelia setup`)
+# Installation guide
 
-Hermes/OpenClaw-style **step-by-step guide** — detects your platform and prints exactly what to run, with `[OK]` / `[  ]` checks.
+Full walkthrough: **[docs/INSTALL.md](INSTALL.md)** (PC, Termux, Ollama, Telegram, Discord, Hermes, troubleshooting).
+
+`ophelia setup` is the interactive version of the same steps.
 
 ## Quick start
 
@@ -41,7 +43,7 @@ ophelia check --quick           # skip network probes (fast)
 ophelia doctor -v               # show fix hints for passing checks too
 ```
 
-Verifies: Python version, Ophelia package version vs install, all dependencies, `~/.ophelia`, memory DB, each provider role, Ollama daemon version, Telegram `getMe`, Android body probe, optional adb/MCP.
+Verifies: Python version, Ophelia package version vs install, all dependencies, `~/.ophelia`, memory DB, each provider role, Ollama daemon version, Telegram/Discord `getMe`, optional phone body probe, optional adb/MCP.
 
 Exit code **0** = all required checks passed, **1** = fix FAIL lines and re-run.
 

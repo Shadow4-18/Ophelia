@@ -292,5 +292,5 @@ class AndroidBody:
         if self._use_adb():
             root = " + root" if self.adb_root else " (no root)"
             target = self.adb_device or "default USB/wireless"
-            return f"Android body: adb → {target}{root}"
-        return f"Android body: {self.mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"
+            return f"Phone body: adb → {target}{root}"
+        return f"Phone body: {self.mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"

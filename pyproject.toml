@@ -1,7 +1,7 @@
 [project]
 name = "ophelia"
 version = "0.2.0"
-description = "Autonomous Grok-powered agent for Termux with Telegram control"
+description = "Autonomous local-first AI — run on PC, server, VPS, or optionally Termux"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

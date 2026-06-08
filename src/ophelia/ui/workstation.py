@@ -74,7 +74,7 @@ class Workstation:
         if self.android:
             status_parts.append(self.android.status_line())
         else:
-            status_parts.append("Android body: off (PC workstation)")
+            status_parts.append("Phone body: off (workstation — optional ADB/Shizuku)")
 
         self.psyche = PsycheState()
         self.drives = DriveState()

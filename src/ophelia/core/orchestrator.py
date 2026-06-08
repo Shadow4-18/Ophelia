@@ -63,8 +63,8 @@ class Orchestrator:
         elif not settings.android_enabled:
             hint = ""
             if settings.adb_device:
-                hint = " — set OPHELIA_ANDROID_ENABLED=true and install adb"
-            body_status = f"Android body: off (PC mode{hint})"
+                hint = " — set OPHELIA_ANDROID_ENABLED=true for optional phone body"
+            body_status = f"Phone body: off (optional — not required on PC/server/VPS{hint})"
         if body_status:
             status_parts.append(body_status)
 

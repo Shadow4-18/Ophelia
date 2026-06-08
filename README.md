@@ -1,19 +1,22 @@
 # The Ophelia Project
 
-**Ophelia** is a willful, Neuro-sama-style autonomous AI — continuous consciousness, drives, inner life, and an optional **phone body**. Built to evolve from Hermes toward **local models + streaming**, not another reactive chatbot.
+**Ophelia** is a willful, Neuro-sama-style autonomous AI — continuous consciousness, drives, inner life, and tools. She runs on **any machine you choose**: PC, laptop, home server, VPS, or (optionally) a phone. A physical phone is **only** her “body” if you want tap/swipe/screen control — not required.
 
-**Local Ollama first** · **PC + phone parity** · **Telegram + Discord** · **ADB remote body** · **Hermes soul import**
+**Local Ollama first** · **Run anywhere** · **Telegram + Discord** · **Optional phone body (ADB/Shizuku)** · **Hermes soul import**
+
+**New here?** → **[Installation guide](docs/INSTALL.md)** · Interactive: `ophelia setup` · Verify: `ophelia check`
 
 Read the pivot rationale: [docs/local-first.md](docs/local-first.md) · Why not Hermes: [docs/why-not-hermes.md](docs/why-not-hermes.md)
 
-## PC and phone — equal footing
+## Run anywhere
 
-| Host | Brain | Body |
-|------|-------|------|
-| **PC** | Ollama / cloud via `ophelia ui` or `ophelia run` | Phone over **ADB** ([remote-adb.md](docs/remote-adb.md)) |
-| **Phone (Termux)** | Ollama or xAI OAuth | **Shizuku** on-device |
+| Where | Typical use | Phone body? |
+|-------|-------------|-------------|
+| **PC / laptop** | Dev, `ophelia ui`, local Ollama | Optional — [ADB](docs/remote-adb.md) if you want one |
+| **Home server / VPS** | 24/7 `ophelia run`, Telegram/Discord bots | Usually **off** — no phone needed |
+| **Termux (Android)** | Pocket always-on host | On-device [Shizuku](docs/tier1-setup.md) if you want screen/tap |
 
-Cloud (SuperGrok OAuth) is optional fallback — not the default anymore.
+Most setups are **brain-only**: chat, consciousness, memory, and channels work with no Android integration.
 
 **Chat:** Telegram and/or Discord — see [docs/channels.md](docs/channels.md). Run both at once with `ophelia run`.
 
@@ -42,17 +45,20 @@ Per-role: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IM
 
 **Future:** [Neuro-style ensemble](docs/neuro-ensemble.md) — multiple specialized minds (director, filter, reaction, voice, avatar) coordinated into one character on stream. Today's per-role routing is ensemble v0.
 
-## PC controls the phone (ADB)
+## Optional phone body
 
-From your PC, Ophelia can tap, swipe, screenshot, and shell — **with or without root**:
+Only if you want her to **see and touch a physical phone** (games, screen vision, tap/swipe):
 
 ```env
 OPHELIA_ANDROID_ENABLED=true
+# From PC/server → phone over ADB:
 OPHELIA_ADB_DEVICE=192.168.1.50:5555
-OPHELIA_ADB_ROOT=false
+# Or run on Termux with Shizuku (see tier1-setup.md)
 ```
 
-Full setup: [docs/remote-adb.md](docs/remote-adb.md)
+Leave `OPHELIA_ANDROID_ENABLED=false` (default on PC/server) for a **software-only** Ophelia — fully valid.
+
+Full ADB guide: [docs/remote-adb.md](docs/remote-adb.md)
 
 ## Neuro-like inner life
 
@@ -94,9 +100,11 @@ See [docs/transfer.md](docs/transfer.md), [docs/migrate-old-phone.md](docs/migra
 | `ophelia check` / `ophelia doctor` | **Self-check** — version, deps, providers, services |
 | `ophelia transfer *` | Phone ↔ PC data move |
 
-**Docs:** [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble (future)](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
+**Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
 
-## Termux (S21)
+## Termux (optional pocket host)
+
+Run on a phone **as the host** — not the same as using a phone as a body from a VPS:
 
 ```bash
 termux-wake-lock

@@ -1,8 +1,10 @@
 # Local-first setup (The Ophelia Project)
 
-Ophelia is built for a **Neuro-sama-style streaming future**: continuous consciousness, drives, and a phone body — but the **brain should run locally** so you are not burning cloud quota during dev or 24/7 ticks.
+Ophelia is built for a **Neuro-sama-style streaming future**: continuous consciousness, drives, and personality — running on **whatever machine you pick** (PC, server, VPS, or phone). The **brain should run locally** so you are not burning cloud quota during dev or 24/7 ticks.
 
-PC and phone are **equally first-class**. Run the full mind on your PC with Ollama today; keep Telegram + Shizuku on the S21 when you want a pocket body.
+A physical phone is an **optional body** (screen/tap), not part of the default install.
+
+PC and phone are **both supported hosts** — neither is required. Most people run Ophelia on a **PC or server** with no phone body at all.
 
 ## Why local-first
 
@@ -56,7 +58,7 @@ OPHELIA_AUTO_LOCAL_CONSCIOUSNESS=true
 - `web_search` / `fetch_url` — DuckDuckGo, no API key
 - `save_skill` — writes to `~/.ophelia/skills/`
 - `run_code` — local Python sandbox
-- Phone body — see [remote-adb.md](remote-adb.md) when running on PC
+- Phone body (optional) — see [remote-adb.md](remote-adb.md) when running on PC/server
 
 ## Multiple models (one at a time)
 

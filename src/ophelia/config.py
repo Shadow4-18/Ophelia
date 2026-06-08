@@ -153,7 +153,7 @@ class Settings(BaseSettings):
     )
     game_max_turns: int = Field(default=40, alias="OPHELIA_GAME_MAX_TURNS")
 
-    # Android body — Termux Shizuku OR PC ADB → phone
+    # Optional phone body — Termux Shizuku OR ADB from PC/server (not required)
     android_enabled: bool | None = Field(default=None, alias="OPHELIA_ANDROID_ENABLED")
     adb_device: str | None = Field(
         default=None,

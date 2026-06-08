@@ -71,8 +71,8 @@ class ScreenVision:
     ) -> str:
         if not self.android or self.android.mode == "termux_only":
             return (
-                "Vision unavailable on this runtime — Android body requires Termux + Shizuku. "
-                "On PC use ophelia chat without phone tools."
+                "Vision unavailable — enable optional phone body (Shizuku on Termux or ADB from PC/server). "
+                "Ophelia works without it via ophelia ui or ophelia chat."
             )
 
         path = await self.capture()

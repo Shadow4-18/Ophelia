@@ -448,9 +448,9 @@ async def _check_android_body(report: SelfCheckReport, settings: Settings) -> No
     if not settings.android_enabled:
         report.add(
             category="services",
-            name="Android body",
+            name="Phone body (optional)",
             ok=True,
-            detail="disabled (OK on PC without phone)",
+            detail="disabled (OK — not required on PC/server/VPS)",
             required=False,
         )
         return
@@ -460,7 +460,7 @@ async def _check_android_body(report: SelfCheckReport, settings: Settings) -> No
     if not body:
         report.add(
             category="services",
-            name="Android body",
+            name="Phone body (optional)",
             ok=False,
             detail="enabled but failed to build",
             hint="check OPHELIA_ANDROID_ENABLED and paths",
@@ -480,7 +480,7 @@ async def _check_android_body(report: SelfCheckReport, settings: Settings) -> No
         detail += " | run termux-shizuku-setup.sh"
     report.add(
         category="services",
-        name="Android body",
+        name="Phone body (optional)",
         ok=ok,
         detail=detail,
         hint="docs/remote-adb.md or scripts/termux-shizuku-setup.sh",

@@ -1,6 +1,8 @@
-# PC → phone control (ADB)
+# PC → phone control (ADB) — optional body
 
-When Ophelia runs on your **PC**, she can still use your **phone as a body** over ADB — no Termux required on the PC side.
+**You do not need this** for a normal Ophelia install on PC, server, or VPS.
+
+When Ophelia runs on a **PC or server** and you **want** a separate Android device for screen/tap (games, vision), you can attach it over ADB — no Termux required on the server side.
 
 Works **without root** for most actions (tap, swipe, screencap, shell as `shell` user). Optional **root** unlocks privileged commands on rooted devices.
 
@@ -51,7 +53,7 @@ OPHELIA_ADB_ROOT=false
 
 ```bash
 ophelia doctor --chat-only
-# Android body: adb → 192.168.1.50:5555 (no root)
+# Phone body: adb → 192.168.1.50:5555 (no root)
 ```
 
 ### 5. Test

@@ -1,6 +1,8 @@
-# PC setup (Windows / macOS / Linux)
+# PC setup (Windows / macOS / Linux / server / VPS)
 
-Ophelia runs on PC for **development**, **Telegram bot hosting**, and **chat without a phone body**.
+See the full **[installation guide](INSTALL.md)** first. This page is host-specific detail after install.
+
+Ophelia runs on any of these for **development**, **24/7 hosting**, **Telegram/Discord bots**, and **chat without any phone**. No Android device required.
 
 ## Install
 
@@ -57,7 +59,7 @@ ophelia ui
 
 ## Full stack on PC
 
-You can run `ophelia run` on PC with Telegram — same as phone, minus Android body:
+You can run `ophelia run` on PC/server/VPS with Telegram or Discord — no phone body required:
 
 ```env
 TELEGRAM_BOT_TOKEN=...
@@ -65,7 +67,7 @@ TELEGRAM_ALLOWED_USER_IDS=123456789
 OPHELIA_ANDROID_ENABLED=false
 ```
 
-Consciousness, inner log, curator, and games config all work; phone tools return "Android body disabled."
+Consciousness, inner log, curator, and games config all work; phone tools return "Phone body disabled" when Android integration is off.
 
 ## What is auto-disabled on PC
 
