@@ -46,6 +46,8 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
             ],
             description="No manual .env editing — pick options here.",
         )
+        if idx < 0:
+            continue
         if idx == 0:
             _section_provider(on_phone)
         elif idx == 1:
@@ -95,18 +97,22 @@ def _section_provider(on_phone: bool) -> None:
         selected=default,
         description="Local-first: Ollama is free and works offline.",
     )
+    if pick < 0:
+        return
     provider = options[pick][0]
     updates: dict[str, str | None] = {"OPHELIA_PROVIDER": provider}
 
     if provider in ("ollama", "auto"):
         model = _pick_ollama_model(on_phone)
+        if model is None:
+            return
         if model:
             updates["OLLAMA_MODEL"] = model
         if on_phone:
             updates.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
     elif provider == "xai-oauth":
-        print()
-        print("After saving, run: ophelia auth import-grok  OR  ophelia auth import-hermes")
+        if not _configure_xai_oauth():
+            return
     elif provider == "xai":
         key = prompt_text("XAI_API_KEY", secret=True, default=read_env_key("XAI_API_KEY"))
         if key:
@@ -141,6 +147,122 @@ def _section_provider(on_phone: bool) -> None:
     print(f"\n  Saved: {', '.join(touched)}\n")
 
 
+def _oauth_status_lines() -> list[str]:
+    from ophelia.providers.oauth_refresh import load_oauth_state, oauth_auth_paths
+
+    settings = Settings()
+    lines: list[str] = []
+    for path in oauth_auth_paths(
+        hermes_home=settings.hermes_home,
+        hermes_auth_path=settings.hermes_auth_path,
+        oauth_path=settings.xai_oauth_token_path,
+    ):
+        state = load_oauth_state(path)
+        if state and state.get("access_token"):
+            lines.append(f"[OK] OAuth token in {path}")
+            return lines
+    lines.append("No OAuth token found yet — import below.")
+    hermes = settings.hermes_home / "auth.json"
+    grok = settings.grok_cli_auth_path
+    if hermes.is_file():
+        lines.append(f"  Hermes auth available: {hermes}")
+    if grok.is_file():
+        lines.append(f"  Grok CLI auth available: {grok}")
+    return lines
+
+
+def _configure_xai_oauth() -> bool:
+    """Sub-menu for SuperGrok OAuth. Returns False if user cancelled."""
+    settings = Settings()
+    status = "\n".join(_oauth_status_lines())
+
+    pick = radiolist(
+        "SuperGrok / xAI OAuth",
+        [
+            "Import from Hermes (~/.hermes/auth.json)",
+            "Import from Grok CLI (~/.grok/auth.json)",
+            "Verify OAuth connection",
+            "Skip — token already set",
+        ],
+        description=status,
+    )
+    if pick < 0:
+        return False
+
+    if pick == 0:
+        return _import_hermes_oauth(settings)
+    if pick == 1:
+        return _import_grok_oauth(settings)
+    if pick == 2:
+        return _verify_xai_oauth()
+    return True
+
+
+def _import_hermes_oauth(settings: Settings) -> bool:
+    from ophelia.providers.auth import import_hermes_auth_full, save_oauth_token
+    from ophelia.providers.oauth_refresh import load_oauth_state
+
+    auth = settings.hermes_home / "auth.json"
+    if not auth.is_file():
+        print(f"\n  No {auth}")
+        print("  On this phone run: hermes auth add xai-oauth")
+        print("  Or copy auth.json from your old phone.\n")
+        return False
+    if not import_hermes_auth_full(auth, settings.hermes_auth_path):
+        print("\n  auth.json found but no xai-oauth block inside.\n")
+        return False
+    state = load_oauth_state(settings.hermes_auth_path)
+    if state:
+        save_oauth_token(
+            settings.xai_oauth_token_path,
+            state["access_token"],
+            state.get("refresh_token"),
+        )
+    print(f"\n  [OK] Imported SuperGrok OAuth from Hermes")
+    print(f"       {settings.hermes_auth_path}\n")
+    return True
+
+
+def _import_grok_oauth(settings: Settings) -> bool:
+    from ophelia.providers.auth import save_oauth_token, token_from_grok_cli
+    from ophelia.providers.oauth_refresh import load_oauth_state
+
+    path = settings.grok_cli_auth_path
+    token = token_from_grok_cli(path)
+    if not token:
+        print(f"\n  No token in {path}")
+        print("  Run: grok login   (Grok CLI) then try again.\n")
+        return False
+    state = load_oauth_state(path) or {}
+    save_oauth_token(
+        settings.xai_oauth_token_path,
+        token,
+        state.get("refresh_token"),
+    )
+    print(f"\n  [OK] Imported OAuth from Grok CLI -> {settings.xai_oauth_token_path}\n")
+    return True
+
+
+def _verify_xai_oauth() -> bool:
+    from ophelia.providers.router import build_provider_stack
+
+    async def _probe() -> tuple[bool, str]:
+        stack = build_provider_stack(Settings())
+        return await stack.check("chat")
+
+    try:
+        ok, msg = asyncio.run(_probe())
+    except Exception as e:
+        print(f"\n  [FAIL] {e}\n")
+        return False
+    if ok:
+        print(f"\n  [OK] xAI OAuth working — {msg}\n")
+        return True
+    print(f"\n  [FAIL] {msg}")
+    print("  Try Import from Hermes or Grok CLI above.\n")
+    return False
+
+
 def _pick_ollama_model(on_phone: bool) -> str | None:
     models = _list_ollama_model_names()
     presets = [
@@ -169,6 +291,8 @@ def _pick_ollama_model(on_phone: bool) -> str | None:
         selected=default,
         description=hint or "Pull models with: ollama pull llama3.2:3b",
     )
+    if pick < 0:
+        return None
     if choices[pick] == "Type a model name manually...":
         typed = prompt_text("Model name", default=current)
         return typed
@@ -268,6 +392,8 @@ def _section_persona() -> None:
         labels,
         description="Defines who Ophelia is — personality and boundaries.",
     )
+    if pick < 0:
+        return
     if pick == 0 and has_hermes:
         print("\n  Running: ophelia migrate hermes\n")
         try:
@@ -303,6 +429,8 @@ def _section_phone_body(on_phone: bool) -> None:
             selected=0 if enabled else 1,
             description="Optional. Ophelia works fine without a phone body.",
         )
+        if pick < 0:
+            return
         write_env_updates(
             {
                 "OPHELIA_ANDROID_ENABLED": "true" if pick == 0 else "false",
@@ -322,6 +450,8 @@ def _section_phone_body(on_phone: bool) -> None:
             ],
             selected=0 if enabled else 1,
         )
+        if pick < 0:
+            return
         updates: dict[str, str | None] = {
             "OPHELIA_ANDROID_ENABLED": "true" if pick == 0 else "false",
         }

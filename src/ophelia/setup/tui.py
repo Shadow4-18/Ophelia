@@ -65,7 +65,7 @@ def radiolist(
     cancel_returns: int | None = None,
 ) -> int:
     if cancel_returns is None:
-        cancel_returns = selected
+        cancel_returns = -1
     if not items:
         return cancel_returns
     if not sys.stdin.isatty():
