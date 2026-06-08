@@ -37,7 +37,7 @@ DIST_NAMES: dict[str, str] = {
 
 # Keep in sync with pyproject.toml [project.dependencies]
 REQUIRED_PACKAGES: list[tuple[str, str]] = [
-    ("httpx", "0.28"),
+    ("httpx", "0.27"),
     ("openai", "1.68"),
     ("telegram", "21.10"),
     ("pydantic", "2.10"),
