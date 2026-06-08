@@ -14,8 +14,9 @@ pkg update -y
 pkg install -y python git tmux termux-api
 
 echo "[2/4] Python package..."
-pip install --upgrade pip
-pip install -e .
+# Termux manages pip via pkg; do not self-upgrade pip.
+python -m pip install -U setuptools wheel
+python -m pip install -e .
 
 echo "[3/4] Auto-setup (~/.ophelia)..."
 ophelia setup --do
