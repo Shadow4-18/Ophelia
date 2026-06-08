@@ -82,27 +82,32 @@ def cmd_auth_import_hermes(args: argparse.Namespace) -> int:
 def cmd_auth_login(_: argparse.Namespace) -> int:
     """Fresh xAI browser login via Hermes CLI, then import into Ophelia."""
     import shutil
-    import subprocess
 
-    from ophelia.providers.auth import sync_oauth_from_hermes_home
+    from ophelia.platform import is_termux
+    from ophelia.providers.auth import (
+        print_termux_oauth_login_help,
+        run_hermes_xai_oauth_login,
+        sync_oauth_from_hermes_home,
+    )
+    from ophelia.providers.oauth_refresh import access_token_usable, load_oauth_state
 
     settings = Settings()
     print()
     print("SuperGrok OAuth comes from xAI (accounts.x.ai) — not Hermes-specific.")
     print("Hermes runs the browser login; Ophelia imports the same token.")
     print()
+    if is_termux():
+        print_termux_oauth_login_help()
+        print()
 
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        print("Opening Hermes browser login...")
-        print("Sign in at accounts.x.ai, approve access, then return here.\n")
-        result = subprocess.run([hermes_bin, "auth", "add", "xai-oauth"])
-        if result.returncode != 0:
+    if shutil.which("hermes"):
+        print("Starting Hermes xAI OAuth login...\n")
+        if run_hermes_xai_oauth_login() != 0:
             print("Hermes login cancelled or failed.")
             return 1
     else:
         print("Hermes CLI not in PATH. In another Termux tab run:")
-        print("  hermes auth add xai-oauth")
+        print("  hermes auth add xai-oauth --type oauth --no-browser")
         print()
         try:
             input("Press Enter after browser login finishes... ")
@@ -118,8 +123,20 @@ def cmd_auth_login(_: argparse.Namespace) -> int:
     print(msg)
     if not ok:
         return 1
+
+    auth = settings.hermes_home / "auth.json"
+    state = load_oauth_state(auth)
+    if state and not access_token_usable(state["access_token"]):
+        print()
+        print("WARNING: Login ran but access token is still expired.")
+        print("The browser callback probably did not reach Hermes.")
+        print("  hermes auth logout xai-oauth")
+        print("  hermes auth add xai-oauth --type oauth --no-browser")
+        print("  ophelia auth import-hermes")
+        return 1
+
     print()
-    print("Next: ophelia auth refresh   # optional test")
+    print("Next: ophelia auth refresh --force")
     print("       ophelia check")
     return 0
 
@@ -136,7 +153,8 @@ def cmd_auth_status(_: argparse.Namespace) -> int:
     ):
         print(line)
     print()
-    print("HTTP 400 on refresh = dead refresh token. Fix: ophelia auth login")
+    print("HTTP 400 = dead refresh token, or Ophelia read a stale Hermes credential.")
+    print("Fix: hermes auth logout xai-oauth  then  ophelia auth login")
     return 0
 
 

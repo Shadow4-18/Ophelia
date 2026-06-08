@@ -210,29 +210,41 @@ def _configure_xai_oauth() -> bool:
 
 def _oauth_browser_login(settings: Settings) -> bool:
     import shutil
-    import subprocess
 
-    from ophelia.providers.auth import sync_oauth_from_hermes_home
+    from ophelia.platform import is_termux
+    from ophelia.providers.auth import (
+        print_termux_oauth_login_help,
+        run_hermes_xai_oauth_login,
+        sync_oauth_from_hermes_home,
+    )
+    from ophelia.providers.oauth_refresh import access_token_usable, load_oauth_state
 
     print("\n  Fresh login: Hermes opens accounts.x.ai in your browser.")
     print("  Ophelia imports the new xAI token when done.\n")
+    if is_termux():
+        print_termux_oauth_login_help()
+        print()
     hermes = shutil.which("hermes")
     if hermes:
         pause("Press Enter to start Hermes browser login...")
-        result = subprocess.run([hermes, "auth", "add", "xai-oauth"])
-        if result.returncode != 0:
+        if run_hermes_xai_oauth_login() != 0:
             print("  Login cancelled or failed.\n")
             return False
     else:
         print("  Hermes not installed. Run in another tab:")
-        print("    hermes auth add xai-oauth")
+        print("    hermes auth add xai-oauth --type oauth --no-browser")
         pause("Press Enter after browser login finishes...")
     ok, msg = sync_oauth_from_hermes_home(
         settings.hermes_home,
         ophelia_auth_path=settings.hermes_auth_path,
         ophelia_oauth_path=settings.xai_oauth_token_path,
     )
-    print(f"  {'[OK]' if ok else '[FAIL]'} {msg}\n")
+    print(f"  {'[OK]' if ok else '[FAIL]'} {msg}")
+    state = load_oauth_state(settings.hermes_home / "auth.json")
+    if ok and state and not access_token_usable(state["access_token"]):
+        print("  [WARN] Token still expired — browser callback may have failed on Termux.\n")
+        return False
+    print()
     return ok
 
 

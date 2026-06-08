@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
+
+from ophelia.platform import is_termux
 
 from ophelia.providers.oauth_refresh import (
     load_oauth_state,
@@ -76,6 +79,32 @@ def import_hermes_auth_full(hermes_auth: Path, ophelia_auth: Path) -> bool:
     if state and state.get("access_token"):
         save_oauth_state(ophelia_auth, state)
     return bool(state and state.get("access_token"))
+
+
+def hermes_xai_oauth_login_argv() -> list[str]:
+    cmd = ["hermes", "auth", "add", "xai-oauth", "--type", "oauth"]
+    if is_termux():
+        cmd.append("--no-browser")
+    return cmd
+
+
+def run_hermes_xai_oauth_login() -> int:
+    """Run Hermes browser OAuth; on Termux use manual callback (--no-browser)."""
+    hermes = shutil.which("hermes")
+    if not hermes:
+        return 127
+    argv = hermes_xai_oauth_login_argv()
+    argv[0] = hermes
+    return subprocess.run(argv).returncode
+
+
+def print_termux_oauth_login_help() -> None:
+    print("Termux tip: Android browser often cannot callback to 127.0.0.1:56121.")
+    print("Use --no-browser (already set) — open the URL Hermes prints, sign in,")
+    print("then paste the FULL redirect URL back into Termux when prompted.")
+    print()
+    print("If you have stale Hermes credentials, clear first:")
+    print("  hermes auth logout xai-oauth")
 
 
 def sync_oauth_from_hermes_home(

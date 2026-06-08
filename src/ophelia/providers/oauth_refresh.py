@@ -104,10 +104,33 @@ def _client_id_from_tokens(tokens: dict[str, Any]) -> str:
     return FALLBACK_CLIENT_ID
 
 
-def parse_xai_oauth_state(data: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize Hermes, Ophelia, or flat auth blobs."""
-    if not data:
+def _normalize_oauth_state(
+    tokens: dict[str, Any],
+    *,
+    client_id: Any = None,
+    token_endpoint: str = "",
+    last_refresh: Any = None,
+    source: str = "",
+) -> dict[str, Any] | None:
+    access = str(tokens.get("access_token") or "").strip()
+    if not access:
         return None
+    state = {
+        "access_token": access,
+        "refresh_token": str(tokens.get("refresh_token") or "").strip(),
+        "client_id": _client_id_from_tokens({**tokens, "client_id": client_id}),
+        "token_endpoint": str(token_endpoint or XAI_TOKEN_ENDPOINT),
+    }
+    if last_refresh:
+        state["last_refresh"] = str(last_refresh)
+    if source:
+        state["_source"] = source
+    return state
+
+
+def _collect_xai_oauth_candidates(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read Hermes singleton + credential_pool entries (newer Hermes versions)."""
+    out: list[dict[str, Any]] = []
 
     providers = data.get("providers")
     if isinstance(providers, dict):
@@ -116,32 +139,80 @@ def parse_xai_oauth_state(data: dict[str, Any]) -> dict[str, Any] | None:
             tokens = entry.get("tokens") or entry
             if isinstance(tokens, dict):
                 discovery = entry.get("discovery") or {}
-                return {
-                    "access_token": str(tokens.get("access_token") or "").strip(),
-                    "refresh_token": str(tokens.get("refresh_token") or "").strip(),
-                    "client_id": _client_id_from_tokens(
-                        {**tokens, "client_id": entry.get("client_id")}
-                    ),
-                    "token_endpoint": str(
-                        discovery.get("token_endpoint") or XAI_TOKEN_ENDPOINT
-                    ),
+                state = _normalize_oauth_state(
+                    tokens,
+                    client_id=entry.get("client_id"),
+                    token_endpoint=str(discovery.get("token_endpoint") or XAI_TOKEN_ENDPOINT),
+                    last_refresh=entry.get("last_refresh"),
+                    source="providers.xai-oauth",
+                )
+                if state:
+                    out.append(state)
+
+    pool_root = data.get("credential_pool")
+    if isinstance(pool_root, dict):
+        pool = pool_root.get("xai-oauth")
+        if isinstance(pool, list):
+            for idx, entry in enumerate(pool, start=1):
+                if not isinstance(entry, dict):
+                    continue
+                tokens = {
+                    "access_token": entry.get("access_token"),
+                    "refresh_token": entry.get("refresh_token"),
                 }
+                state = _normalize_oauth_state(
+                    tokens,
+                    last_refresh=entry.get("last_refresh"),
+                    source=f"credential_pool #{idx}",
+                )
+                if state:
+                    label = str(entry.get("label") or "").strip()
+                    if label:
+                        state["_source"] = f"{state['_source']} ({label})"
+                    out.append(state)
 
     entry = data.get("xai-oauth")
     if isinstance(entry, dict):
         tokens = entry.get("tokens") or entry
         if isinstance(tokens, dict):
-            return parse_xai_oauth_state({"providers": {"xai-oauth": entry}})
+            nested = _collect_xai_oauth_candidates({"providers": {"xai-oauth": entry}})
+            out.extend(nested)
 
     access = str(data.get("access_token") or data.get("token") or "").strip()
-    if access:
-        return {
-            "access_token": access,
-            "refresh_token": str(data.get("refresh_token") or "").strip(),
-            "client_id": _client_id_from_tokens(data),
-            "token_endpoint": str(data.get("token_endpoint") or XAI_TOKEN_ENDPOINT),
-        }
-    return None
+    if access and not out:
+        state = _normalize_oauth_state(
+            data,
+            token_endpoint=str(data.get("token_endpoint") or XAI_TOKEN_ENDPOINT),
+            source="flat",
+        )
+        if state:
+            out.append(state)
+    return out
+
+
+def _pick_best_xai_oauth_state(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+
+    def sort_key(state: dict[str, Any]) -> tuple[Any, ...]:
+        access = state["access_token"]
+        exp = _jwt_exp(access) or 0.0
+        usable = access_token_usable(access)
+        has_refresh = bool(state.get("refresh_token"))
+        last_refresh = str(state.get("last_refresh") or "")
+        return (usable, exp, has_refresh, last_refresh)
+
+    return max(candidates, key=sort_key)
+
+
+def parse_xai_oauth_state(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize Hermes, Ophelia, or flat auth blobs."""
+    if not data:
+        return None
+    best = _pick_best_xai_oauth_state(_collect_xai_oauth_candidates(data))
+    if not best:
+        return None
+    return {k: v for k, v in best.items() if not k.startswith("_")}
 
 
 def load_oauth_state(path: Path) -> dict[str, Any] | None:
@@ -219,6 +290,27 @@ def format_refresh_error(status_code: int, body: str) -> str:
     return msg
 
 
+def describe_oauth_file(path: Path) -> list[str]:
+    data = _read_json(path) or {}
+    best = _pick_best_xai_oauth_state(_collect_xai_oauth_candidates(data))
+    lines: list[str] = []
+    if not best:
+        lines.append(f"  no xai-oauth tokens")
+        return lines
+    refresh = best.get("refresh_token", "").strip()
+    refresh_note = f"refresh_token={'yes' if refresh else 'MISSING'}"
+    exp_note = access_token_expiry_label(best["access_token"])
+    source = str(best.get("_source") or "unknown")
+    lines.append(f"  using: {source}")
+    lines.append(f"  access: {exp_note}, {refresh_note}")
+    pool = data.get("credential_pool", {})
+    if isinstance(pool, dict):
+        entries = pool.get("xai-oauth")
+        if isinstance(entries, list) and len(entries) > 1:
+            lines.append(f"  Hermes pool: {len(entries)} xai-oauth credentials (Ophelia picks freshest)")
+    return lines
+
+
 def describe_oauth_paths(
     *,
     hermes_home: Path | None = None,
@@ -235,17 +327,10 @@ def describe_oauth_paths(
         lines.append("No OAuth auth files found.")
         return lines
     primary = paths[0]
-    for i, path in enumerate(paths):
-        state = load_oauth_state(path)
+    for path in paths:
         prefix = "ACTIVE" if path == primary else "copy"
-        if not state or not state.get("access_token"):
-            lines.append(f"[{prefix}] {path} — no xai-oauth tokens")
-            continue
-        refresh = state.get("refresh_token", "").strip()
-        refresh_note = f"refresh_token={'yes' if refresh else 'MISSING'}"
-        exp_note = access_token_expiry_label(state["access_token"])
         lines.append(f"[{prefix}] {path}")
-        lines.append(f"         access: {exp_note}, {refresh_note}")
+        lines.extend(describe_oauth_file(path))
     return lines
 
 
