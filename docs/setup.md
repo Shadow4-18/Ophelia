@@ -2,7 +2,7 @@
 
 Full walkthrough: **[docs/INSTALL.md](INSTALL.md)** (PC, Termux, Ollama, Telegram, Discord, Hermes, troubleshooting).
 
-`ophelia setup` is the interactive version of the same steps.
+`ophelia setup` opens **Hermes-style menus** — arrow keys, Space, Enter, Esc — and writes `~/.ophelia/.env` for you (no nano).
 
 ## Quick start
 
@@ -16,13 +16,22 @@ Full walkthrough: **[docs/INSTALL.md](INSTALL.md)** (PC, Termux, Ollama, Telegra
 ## Wizard options
 
 ```bash
-ophelia setup              # full checklist for this machine
-ophelia setup --do         # create ~/.ophelia + copy .env (safe auto steps)
-ophelia setup -i           # interactive — pause after each incomplete step
-ophelia setup --step 4     # show one step only
+ophelia setup              # interactive menus (default on a real terminal)
+ophelia setup --do         # create ~/.ophelia + .env, then open menus
+ophelia setup --checklist  # text-only [OK]/[ ] checklist (no TUI)
+ophelia setup --step 4     # show one checklist step only
 ophelia setup --pc         # force PC guide on Termux
 ophelia setup --phone      # force phone guide on PC
 ```
+
+### Menu controls
+
+| Key | Action |
+|-----|--------|
+| Up / Down | Move highlight |
+| Space | Toggle (multi-select) |
+| Enter | Confirm |
+| Esc | Go back / keep current |
 
 ## What it checks
 

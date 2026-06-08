@@ -206,15 +206,9 @@ def _steps_phone() -> list[SetupStep]:
             "Choose AI brain (provider)",
             "Local-first: Ollama on PC later; on phone xAI OAuth or Ollama if you run it.",
             [
-                "# In ~/.ophelia/.env — pick ONE path:",
-                "OPHELIA_PROVIDER=ollama",
-                "OLLAMA_MODEL=llama3.2:3b",
-                "# OR SuperGrok:",
-                "OPHELIA_PROVIDER=xai-oauth",
-                "ophelia auth import-grok    # after: grok login",
-                "# OR from old Hermes phone:",
-                "ophelia auth import-hermes",
-                "ophelia models              # hardware tips if using Ollama",
+                "ophelia setup    # interactive menus — no manual .env editing",
+                "# or: ophelia auth import-grok / import-hermes for SuperGrok",
+                "ophelia models   # hardware tips if using Ollama",
             ],
             _check_chat_provider,
         ),
@@ -235,11 +229,8 @@ def _steps_phone() -> list[SetupStep]:
             "Telegram bot",
             "Optional — chat from anywhere (same on PC or Termux host).",
             [
-                "# 1. Telegram -> @BotFather -> /newbot -> copy token",
-                "# 2. Message @userinfobot -> copy your numeric ID",
-                f'# 3. nano "{OPHELIA_HOME}/.env"',
-                "TELEGRAM_BOT_TOKEN=123456:ABC...",
-                "TELEGRAM_ALLOWED_USER_IDS=your_id",
+                "ophelia setup    # pick Telegram in Chat channels menu",
+                "# Token: @BotFather -> /newbot | Your id: @userinfobot",
             ],
             _check_telegram,
         ),
@@ -330,13 +321,8 @@ def _steps_pc() -> list[SetupStep]:
             "Configure provider",
             "Local-first; cloud optional for image/video.",
             [
-                f'# Edit "{OPHELIA_HOME}/.env":',
-                "OPHELIA_PROVIDER=ollama",
-                "OLLAMA_MODEL=llama3.2:3b",
-                "OPHELIA_CONSCIOUSNESS=true",
-                "# Optional cloud image/video:",
-                "OPHELIA_PROVIDER_IMAGE=xai-oauth",
-                "ophelia auth import-grok",
+                "ophelia setup    # interactive provider + model menus",
+                "ophelia auth import-grok   # optional SuperGrok OAuth",
                 "ophelia providers",
             ],
             _check_chat_provider,
@@ -477,10 +463,17 @@ def run_setup_wizard(
     *,
     phone: bool | None = None,
     interactive: bool = False,
+    checklist: bool = False,
     do_auto: bool = False,
     step_num: int | None = None,
 ) -> int:
     on_phone = is_termux() if phone is None else phone
+
+    if not checklist and not step_num and sys.stdin.isatty():
+        from ophelia.setup.interactive import run_interactive_setup
+
+        return run_interactive_setup(phone=phone)
+
     mode = "phone host (Termux)" if on_phone else "PC / server / VPS"
     steps = _steps_phone() if on_phone else _steps_pc()
 
@@ -520,7 +513,8 @@ def run_setup_wizard(
     print("Quick commands:")
     print("  ophelia setup --do          # create ~/.ophelia + .env again")
     print("  ophelia setup --step N      # one step only")
-    print("  ophelia setup -i            # interactive (pause between steps)")
+    print("  ophelia setup               # interactive menus (default)")
+    print("  ophelia setup --checklist   # text checklist only")
     print("  ophelia check               # full self-check (version, deps, runtime)")
     print("  ophelia doctor --chat-only  # same, PC mode (no Telegram required)")
     print()

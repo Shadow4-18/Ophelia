@@ -232,6 +232,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return run_setup_wizard(
         phone=phone,
         interactive=args.interactive,
+        checklist=args.checklist,
         do_auto=args.do_auto,
         step_num=args.step,
     )
@@ -329,7 +330,12 @@ def main(argv: list[str] | None = None) -> int:
         "-i",
         "--interactive",
         action="store_true",
-        help="Pause after each incomplete step (press Enter)",
+        help="Interactive menus (default when terminal supports it)",
+    )
+    p_setup.add_argument(
+        "--checklist",
+        action="store_true",
+        help="Text checklist only (no arrow-key menus)",
     )
     p_setup.add_argument("--step", type=int, default=None, help="Show one step only")
     p_setup.add_argument("--pc", action="store_true", help="Force PC guide")
