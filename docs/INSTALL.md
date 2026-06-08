@@ -386,7 +386,21 @@ termux_preinstall_native_wheels
 termux_pip_install -e . -c scripts/termux-constraints.txt
 ```
 
-This installs `pydantic-core` from TUR, caps `openai` at 1.39.x, and uses plain `uvicorn` (no `uvloop`). Ollama, xAI OAuth, Telegram, and Discord still work.
+This installs `pydantic-core` from TUR, caps `openai` at 1.39.x, pins `httpx<0.28`, and uses plain `uvicorn` (no `uvloop`). Ollama, xAI OAuth, Telegram, and Discord still work.
+
+### `unexpected keyword argument 'proxies'` / consciousness errors on Termux
+
+**Why:** Termux caps `openai` below 1.40 (no `jiter`), but `openai` 1.39 still passes `proxies=` to httpx. **httpx 0.28+** removed that argument — consciousness ticks and chat fail at runtime.
+
+**Fix:**
+
+```bash
+cd ~/Ophelia
+python -m pip install 'httpx>=0.27,<0.28'
+# or re-run:
+bash scripts/termux-install.sh
+ophelia check
+```
 
 ### Shizuku / ADB body fails
 

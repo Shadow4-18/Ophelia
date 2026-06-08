@@ -246,12 +246,35 @@ def _check_dependencies(report: SelfCheckReport) -> None:
                 hint="bash scripts/termux-install.sh",
                 required=True,
             )
+        _check_termux_openai_httpx(report)
 
 
 def _dep_install_hint(pkg: str) -> str:
     if is_termux():
         return "bash scripts/termux-install.sh"
     return "pip install -e ."
+
+
+def _check_termux_openai_httpx(report: SelfCheckReport) -> None:
+    """openai<1.40 + httpx>=0.28 breaks AsyncOpenAI (proxies kwarg removed)."""
+    try:
+        oa_ver = importlib.metadata.version("openai")
+        hx_ver = importlib.metadata.version("httpx")
+    except importlib.metadata.PackageNotFoundError:
+        return
+    oa_parts = [int(x) for x in oa_ver.split(".")[:2] if x.isdigit()]
+    hx_parts = [int(x) for x in hx_ver.split(".")[:2] if x.isdigit()]
+    bad = len(oa_parts) >= 2 and (oa_parts[0], oa_parts[1]) < (1, 40)
+    bad = bad and len(hx_parts) >= 2 and (hx_parts[0], hx_parts[1]) >= (0, 28)
+    report.add(
+        category="dependencies",
+        name="openai+httpx (Termux)",
+        ok=not bad,
+        detail=f"openai {oa_ver} + httpx {hx_ver}"
+        + (" — incompatible" if bad else " — OK"),
+        hint="python -m pip install 'httpx>=0.27,<0.28' -c scripts/termux-constraints.txt",
+        required=bad,
+    )
 
 
 def _check_paths(report: SelfCheckReport, settings: Settings) -> None:
