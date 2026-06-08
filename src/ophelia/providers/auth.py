@@ -101,12 +101,18 @@ def sync_oauth_from_hermes_home(
 
 
 def save_oauth_token(path: Path, access_token: str, refresh_token: str | None = None) -> None:
+    existing = load_oauth_state(path) or {}
     save_oauth_state(
         path,
         {
             "access_token": access_token,
-            "refresh_token": refresh_token or "",
-            "client_id": "",
-            "token_endpoint": "https://auth.x.ai/oauth2/token",
+            "refresh_token": (
+                refresh_token
+                if refresh_token is not None
+                else existing.get("refresh_token", "")
+            ),
+            "client_id": existing.get("client_id") or "",
+            "token_endpoint": existing.get("token_endpoint")
+            or "https://auth.x.ai/oauth2/token",
         },
     )

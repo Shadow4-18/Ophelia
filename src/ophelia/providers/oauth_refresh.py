@@ -183,6 +183,72 @@ def access_token_usable(access_token: str) -> bool:
     return exp > time.time()
 
 
+def access_token_expiry_label(access_token: str) -> str:
+    exp = _jwt_exp(access_token)
+    if exp is None:
+        return "unknown expiry"
+    remaining = int(exp - time.time())
+    if remaining <= 0:
+        return f"expired {abs(remaining) // 60}m ago"
+    return f"expires in {remaining // 60}m"
+
+
+def format_refresh_error(status_code: int, body: str) -> str:
+    detail = body.strip()[:300]
+    try:
+        err = json.loads(body)
+        if isinstance(err, dict):
+            code = str(err.get("error") or "").strip()
+            desc = str(err.get("error_description") or err.get("message") or "").strip()
+            if code == "invalid_grant":
+                return (
+                    "refresh token invalid or expired (invalid_grant) — "
+                    "run: ophelia auth login"
+                )
+            if code and desc:
+                detail = f"{code}: {desc}"
+            elif code:
+                detail = code
+    except (json.JSONDecodeError, TypeError):
+        pass
+    msg = f"Token refresh failed HTTP {status_code}"
+    if detail:
+        msg += f": {detail}"
+    if status_code in {400, 401, 403}:
+        msg += " — run: ophelia auth login"
+    return msg
+
+
+def describe_oauth_paths(
+    *,
+    hermes_home: Path | None = None,
+    hermes_auth_path: Path | None = None,
+    oauth_path: Path | None = None,
+) -> list[str]:
+    lines: list[str] = []
+    paths = oauth_auth_paths(
+        hermes_home=hermes_home,
+        hermes_auth_path=hermes_auth_path,
+        oauth_path=oauth_path,
+    )
+    if not paths:
+        lines.append("No OAuth auth files found.")
+        return lines
+    primary = paths[0]
+    for i, path in enumerate(paths):
+        state = load_oauth_state(path)
+        prefix = "ACTIVE" if path == primary else "copy"
+        if not state or not state.get("access_token"):
+            lines.append(f"[{prefix}] {path} — no xai-oauth tokens")
+            continue
+        refresh = state.get("refresh_token", "").strip()
+        refresh_note = f"refresh_token={'yes' if refresh else 'MISSING'}"
+        exp_note = access_token_expiry_label(state["access_token"])
+        lines.append(f"[{prefix}] {path}")
+        lines.append(f"         access: {exp_note}, {refresh_note}")
+    return lines
+
+
 def _discover_token_endpoint(timeout: float = 15.0) -> str:
     try:
         resp = httpx.get(
@@ -228,14 +294,11 @@ def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
             relogin=True,
         )
     if resp.status_code != 200:
-        detail = resp.text.strip()[:200]
         relogin = resp.status_code in {400, 401, 403}
-        msg = f"Token refresh failed HTTP {resp.status_code}"
-        if detail:
-            msg += f": {detail}"
-        if relogin:
-            msg += " — run: ophelia auth login"
-        raise OAuthRefreshError(msg, relogin=relogin)
+        raise OAuthRefreshError(
+            format_refresh_error(resp.status_code, resp.text),
+            relogin=relogin,
+        )
 
     payload = resp.json()
     access = str(payload.get("access_token") or "").strip()
@@ -250,13 +313,13 @@ def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def ensure_fresh_token(path: Path) -> str:
+async def ensure_fresh_token(path: Path, *, force: bool = False) -> str:
     state = load_oauth_state(path)
     if not state or not state.get("access_token"):
         raise RuntimeError(f"No OAuth state in {path}")
 
     access = state["access_token"]
-    if not needs_refresh(access):
+    if not force and not needs_refresh(access):
         return access
 
     try:

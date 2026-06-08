@@ -124,9 +124,29 @@ def cmd_auth_login(_: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_auth_refresh(_: argparse.Namespace) -> int:
+def cmd_auth_status(_: argparse.Namespace) -> int:
+    from ophelia.providers.oauth_refresh import describe_oauth_paths
+
     settings = Settings()
-    from ophelia.providers.oauth_refresh import ensure_fresh_token, resolve_oauth_auth_path
+    print()
+    for line in describe_oauth_paths(
+        hermes_home=settings.hermes_home,
+        hermes_auth_path=settings.hermes_auth_path,
+        oauth_path=settings.xai_oauth_token_path,
+    ):
+        print(line)
+    print()
+    print("HTTP 400 on refresh = dead refresh token. Fix: ophelia auth login")
+    return 0
+
+
+def cmd_auth_refresh(args: argparse.Namespace) -> int:
+    settings = Settings()
+    from ophelia.providers.oauth_refresh import (
+        describe_oauth_paths,
+        ensure_fresh_token,
+        resolve_oauth_auth_path,
+    )
 
     path = resolve_oauth_auth_path(
         hermes_home=settings.hermes_home,
@@ -136,8 +156,16 @@ def cmd_auth_refresh(_: argparse.Namespace) -> int:
     if not path:
         print("No OAuth auth file found. Run: ophelia auth login")
         return 1
+    if args.verbose:
+        print(f"Using auth file: {path}")
+        for line in describe_oauth_paths(
+            hermes_home=settings.hermes_home,
+            hermes_auth_path=settings.hermes_auth_path,
+            oauth_path=settings.xai_oauth_token_path,
+        ):
+            print(f"  {line}")
     try:
-        token = asyncio.run(ensure_fresh_token(path))
+        token = asyncio.run(ensure_fresh_token(path, force=args.force))
         print(f"OAuth refreshed OK ({len(token)} char token)")
         return 0
     except Exception as e:
@@ -464,9 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     p_st = auth_sub.add_parser("set-token")
     p_st.add_argument("token")
     p_st.set_defaults(func=cmd_auth_set_token)
-    auth_sub.add_parser("refresh", help="Refresh SuperGrok OAuth now").set_defaults(
-        func=cmd_auth_refresh
+    p_ar = auth_sub.add_parser("status", help="Show OAuth files, expiry, refresh token")
+    p_ar.set_defaults(func=cmd_auth_status)
+    p_rf = auth_sub.add_parser("refresh", help="Refresh SuperGrok OAuth now")
+    p_rf.add_argument(
+        "--force",
+        action="store_true",
+        help="Always hit the refresh endpoint (test even if access token still valid)",
     )
+    p_rf.add_argument("-v", "--verbose", action="store_true", help="Show auth file details")
+    p_rf.set_defaults(func=cmd_auth_refresh)
 
     xfer = sub.add_parser("transfer", help="Move Hermes data phone ↔ PC")
     xfer_sub = xfer.add_subparsers(dest="transfer_cmd", required=True)
