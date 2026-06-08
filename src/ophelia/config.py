@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ophelia.platform import is_termux, platform_summary
@@ -90,7 +90,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_allowed_user_ids: str = Field(
         default="",
-        alias="TELEGRAM_ALLOWED_USER_IDS",
+        validation_alias=AliasChoices(
+            "TELEGRAM_ALLOWED_USER_IDS",
+            "TELEGRAM_ALLOWED_USERS",  # Hermes .env name
+        ),
     )
     telegram_enabled: bool | None = Field(default=None, alias="OPHELIA_TELEGRAM_ENABLED")
 
