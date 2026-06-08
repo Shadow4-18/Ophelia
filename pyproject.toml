@@ -7,7 +7,10 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28",
     "openai>=1.68; platform_system != 'Android'",
-    "openai>=1.40,<1.55; platform_system == 'Android'",
+    # On Android/Termux, openai>=1.40 pulls jiter (Rust, no Android wheel)
+    # which fails to build via maturin without Android NDK + ANDROID_API_LEVEL.
+    # Pin below 1.40 so a pure-Python install works on Termux.
+    "openai>=1.35,<1.40; platform_system == 'Android'",
     "python-telegram-bot>=21.10",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
