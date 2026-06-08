@@ -159,8 +159,14 @@ def _check_wake_lock_hint() -> tuple[bool, str]:
 
 def _pip_install_cmd() -> str:
     root = _repo_root()
-    if (_repo_root() / "pyproject.toml").is_file():
-        return f"pip install -e {_repo_root()}"
+    constraints = root / "constraints-termux.txt"
+    if is_termux() and constraints.is_file():
+        return (
+            'export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)" && '
+            f'pip install -e {root} -c {constraints}'
+        )
+    if (root / "pyproject.toml").is_file():
+        return f"pip install -e {root}"
     return "pip install -e ."
 
 
@@ -178,10 +184,10 @@ def _steps_phone() -> list[SetupStep]:
         SetupStep(
             1,
             "Install Termux packages",
-            "Python, git, tmux, Termux:API, and Rust toolchain (for openai/jiter).",
+            "Python, git, tmux, and Termux:API for mic/listen.",
             [
                 "pkg update -y",
-                "pkg install -y python git tmux termux-api rust binutils clang make",
+                "pkg install -y python git tmux termux-api",
                 f"cd {root}",
                 "bash scripts/termux-install.sh",
             ],

@@ -1,0 +1,3 @@
+# Termux install constraints — avoid Rust jiter (openai 1.40+ depends on it).
+# Used by scripts/termux-install.sh; safe for all Ophelia OpenAI client usage.
+openai>=1.39,<1.40

@@ -4,17 +4,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+CONSTRAINTS="$ROOT/constraints-termux.txt"
 
 echo ""
 echo "=== Ophelia Project — Termux install ==="
 echo ""
 
-echo "[1/5] Termux packages..."
+echo "[1/4] Termux packages..."
 pkg update -y
-# rust/clang/binutils: compile jiter (openai dep) via maturin on Android
-pkg install -y python git tmux termux-api rust binutils clang make
+pkg install -y python git tmux termux-api
 
-echo "[2/5] Android build environment..."
+echo "[2/4] Android build environment (for any Rust wheels pip may compile)..."
 if [[ -z "${ANDROID_API_LEVEL:-}" ]]; then
   ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || true)"
 fi
@@ -29,14 +29,12 @@ if ! grep -q 'ANDROID_API_LEVEL' "$HOME/.bashrc" 2>/dev/null; then
   echo "  Added ANDROID_API_LEVEL to ~/.bashrc"
 fi
 
-echo "[3/5] Python build tools..."
+echo "[3/4] Python package (openai pinned <1.40 to skip jiter Rust build)..."
 # Termux manages pip via pkg; do not self-upgrade pip.
-python -m pip install -U setuptools wheel maturin
+python -m pip install -U setuptools wheel
+ANDROID_API_LEVEL="$ANDROID_API_LEVEL" python -m pip install -e . -c "$CONSTRAINTS"
 
-echo "[4/5] Ophelia package (first install may take 10–30 min — compiling jiter)..."
-python -m pip install -e .
-
-echo "[5/5] Auto-setup (~/.ophelia)..."
+echo "[4/4] Auto-setup (~/.ophelia)..."
 ophelia setup --do
 
 echo ""

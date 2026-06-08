@@ -200,7 +200,7 @@ cd Ophelia
 bash scripts/termux-install.sh
 ```
 
-This installs Python deps (including compiling **jiter** for `openai` — first run may take 10–30 min), the `ophelia` CLI, creates `~/.ophelia/`, and prints the step-by-step wizard.
+This installs Python deps (pins `openai<1.40` on Termux to skip the Rust **jiter** build), the `ophelia` CLI, creates `~/.ophelia/`, and prints the step-by-step wizard.
 
 ### Step 3 — Configure brain
 
@@ -360,16 +360,17 @@ ophelia check --chat-only
 
 ### `jiter` / `maturin` / `ANDROID_API_LEVEL` (Termux)
 
-The `openai` package depends on **jiter**, a Rust extension. Termux has no pre-built wheel, so pip compiles it. **maturin** needs your Android API level:
+`openai` 1.40+ depends on **jiter** (Rust). Termux has no pre-built wheel, so pip tries to compile it and fails without `ANDROID_API_LEVEL`.
+
+**Fix:** use the Termux constraints file (pins `openai<1.40`, no jiter):
 
 ```bash
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
-pkg install -y rust binutils clang make
-python -m pip install -U setuptools wheel maturin
-python -m pip install -e ~/Ophelia
+cd ~/Ophelia
+python -m pip install -e . -c constraints-termux.txt
 ```
 
-Or re-run `bash scripts/termux-install.sh` (it sets this automatically). First compile can take **10–30 minutes**.
+Or re-run `bash scripts/termux-install.sh` (does this automatically). Do **not** run plain `pip install -e .` on Termux — that pulls `openai>=1.68` and jiter.
 
 ### Shizuku / ADB body fails
 

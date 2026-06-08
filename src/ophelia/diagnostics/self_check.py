@@ -186,6 +186,12 @@ def _check_ophelia_version(report: SelfCheckReport) -> None:
     )
 
 
+def _required_packages() -> list[tuple[str, str]]:
+    if is_termux():
+        return [(p, "1.39" if p == "openai" else v) for p, v in REQUIRED_PACKAGES]
+    return list(REQUIRED_PACKAGES)
+
+
 def _check_dependencies(report: SelfCheckReport) -> None:
     import_map = {
         "telegram": "telegram",
@@ -193,7 +199,7 @@ def _check_dependencies(report: SelfCheckReport) -> None:
         "pydantic_settings": "pydantic_settings",
         "discord": "discord",
     }
-    for pkg, min_ver in REQUIRED_PACKAGES:
+    for pkg, min_ver in _required_packages():
         import_name = import_map.get(pkg, pkg)
         dist = DIST_NAMES.get(pkg, pkg)
         try:
