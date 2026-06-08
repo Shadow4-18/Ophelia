@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ophelia.providers.oauth_refresh import (
     load_oauth_state,
+    oauth_auth_paths,
     parse_xai_oauth_state,
     save_oauth_state,
 )
@@ -40,13 +41,17 @@ def resolve_xai_bearer(
     oauth_path: Path,
     grok_cli_path: Path,
     hermes_auth_path: Path,
+    hermes_home: Path | None = None,
     prefer_oauth: bool = True,
 ) -> str | None:
-    sources = [
-        load_oauth_state(hermes_auth_path),
-        load_oauth_state(oauth_path),
-        parse_xai_oauth_state(_read_json(grok_cli_path) or {}),
-    ]
+    sources: list[dict | None] = []
+    for path in oauth_auth_paths(
+        hermes_home=hermes_home,
+        hermes_auth_path=hermes_auth_path,
+        oauth_path=oauth_path,
+    ):
+        sources.append(load_oauth_state(path))
+    sources.append(parse_xai_oauth_state(_read_json(grok_cli_path) or {}))
     if prefer_oauth:
         for state in sources:
             if state and state.get("access_token"):

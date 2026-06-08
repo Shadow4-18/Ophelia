@@ -86,9 +86,16 @@ def cmd_auth_import_hermes(args: argparse.Namespace) -> int:
 
 def cmd_auth_refresh(_: argparse.Namespace) -> int:
     settings = Settings()
-    from ophelia.providers.oauth_refresh import ensure_fresh_token
+    from ophelia.providers.oauth_refresh import ensure_fresh_token, resolve_oauth_auth_path
 
-    path = settings.hermes_auth_path if settings.hermes_auth_path.is_file() else settings.xai_oauth_token_path
+    path = resolve_oauth_auth_path(
+        hermes_home=settings.hermes_home,
+        hermes_auth_path=settings.hermes_auth_path,
+        oauth_path=settings.xai_oauth_token_path,
+    )
+    if not path:
+        print("No OAuth auth file found. Run: ophelia auth import-hermes")
+        return 1
     try:
         token = asyncio.run(ensure_fresh_token(path))
         print(f"OAuth refreshed OK ({len(token)} char token)")

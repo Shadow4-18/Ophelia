@@ -15,8 +15,52 @@ import structlog
 log = structlog.get_logger()
 
 XAI_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token"
+XAI_DISCOVERY_URL = "https://auth.x.ai/.well-known/openid-configuration"
 REFRESH_SKEW_SECONDS = 120
 FALLBACK_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+
+
+class OAuthRefreshError(RuntimeError):
+    def __init__(self, message: str, *, relogin: bool = False) -> None:
+        super().__init__(message)
+        self.relogin = relogin
+
+
+def oauth_auth_paths(
+    *,
+    hermes_home: Path | None = None,
+    hermes_auth_path: Path | None = None,
+    oauth_path: Path | None = None,
+) -> list[Path]:
+    """Prefer live ~/.hermes/auth.json (Hermes) over Ophelia copies."""
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for raw in (
+        (hermes_home or Path.home() / ".hermes") / "auth.json",
+        hermes_auth_path or Path.home() / ".ophelia" / "hermes_auth.json",
+        oauth_path or Path.home() / ".ophelia" / "xai_oauth.json",
+    ):
+        p = raw.expanduser().resolve()
+        if p in seen:
+            continue
+        seen.add(p)
+        if p.is_file():
+            out.append(p)
+    return out
+
+
+def resolve_oauth_auth_path(
+    *,
+    hermes_home: Path | None = None,
+    hermes_auth_path: Path | None = None,
+    oauth_path: Path | None = None,
+) -> Path | None:
+    paths = oauth_auth_paths(
+        hermes_home=hermes_home,
+        hermes_auth_path=hermes_auth_path,
+        oauth_path=oauth_path,
+    )
+    return paths[0] if paths else None
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -132,16 +176,46 @@ def needs_refresh(access_token: str) -> bool:
     return exp <= time.time() + REFRESH_SKEW_SECONDS
 
 
+def access_token_usable(access_token: str) -> bool:
+    exp = _jwt_exp(access_token)
+    if exp is None:
+        return bool(access_token.strip())
+    return exp > time.time()
+
+
+def _discover_token_endpoint(timeout: float = 15.0) -> str:
+    try:
+        resp = httpx.get(
+            XAI_DISCOVERY_URL,
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            endpoint = str(resp.json().get("token_endpoint") or "").strip()
+            if endpoint.startswith("https://") and ".x.ai" in endpoint:
+                return endpoint
+    except httpx.HTTPError as e:
+        log.warning("oauth.discovery_failed", error=str(e))
+    return XAI_TOKEN_ENDPOINT
+
+
 def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
     refresh_token = state.get("refresh_token", "").strip()
     client_id = state.get("client_id") or FALLBACK_CLIENT_ID
-    endpoint = state.get("token_endpoint") or XAI_TOKEN_ENDPOINT
+    endpoint = str(state.get("token_endpoint") or "").strip() or _discover_token_endpoint()
     if not refresh_token:
-        raise RuntimeError("No refresh_token — re-login on old phone: hermes auth add xai-oauth")
+        raise OAuthRefreshError(
+            "No refresh_token — re-authenticate: hermes auth add xai-oauth "
+            "or ophelia auth import-hermes",
+            relogin=True,
+        )
 
     resp = httpx.post(
         endpoint,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         data={
             "grant_type": "refresh_token",
             "client_id": client_id,
@@ -150,21 +224,30 @@ def refresh_tokens_sync(state: dict[str, Any]) -> dict[str, Any]:
         timeout=30.0,
     )
     if resp.status_code == 403:
-        raise RuntimeError(
-            "xAI OAuth tier denied (HTTP 403). Subscription may not include API access."
+        raise OAuthRefreshError(
+            "xAI OAuth tier denied (HTTP 403). Subscription may not include API access.",
+            relogin=True,
         )
     if resp.status_code != 200:
-        raise RuntimeError(f"Token refresh failed HTTP {resp.status_code}")
+        detail = resp.text.strip()[:200]
+        relogin = resp.status_code in {400, 401, 403}
+        msg = f"Token refresh failed HTTP {resp.status_code}"
+        if detail:
+            msg += f": {detail}"
+        if relogin:
+            msg += " — run: ophelia auth import-hermes  or  hermes auth add xai-oauth"
+        raise OAuthRefreshError(msg, relogin=relogin)
 
     payload = resp.json()
     access = str(payload.get("access_token") or "").strip()
     if not access:
-        raise RuntimeError("Refresh response missing access_token")
+        raise OAuthRefreshError("Refresh response missing access_token", relogin=True)
     return {
         **state,
         "access_token": access,
         "refresh_token": str(payload.get("refresh_token") or refresh_token).strip(),
         "token_type": str(payload.get("token_type") or "Bearer"),
+        "token_endpoint": endpoint,
     }
 
 
@@ -173,9 +256,17 @@ async def ensure_fresh_token(path: Path) -> str:
     if not state or not state.get("access_token"):
         raise RuntimeError(f"No OAuth state in {path}")
 
-    if needs_refresh(state.get("access_token", "")):
-        log.info("oauth.refreshing")
+    access = state["access_token"]
+    if not needs_refresh(access):
+        return access
+
+    try:
+        log.info("oauth.refreshing", path=str(path))
         state = await asyncio.to_thread(refresh_tokens_sync, state)
         save_oauth_state(path, state)
-
-    return state["access_token"]
+        return state["access_token"]
+    except OAuthRefreshError as e:
+        if access_token_usable(access):
+            log.warning("oauth.refresh_failed_using_cached", error=str(e), path=str(path))
+            return access
+        raise RuntimeError(str(e)) from e

@@ -197,12 +197,10 @@ class Orchestrator:
         if self.stack.uses_xai_oauth():
             xai = self.stack.xai_backend()
             if xai:
-                await xai.bearer_fresh()
-
-        if self.stack.uses_xai_oauth():
-            xai = self.stack.xai_backend()
-            if xai:
-                await xai.bearer_fresh()
+                try:
+                    await xai.bearer_fresh()
+                except Exception as e:
+                    log.warning("oauth.startup_refresh_failed", error=str(e))
 
         tasks: list[asyncio.Task] = [
             asyncio.create_task(self._oauth_refresh_loop()),

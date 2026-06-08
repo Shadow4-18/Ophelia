@@ -9,7 +9,11 @@ from openai import AsyncOpenAI
 
 from ophelia.config import Settings
 from ophelia.providers.auth import resolve_xai_bearer
-from ophelia.providers.oauth_refresh import ensure_fresh_token, load_oauth_state
+from ophelia.providers.oauth_refresh import (
+    ensure_fresh_token,
+    load_oauth_state,
+    resolve_oauth_auth_path,
+)
 
 ProviderRole = Literal["chat", "consciousness", "vision", "curator", "image", "video"]
 
@@ -43,10 +47,12 @@ class XAIBackend:
     def provider_name(self) -> str:
         return "xai-oauth" if self.prefer_oauth else "xai"
 
-    def _oauth_path(self) -> Path:
-        if self.settings.hermes_auth_path.is_file():
-            return self.settings.hermes_auth_path
-        return self.settings.xai_oauth_token_path
+    def _oauth_path(self) -> Path | None:
+        return resolve_oauth_auth_path(
+            hermes_home=self.settings.hermes_home,
+            hermes_auth_path=self.settings.hermes_auth_path,
+            oauth_path=self.settings.xai_oauth_token_path,
+        )
 
     def bearer(self) -> str | None:
         return resolve_xai_bearer(
@@ -54,13 +60,14 @@ class XAIBackend:
             oauth_path=self.settings.xai_oauth_token_path,
             grok_cli_path=self.settings.grok_cli_auth_path,
             hermes_auth_path=self.settings.hermes_auth_path,
+            hermes_home=self.settings.hermes_home,
             prefer_oauth=self.prefer_oauth,
         )
 
     async def bearer_fresh(self) -> str:
         if self.prefer_oauth:
             path = self._oauth_path()
-            if load_oauth_state(path):
+            if path and load_oauth_state(path):
                 return await ensure_fresh_token(path)
         token = self.bearer()
         if not token:
@@ -188,6 +195,7 @@ def _xai_oauth_available(settings: Settings) -> bool:
             oauth_path=settings.xai_oauth_token_path,
             grok_cli_path=settings.grok_cli_auth_path,
             hermes_auth_path=settings.hermes_auth_path,
+            hermes_home=settings.hermes_home,
             prefer_oauth=True,
         )
     )
