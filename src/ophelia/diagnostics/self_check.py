@@ -465,6 +465,8 @@ async def _check_telegram(report: SelfCheckReport, settings: Settings, *, chat_o
         )
         return
     try:
+        from ophelia.channels.telegram_util import fetch_webhook_info
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(f"https://api.telegram.org/bot{token}/getMe")
         data = r.json()
@@ -477,12 +479,25 @@ async def _check_telegram(report: SelfCheckReport, settings: Settings, *, chat_o
                 detail += f" | allowed IDs: {len(users)}"
             else:
                 detail += " | TELEGRAM_ALLOWED_USER_IDS missing"
+            webhook_url = ""
+            try:
+                wh = await fetch_webhook_info(token)
+                webhook_url = str(wh.get("url") or "").strip()
+            except httpx.HTTPError:
+                pass
+            ok = bool(users) and not webhook_url
+            if webhook_url:
+                detail += f" | WEBHOOK SET: {webhook_url[:40]}"
             report.add(
                 category="services",
                 name="Telegram bot",
-                ok=bool(users),
+                ok=ok,
                 detail=detail,
-                hint="message @userinfobot for your ID" if not users else "",
+                hint=(
+                    "Hermes webhook blocks polling — ophelia run clears it, or deleteWebhook"
+                    if webhook_url
+                    else ("message @userinfobot for your ID" if not users else "")
+                ),
                 required=is_termux() and not chat_only and settings.telegram_enabled,
             )
         else:

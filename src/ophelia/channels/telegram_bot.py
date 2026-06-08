@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from ophelia.android.factory import build_android_body
 from ophelia.channels.session import ChannelSession
+from ophelia.channels.telegram_util import ensure_polling_mode
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
 from ophelia.media.voice import synthesize_speech, transcribe_audio
@@ -60,10 +61,26 @@ class TelegramGateway:
     def _remember_user(self, user_id: int) -> None:
         self.signals.last_telegram_user_id = user_id
 
+    async def _reject_user(self, update: Update) -> None:
+        user = update.effective_user
+        if not user or not update.message:
+            return
+        allowed = self.settings.allowed_telegram_users()
+        hint = f"Your Telegram id is {user.id}."
+        if allowed:
+            hint += f" Allowed: {', '.join(str(x) for x in sorted(allowed))}."
+        else:
+            hint += " Set TELEGRAM_ALLOWED_USER_IDS in ~/.ophelia/.env"
+        await update.message.reply_text(f"Unauthorized. {hint}")
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not update.effective_user or not self._allowed(update.effective_user.id):
+        if not update.effective_user:
+            return
+        if not self._allowed(update.effective_user.id):
+            await self._reject_user(update)
             return
         self._remember_user(update.effective_user.id)
+        log.info("telegram.command", command="start", user=update.effective_user.id)
         await self._reply_text(update, self.session.WELCOME)
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -134,10 +151,11 @@ class TelegramGateway:
             return
         user = update.effective_user
         if not user or not self._allowed(user.id):
-            await update.message.reply_text("Unauthorized.")
+            await self._reject_user(update)
             return
         self._remember_user(user.id)
         channel = f"telegram:{user.id}"
+        log.info("telegram.message", user=user.id, preview=update.message.text.strip()[:80])
         await update.message.chat.send_action("typing")
         await self.session.handle_chat(
             channel,
@@ -219,12 +237,20 @@ class TelegramGateway:
                 log.warning("telegram.tts_fallback", error=str(e))
         await self._reply_text(update, reply)
 
+    async def _on_error(
+        self,
+        update: object,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        log.exception("telegram.handler_error", error=str(context.error))
+
     def build_app(self) -> Application:
         token = self.settings.telegram_bot_token
         if not token:
             raise RuntimeError("Set TELEGRAM_BOT_TOKEN in ~/.ophelia/.env")
 
         app = Application.builder().token(token).build()
+        app.add_error_handler(self._on_error)
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("pause", self.cmd_pause))
         app.add_handler(CommandHandler("resume", self.cmd_resume))
@@ -241,6 +267,18 @@ class TelegramGateway:
         """Initialize bot API before consciousness can send proactive messages."""
         if self._app is not None:
             return
+        token = self.settings.telegram_bot_token
+        if not token:
+            raise RuntimeError("Set TELEGRAM_BOT_TOKEN in ~/.ophelia/.env")
+        try:
+            cleared = await ensure_polling_mode(token)
+            if cleared:
+                log.info(
+                    "telegram.polling_restored",
+                    note="removed Hermes/webhook URL so Ophelia can poll",
+                )
+        except Exception as e:
+            log.warning("telegram.webhook_check_failed", error=str(e))
         app = self.build_app()
         await app.initialize()
         await app.start()
@@ -251,7 +289,18 @@ class TelegramGateway:
         app = self._app
         if app is None:
             raise RuntimeError("Telegram app failed to initialize")
-        await app.updater.start_polling(drop_pending_updates=True)
+        try:
+            await app.updater.start_polling(drop_pending_updates=True)
+        except Exception as e:
+            err = str(e)
+            if "409" in err or "webhook" in err.lower():
+                log.error(
+                    "telegram.polling_conflict",
+                    error=err,
+                    hint="run: hermes gateway stop; or curl deleteWebhook; only one poller per token",
+                )
+            raise
+        log.info("telegram.polling")
         try:
             while not self.signals.terminate:
                 await asyncio.sleep(1)
