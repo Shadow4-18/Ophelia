@@ -15,8 +15,10 @@ from telegram.ext import (
 )
 
 from ophelia.android.factory import build_android_body
+from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.channels.telegram_util import ensure_polling_mode
+from ophelia.media.vision_input import describe_image_file
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
 from ophelia.media.voice import synthesize_speech, transcribe_audio
@@ -44,6 +46,7 @@ class TelegramGateway:
         self.vision = vision
         self._app: Application | None = None
         self._voice_dir = settings.data_dir / "voice"
+        self._media_dir = settings.data_dir / "telegram_media"
 
     def is_configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
@@ -146,6 +149,88 @@ class TelegramGateway:
         except Exception:
             return xai.bearer()
 
+    async def _describe_saved_image(self, path: Path, caption: str) -> str:
+        question = caption.strip() or (
+            "The user sent this image on Telegram. Describe it and respond to what they likely want."
+        )
+        return await describe_image_file(self.settings, path, question=question)
+
+    async def on_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.photo:
+            return
+        user = update.effective_user
+        if not user or not self._allowed(user.id):
+            await self._reject_user(update)
+            return
+        self._remember_user(user.id)
+        channel = f"telegram:{user.id}"
+        caption = (update.message.caption or "").strip()
+        log.info("telegram.photo", user=user.id, caption=caption[:80] if caption else "")
+        await update.message.chat.send_action("typing")
+        try:
+            self._media_dir.mkdir(parents=True, exist_ok=True)
+            photo = update.message.photo[-1]
+            file = await photo.get_file()
+            path = self._media_dir / f"in_{update.message.message_id}.jpg"
+            await file.download_to_drive(str(path))
+            description = await self._describe_saved_image(path, caption)
+            prompt = (
+                f"[User sent a photo — saved {path.name}]\n"
+                f"Caption: {caption or '(none)'}\n\n"
+                f"Vision analysis:\n{description}"
+            )
+            await self.session.handle_chat(
+                channel,
+                prompt,
+                lambda t: self._send_reply(update, context, channel, t),
+            )
+        except Exception as e:
+            log.exception("telegram.photo_error")
+            await update.message.reply_text(f"Photo error: {e}")
+
+    async def on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.message or not update.message.document:
+            return
+        doc = update.message.document
+        mime = (doc.mime_type or "").lower()
+        name = (doc.file_name or "").lower()
+        if not mime.startswith("image/") and not name.endswith(
+            (".png", ".jpg", ".jpeg", ".webp", ".gif")
+        ):
+            await update.message.reply_text(
+                "I can read photos/images sent as pictures or image files — not other document types yet."
+            )
+            return
+        user = update.effective_user
+        if not user or not self._allowed(user.id):
+            await self._reject_user(update)
+            return
+        self._remember_user(user.id)
+        channel = f"telegram:{user.id}"
+        caption = (update.message.caption or "").strip()
+        log.info("telegram.document_image", user=user.id, mime=mime)
+        await update.message.chat.send_action("typing")
+        try:
+            self._media_dir.mkdir(parents=True, exist_ok=True)
+            ext = Path(name).suffix or ".jpg"
+            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            file = await doc.get_file()
+            await file.download_to_drive(str(path))
+            description = await self._describe_saved_image(path, caption)
+            prompt = (
+                f"[User sent an image file — saved {path.name}]\n"
+                f"Caption: {caption or '(none)'}\n\n"
+                f"Vision analysis:\n{description}"
+            )
+            await self.session.handle_chat(
+                channel,
+                prompt,
+                lambda t: self._send_reply(update, context, channel, t),
+            )
+        except Exception as e:
+            log.exception("telegram.document_error")
+            await update.message.reply_text(f"Image error: {e}")
+
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
             return
@@ -208,6 +293,27 @@ class TelegramGateway:
         finally:
             await self.signals.set_user_talking(False)
 
+    async def _send_media_artifacts(self, update: Update, reply: str) -> None:
+        if not update.message:
+            return
+        for path in artifact_paths_in_text(reply):
+            kind = media_kind(path)
+            try:
+                if kind == "photo":
+                    with path.open("rb") as f:
+                        await update.message.reply_photo(photo=InputFile(f))
+                    log.info("telegram.sent_photo", path=str(path))
+                elif kind == "video":
+                    with path.open("rb") as f:
+                        await update.message.reply_video(video=InputFile(f))
+                    log.info("telegram.sent_video", path=str(path))
+                elif kind == "audio":
+                    with path.open("rb") as f:
+                        await update.message.reply_audio(audio=InputFile(f))
+                    log.info("telegram.sent_audio", path=str(path))
+            except Exception as e:
+                log.warning("telegram.send_media_failed", path=str(path), error=str(e))
+
     async def _send_reply(
         self,
         update: Update,
@@ -215,6 +321,7 @@ class TelegramGateway:
         channel: str,
         reply: str,
     ) -> None:
+        await self._send_media_artifacts(update, reply)
         voice_on = self.session.voice_enabled(
             channel, self.settings.voice_reply_default
         )
@@ -259,6 +366,8 @@ class TelegramGateway:
         app.add_handler(CommandHandler("inner", self.cmd_inner))
         app.add_handler(CommandHandler("game", self.cmd_game))
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
+        app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
+        app.add_handler(MessageHandler(filters.Document.IMAGE, self.on_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
         self._app = app
         return app

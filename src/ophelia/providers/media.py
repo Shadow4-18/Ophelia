@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import time
 from pathlib import Path
 
 import httpx
+import structlog
 
 from ophelia.config import Settings
 from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend
+
+log = structlog.get_logger()
 
 
 async def generate_image(
@@ -44,6 +49,7 @@ async def generate_video(
     prompt: str,
     *,
     duration_seconds: int = 6,
+    artifacts_dir: Path | None = None,
 ) -> str:
     role = "video"
     provider = stack.name(role)
@@ -52,7 +58,14 @@ async def generate_video(
 
     async with gate.session(role, model, provider):
         if provider in ("xai-oauth", "xai"):
-            return await _xai_video(settings, stack, prompt, duration_seconds, model)
+            return await _xai_video(
+                settings,
+                stack,
+                prompt,
+                duration_seconds,
+                model,
+                artifacts_dir=artifacts_dir,
+            )
         raise RuntimeError(
             f"Video generation requires xAI (provider={provider}). "
             "Set OPHELIA_PROVIDER_VIDEO=xai-oauth or xai."
@@ -137,28 +150,69 @@ async def _xai_video(
     prompt: str,
     duration_seconds: int,
     model: str,
+    *,
+    artifacts_dir: Path | None = None,
 ) -> str:
     backend = stack.backend("video")
     assert isinstance(backend, XAIBackend)
-    token = backend.bearer()
+    try:
+        token = await backend.bearer_fresh()
+    except Exception:
+        token = backend.bearer()
     if not token:
         return "No xAI credentials for video."
 
+    base = settings.xai_base_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
+
     async with httpx.AsyncClient(timeout=120.0) as http:
         r = await http.post(
-            f"{settings.xai_base_url.rstrip('/')}/videos/generations",
-            headers={"Authorization": f"Bearer {token}"},
+            f"{base}/videos/generations",
+            headers=headers,
             json={
                 "model": model,
                 "prompt": prompt,
                 "duration": duration_seconds,
             },
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            return f"Video start failed HTTP {r.status_code}: {r.text[:300]}"
         data = r.json()
 
-    request_id = data.get("request_id") or data.get("id")
+    request_id = str(data.get("request_id") or data.get("id") or "").strip()
+    if not request_id:
+        return f"Video API returned no request_id: {data}"
+
+    deadline = time.monotonic() + 600.0
+    async with httpx.AsyncClient(timeout=120.0) as http:
+        while time.monotonic() < deadline:
+            poll = await http.get(f"{base}/videos/{request_id}", headers=headers)
+            if poll.status_code >= 400:
+                return f"Video poll failed HTTP {poll.status_code}: {poll.text[:300]}"
+            result = poll.json()
+            status = str(result.get("status") or "").lower()
+            if status == "done":
+                video = result.get("video") or {}
+                url = str(video.get("url") or "").strip()
+                if not url:
+                    return f"Video done but no URL in response: {result}"
+                out_dir = artifacts_dir or (settings.data_dir / "artifacts")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out = out_dir / f"video_{request_id[:16]}.mp4"
+                dl = await http.get(url)
+                dl.raise_for_status()
+                out.write_bytes(dl.content)
+                log.info("video.saved", path=str(out), request_id=request_id)
+                return (
+                    f"Video generated ({model}, {duration_seconds}s). "
+                    f"Video saved to {out}"
+                )
+            if status in {"failed", "expired"}:
+                err = result.get("error") or result
+                return f"Video generation {status}: {err}"
+            await asyncio.sleep(5.0)
+
     return (
-        f"Video job started ({model}, request_id={request_id}). "
-        "Poll xAI video API or ask Ophelia to check status in a follow-up."
+        f"Video still pending after 10m (request_id={request_id}). "
+        "Try again or ask to check status later."
     )

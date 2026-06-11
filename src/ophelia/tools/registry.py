@@ -10,6 +10,7 @@ from ophelia.config import Settings
 from ophelia.providers.media import generate_image, generate_video
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
+from ophelia.tools.sqlite_tools import list_ophelia_databases, run_sqlite
 from ophelia.tools.web_search import fetch_url, search_web
 from ophelia.tools.mcp_bridge import MCPBridge, load_mcp_config
 from ophelia.mind.skills import save_skill
@@ -40,7 +41,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "generate_video",
-            "description": "Start async video generation from a text prompt (xAI Grok Imagine).",
+            "description": (
+                "Generate a video from a text prompt (xAI Grok Imagine). "
+                "Waits up to 10m, saves mp4 under artifacts, returns path for Telegram."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -130,6 +134,35 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "sqlite_list_databases",
+            "description": "List SQLite databases under ~/.ophelia (memory.db, hermes_state.db, etc.).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sqlite_exec",
+            "description": (
+                "Run SQL on a database under ~/.ophelia. "
+                "SELECT/PRAGMA return rows; other statements create/alter/insert/update."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "database": {
+                        "type": "string",
+                        "description": "Relative path e.g. data/memory.db or data/custom.db",
+                    },
+                    "sql": {"type": "string"},
+                },
+                "required": ["database", "sql"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "save_skill",
             "description": "Save a reusable skill/procedure to ~/.ophelia/skills/ for future turns.",
             "parameters": {
@@ -198,6 +231,8 @@ class ToolRegistry:
             "web_search": self._web_search,
             "fetch_url": self._fetch_url,
             "save_skill": self._save_skill,
+            "sqlite_list_databases": self._sqlite_list_databases,
+            "sqlite_exec": self._sqlite_exec,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
             "phone_tap": self._phone_tap,
@@ -260,7 +295,20 @@ class ToolRegistry:
             self.stack,
             prompt,
             duration_seconds=duration_seconds,
+            artifacts_dir=self.artifacts_dir,
         )
+
+    async def _sqlite_list_databases(self) -> str:
+        dbs = list_ophelia_databases()
+        if not dbs:
+            return "No .db files under ~/.ophelia yet. Use sqlite_exec to create one."
+        return "SQLite databases:\n" + "\n".join(f"  {d}" for d in dbs)
+
+    async def _sqlite_exec(self, database: str, sql: str) -> str:
+        try:
+            return await run_sqlite(database, sql)
+        except Exception as e:
+            return f"sqlite_exec error: {e}"
 
     async def _text_to_speech(self, text: str, voice_id: str = "eve") -> str:
         import httpx
