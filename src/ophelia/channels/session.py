@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
 import structlog
 
 from ophelia.android.games import GameStore
+from ophelia.channels.message_split import split_messages
 from ophelia.android.vision import ScreenVision
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
@@ -61,16 +63,22 @@ class ChannelSession:
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
+        # Let send_message tool push follow-ups mid-turn through this channel.
+        self.agent.tools.set_message_sender(reply)
         try:
             out = await self.agent.run_turn(channel, text)
             self.drives.on_user_message()
             await self.memory.save_drives(self.drives)
             self.signals.last_agent_message_at = time.time()
-            await reply(out)
+            for i, chunk in enumerate(split_messages(out)):
+                if i:
+                    await asyncio.sleep(1.2)
+                await reply(chunk)
         except Exception as e:
             log.exception("channel.chat_error", channel=channel)
             await reply(f"Error: {e}")
         finally:
+            self.agent.tools.clear_message_sender()
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
 

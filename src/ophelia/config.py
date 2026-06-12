@@ -132,6 +132,11 @@ class Settings(BaseSettings):
 
     # Initiative / will (lower = more spontaneous)
     initiative_threshold: float = Field(default=0.55, alias="OPHELIA_INITIATIVE_THRESHOLD")
+    greet_on_start: bool = Field(
+        default=True,
+        alias="OPHELIA_GREET_ON_START",
+        description="Send a proactive hello to the user when Ophelia comes online",
+    )
     max_spontaneous_per_hour: int = Field(default=4, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
     quiet_hours: str = Field(
         default="",

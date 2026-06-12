@@ -117,6 +117,8 @@ class Orchestrator:
             games=self.games,
             vision=self.vision,
         )
+        # send_message tool fallback: consciousness/autonomous turns reach the user.
+        self.tools.proactive_sender = self.hub.broadcast_proactive
         self.inner = (
             InnerMonologue(mirror_telegram=settings.inner_mirror_telegram)
             if settings.inner_log_enabled
@@ -180,6 +182,21 @@ class Orchestrator:
                     log.info("curator.cycle_done", new_facts=n)
             except Exception as e:
                 log.warning("curator.error", error=str(e))
+
+    async def _greet_on_start(self) -> None:
+        """Proactive hello when she comes online — first visible sign of autonomy."""
+        await asyncio.sleep(3.0)
+        try:
+            channel = self.settings.primary_user_channel() or "consciousness"
+            text = await self.agent.run_turn(
+                channel,
+                "[system] You just came online. Greet your user briefly in your own "
+                "voice — one or two sentences. No task questions, just presence.",
+            )
+            await self.hub.broadcast_proactive(text)
+            log.info("greet.sent")
+        except Exception as e:
+            log.warning("greet.failed", error=str(e))
 
     async def _notify_spontaneous(self, text: str) -> None:
         await self.hub.broadcast_proactive(text)
@@ -252,6 +269,9 @@ class Orchestrator:
         self.listen = LocalListenLoop(self.settings, self.agent, self.signals)
         if self.listen.available():
             tasks.append(asyncio.create_task(self.listen.run()))
+
+        if self.settings.greet_on_start and self.hub.configured_names():
+            tasks.append(asyncio.create_task(self._greet_on_start()))
 
         log.info(
             "ophelia.starting",

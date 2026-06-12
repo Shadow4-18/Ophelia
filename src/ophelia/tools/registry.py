@@ -22,6 +22,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "send_message",
+            "description": (
+                "Send a message to the user RIGHT NOW, before your final reply. "
+                "Use for progress updates, follow-up thoughts, or splitting long "
+                "answers into separate chat bubbles. You can call it multiple times."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
             "description": "Generate an image from a text prompt (xAI, OpenAI, or Ollama flux).",
             "parameters": {
@@ -223,7 +241,11 @@ class ToolRegistry:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.mcp = MCPBridge(config=load_mcp_config(settings.mcp_config_path))
         self._mcp_ready = False
+        # Per-turn reply callback (chat) and always-on proactive fallback (consciousness).
+        self._message_sender: Callable[[str], Awaitable[None]] | None = None
+        self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
         self._handlers: dict[str, ToolHandler] = {
+            "send_message": self._send_message,
             "generate_image": self._generate_image,
             "generate_video": self._generate_video,
             "text_to_speech": self._text_to_speech,
@@ -243,6 +265,24 @@ class ToolRegistry:
             "phone_game_look": self._phone_game_look,
             "phone_game_open": self._phone_game_open,
         }
+
+    def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
+        self._message_sender = fn
+
+    def clear_message_sender(self) -> None:
+        self._message_sender = None
+
+    async def _send_message(self, text: str) -> str:
+        from ophelia.channels.message_split import split_messages
+
+        sender = self._message_sender or self.proactive_sender
+        if not sender:
+            return "No channel available to send to right now."
+        sent = 0
+        for chunk in split_messages(text):
+            await sender(chunk)
+            sent += 1
+        return f"Sent {sent} message(s) to the user. Continue with your turn."
 
     async def ensure_mcp(self) -> None:
         if not self._mcp_ready:

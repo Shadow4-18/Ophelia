@@ -44,6 +44,7 @@ Respond with ONLY valid JSON:
 }
 
 explore = phone_see_screen or phone_game_look if game session active. act = tap/swipe/tools.
+outward_message may contain [[break]] on its own line to send several separate messages.
 """
 
 
@@ -81,6 +82,7 @@ class ConsciousnessLoop:
         self.user_channel = user_channel
         self.notify = notify
         self._running = False
+        self._pause_logged = False
 
     async def run(self) -> None:
         self._running = True
@@ -90,8 +92,14 @@ class ConsciousnessLoop:
             wait = self.psyche.tick_interval_seconds(self.base_interval)
             await _sleep(wait)
 
-            if self.signals.terminate or self.signals.autonomy_paused:
+            if self.signals.terminate:
                 continue
+            if self.signals.autonomy_paused:
+                if not self._pause_logged:
+                    log.info("consciousness.paused", hint="use /resume to re-enable autonomy")
+                    self._pause_logged = True
+                continue
+            self._pause_logged = False
             if self.signals.user_talking or self.signals.agent_thinking:
                 continue
             if get_model_gate().is_busy():
@@ -172,6 +180,12 @@ class ConsciousnessLoop:
         await self.memory.save_psyche(self.psyche)
 
         action = (tick.get("action") or "silent").lower()
+        log.info(
+            "consciousness.tick",
+            action=action,
+            pressure=round(pressure, 2),
+            mood=self.psyche.mood.label,
+        )
         self.drives.satisfy(action)
         await self.memory.save_drives(self.drives)
 

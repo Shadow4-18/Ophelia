@@ -74,10 +74,17 @@ class ChannelHub:
             )
 
     async def broadcast_proactive(self, text: str) -> None:
+        from ophelia.channels.message_split import split_messages
+
+        chunks = split_messages(text)
         for gw in self._gateways:
-            if gw.is_configured():
+            if not gw.is_configured():
+                continue
+            for i, chunk in enumerate(chunks):
                 try:
-                    await gw.send_proactive(text)
+                    if i:
+                        await asyncio.sleep(1.2)
+                    await gw.send_proactive(chunk)
                 except Exception as e:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
 
