@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Awaitable, Callable
+from pathlib import Path
 
 from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore, game_tool_definitions
@@ -14,6 +15,7 @@ from ophelia.tools.sqlite_tools import list_ophelia_databases, run_sqlite
 from ophelia.tools.web_search import fetch_url, search_web
 from ophelia.tools.mcp_bridge import MCPBridge, load_mcp_config
 from ophelia.mind.skills import save_skill
+from ophelia.channels.media_reply import artifact_paths_in_text
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -244,6 +246,7 @@ class ToolRegistry:
         # Per-turn reply callback (chat) and always-on proactive fallback (consciousness).
         self._message_sender: Callable[[str], Awaitable[None]] | None = None
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
+        self._pending_artifacts: list[Path] = []
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
@@ -271,6 +274,16 @@ class ToolRegistry:
 
     def clear_message_sender(self) -> None:
         self._message_sender = None
+
+    def consume_pending_artifacts(self) -> list[Path]:
+        out = list(self._pending_artifacts)
+        self._pending_artifacts.clear()
+        return out
+
+    def _record_artifacts_from_text(self, text: str) -> None:
+        for p in artifact_paths_in_text(text):
+            if p not in self._pending_artifacts:
+                self._pending_artifacts.append(p)
 
     async def _send_message(self, text: str) -> str:
         from ophelia.channels.message_split import split_messages
@@ -319,24 +332,28 @@ class ToolRegistry:
         return xai
 
     async def _generate_image(self, prompt: str, aspect_ratio: str = "1:1") -> str:
-        return await generate_image(
+        result = await generate_image(
             self.settings,
             self.stack,
             prompt,
             aspect_ratio=aspect_ratio,
             artifacts_dir=self.artifacts_dir,
         )
+        self._record_artifacts_from_text(result)
+        return result
 
     async def _generate_video(
         self, prompt: str, duration_seconds: int = 6
     ) -> str:
-        return await generate_video(
+        result = await generate_video(
             self.settings,
             self.stack,
             prompt,
             duration_seconds=duration_seconds,
             artifacts_dir=self.artifacts_dir,
         )
+        self._record_artifacts_from_text(result)
+        return result
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()
@@ -367,7 +384,9 @@ class ToolRegistry:
             )
             r.raise_for_status()
             out.write_bytes(r.content)
-        return f"TTS saved to {out}"
+        result = f"TTS saved to {out}"
+        self._record_artifacts_from_text(result)
+        return result
 
     async def _run_code(self, code: str) -> str:
         import asyncio

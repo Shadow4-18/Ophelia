@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import httpx
@@ -15,6 +16,23 @@ from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend
 
 log = structlog.get_logger()
+
+
+def _deep_find_first_str(node: object, keys: Iterable[str]) -> str:
+    wanted = {k.lower() for k in keys}
+    stack: list[object] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if isinstance(k, str) and k.lower() in wanted and isinstance(v, str):
+                    value = v.strip()
+                    if value:
+                        return value
+                stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return ""
 
 
 async def generate_image(
@@ -179,7 +197,7 @@ async def _xai_video(
             return f"Video start failed HTTP {r.status_code}: {r.text[:300]}"
         data = r.json()
 
-    request_id = str(data.get("request_id") or data.get("id") or "").strip()
+    request_id = _deep_find_first_str(data, ("request_id", "id", "job_id", "generation_id"))
     if not request_id:
         return f"Video API returned no request_id: {data}"
 
@@ -187,19 +205,38 @@ async def _xai_video(
     async with httpx.AsyncClient(timeout=120.0) as http:
         while time.monotonic() < deadline:
             poll = await http.get(f"{base}/videos/{request_id}", headers=headers)
+            if poll.status_code == 404:
+                # Some deployments expose /videos/generations/{id} for status.
+                poll = await http.get(f"{base}/videos/generations/{request_id}", headers=headers)
             if poll.status_code >= 400:
                 return f"Video poll failed HTTP {poll.status_code}: {poll.text[:300]}"
             result = poll.json()
-            status = str(result.get("status") or "").lower()
-            if status == "done":
-                video = result.get("video") or {}
-                url = str(video.get("url") or "").strip()
+            status = str(
+                result.get("status")
+                or result.get("state")
+                or result.get("phase")
+                or ""
+            ).lower()
+            if status in {"done", "completed", "succeeded", "success"}:
+                url = _deep_find_first_str(
+                    result,
+                    (
+                        "url",
+                        "video_url",
+                        "download_url",
+                        "signed_url",
+                        "result_url",
+                    ),
+                )
                 if not url:
                     return f"Video done but no URL in response: {result}"
                 out_dir = artifacts_dir or (settings.data_dir / "artifacts")
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out = out_dir / f"video_{request_id[:16]}.mp4"
                 dl = await http.get(url)
+                if dl.status_code >= 400:
+                    # Some URLs still require bearer auth.
+                    dl = await http.get(url, headers=headers)
                 dl.raise_for_status()
                 out.write_bytes(dl.content)
                 log.info("video.saved", path=str(out), request_id=request_id)

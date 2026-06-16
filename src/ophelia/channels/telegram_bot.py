@@ -293,10 +293,23 @@ class TelegramGateway:
         finally:
             await self.signals.set_user_talking(False)
 
-    async def _send_media_artifacts(self, update: Update, reply: str) -> None:
+    async def _send_media_artifacts(
+        self,
+        update: Update,
+        reply: str,
+        *,
+        extra_paths: list[Path] | None = None,
+    ) -> None:
         if not update.message:
             return
-        for path in artifact_paths_in_text(reply):
+        seen: set[Path] = set()
+        paths = artifact_paths_in_text(reply)
+        if extra_paths:
+            paths.extend(extra_paths)
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
             kind = media_kind(path)
             try:
                 if kind == "photo":
@@ -321,7 +334,14 @@ class TelegramGateway:
         channel: str,
         reply: str,
     ) -> None:
-        await self._send_media_artifacts(update, reply)
+        extra_paths: list[Path] = []
+        tools = getattr(self.session.agent, "tools", None)
+        if tools and hasattr(tools, "consume_pending_artifacts"):
+            try:
+                extra_paths = tools.consume_pending_artifacts()
+            except Exception:
+                extra_paths = []
+        await self._send_media_artifacts(update, reply, extra_paths=extra_paths)
         voice_on = self.session.voice_enabled(
             channel, self.settings.voice_reply_default
         )
