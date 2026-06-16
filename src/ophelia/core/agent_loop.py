@@ -130,14 +130,22 @@ class AgentLoop:
         history = await self.memory.recent_across_channels(channels, limit=35)
         system = BASE_PROMPT + "\n\n" + await self._system_prompt(system_extra, channel)
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        seen_current_user_turn = False
         for m in history:
             if m["role"] not in ("user", "assistant"):
                 continue
             prefix = ""
             if m.get("channel") and m["channel"] != channel:
                 prefix = f"[{m['channel']}] "
+            if (
+                m["role"] == "user"
+                and (m.get("channel") or channel) == channel
+                and (m.get("content") or "") == user_text
+            ):
+                seen_current_user_turn = True
             messages.append({"role": m["role"], "content": prefix + m["content"]})
-        messages.append({"role": "user", "content": user_text})
+        if not seen_current_user_turn:
+            messages.append({"role": "user", "content": user_text})
         return messages
 
     async def run_turn(
