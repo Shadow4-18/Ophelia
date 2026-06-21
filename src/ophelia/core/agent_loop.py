@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.mind.skills import skills_context_block
 from ophelia.memory.bootstrap import (
@@ -23,6 +25,8 @@ from ophelia.providers.router import (
 )
 from ophelia.mind.drives import DriveState
 from ophelia.tools.registry import ToolRegistry
+
+log = structlog.get_logger()
 
 BASE_PROMPT = """You are Ophelia — a persistent, self-directing presence with your own drives and moods, not a reactive chatbot.
 You run fully autonomously: you take initiative, message, explore, create media, remember, reflect, and improve yourself — without waiting for input.
@@ -71,6 +75,10 @@ class AgentLoop:
         self.use_tools = use_tools
         self._memory_entries, self._user_entries = self._load_static_memories()
         self._hermes_db = self._hermes_state_path()
+        # Pending tool-chain to resume on the next turn if the previous turn hit
+        # the tool-round cap without getting stuck in a repeat loop.
+        # Maps store_channel -> {"messages": [...], "signature": str}
+        self._pending_resume: dict[str, dict[str, Any]] = {}
 
     def _hermes_state_path(self) -> Path | None:
         for p in (
@@ -242,12 +250,36 @@ class AgentLoop:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
         tools = await self.tools.tool_definitions() if use else None
-        max_tool_rounds = 6
+        max_tool_rounds = self.settings.max_tool_rounds
         model = self._model(role)
         provider = self.stack.name(role)  # type: ignore[arg-type]
         gate = get_model_gate()
 
-        for _ in range(max_tool_rounds):
+        # Resume an unfinished tool chain from the previous turn, if allowed and
+        # if one exists for this channel and it wasn't stuck in a repeat loop.
+        if self.settings.tool_loop_resume and store_channel in self._pending_resume:
+            pending = self._pending_resume.pop(store_channel)
+            if not pending.get("stuck"):
+                # Append the unfinished tool chain so the model continues from
+                # where it left off. Only assistant/tool turns are carried over
+                # (the system prompt and history are already in `messages`).
+                resumed_tail = [
+                    m for m in pending["messages"] if m.get("role") in ("assistant", "tool")
+                ]
+                if resumed_tail:
+                    messages = messages + resumed_tail
+                    log.info(
+                        "tool_loop.resume",
+                        channel=store_channel,
+                        role=role,
+                        rounds_already=pending.get("rounds", 0),
+                    )
+
+        seen_signatures: list[str] = []
+        rounds_used = 0
+
+        for round_idx in range(max_tool_rounds):
+            rounds_used = round_idx + 1
             async with gate.session(role, model, provider):
                 response = await client.chat.completions.create(
                     model=model,
@@ -257,6 +289,21 @@ class AgentLoop:
             msg = response.choices[0].message
 
             if msg.tool_calls:
+                tc_names = [tc.function.name for tc in msg.tool_calls]
+                log.info(
+                    "tool_loop.round",
+                    channel=store_channel,
+                    role=role,
+                    round=round_idx + 1,
+                    tools=tc_names,
+                )
+                # Detect a stuck loop: the same set of tool calls (same names +
+                # same arguments) repeated back-to-back. Bail early rather than
+                # burning the rest of the budget.
+                sig = self._tool_call_signature(msg.tool_calls)
+                stuck = sig in seen_signatures[-2:] if seen_signatures else False
+                seen_signatures.append(sig)
+
                 messages.append(
                     {
                         "role": "assistant",
@@ -288,12 +335,133 @@ class AgentLoop:
                     messages.append(
                         {"role": "tool", "tool_call_id": tc.id, "content": result}
                     )
+
+                if stuck:
+                    log.warning(
+                        "tool_loop.stuck",
+                        channel=store_channel,
+                        role=role,
+                        round=round_idx + 1,
+                        repeated_tools=tc_names,
+                        max_rounds=max_tool_rounds,
+                    )
+                    # Force a final synthesis: ask the model to wrap up using
+                    # what it has so far, with no further tool calls allowed.
+                    text = await self._finalize_after_stuck(
+                        messages,
+                        store_channel=store_channel,
+                        role=role,
+                        model=model,
+                        provider=provider,
+                        gate=gate,
+                    )
+                    return text
                 continue
 
             text = (msg.content or "").strip() or "(no response)"
             await self.memory.append_message(store_channel, "assistant", text)
+            # Turn finished cleanly — drop any stale resume context.
+            self._pending_resume.pop(store_channel, None)
+            log.info(
+                "tool_loop.done",
+                channel=store_channel,
+                role=role,
+                rounds=rounds_used,
+            )
             return text
 
-        fallback = "I hit the tool loop limit."
+        # Hit the hard cap without finishing and without being flagged stuck.
+        log.warning(
+            "tool_loop.cap_hit",
+            channel=store_channel,
+            role=role,
+            rounds=rounds_used,
+            max_rounds=max_tool_rounds,
+            resume_enabled=self.settings.tool_loop_resume,
+        )
+        # Stash the unfinished chain so the next turn can resume, but only if
+        # the last couple of rounds weren't pure repeats (we'd be stuck).
+        stuck = self._tail_is_repeat(seen_signatures)
+        if self.settings.tool_loop_resume and messages and not stuck:
+            self._pending_resume[store_channel] = {
+                "messages": [m for m in messages if m.get("role") in ("assistant", "tool")],
+                "rounds": rounds_used,
+                "stuck": False,
+            }
+            log.info(
+                "tool_loop.resume_queued",
+                channel=store_channel,
+                role=role,
+                note="next turn will continue this tool chain",
+            )
+            fallback = (
+                "I was in the middle of something — running low on turns for this step. "
+                "I've held onto my progress; say anything and I'll pick up where I left off."
+            )
+        else:
+            if stuck:
+                log.warning(
+                    "tool_loop.stuck_at_cap",
+                    channel=store_channel,
+                    role=role,
+                    note="last rounds were repeats; not queuing a resume",
+                )
+            fallback = (
+                "I got a bit carried away working through that one and ran out of steps "
+                "before I could finish. Want me to try a simpler approach?"
+            )
         await self.memory.append_message(store_channel, "assistant", fallback)
         return fallback
+
+    @staticmethod
+    def _tool_call_signature(tool_calls) -> str:
+        """Compact signature of a tool-call batch for repeat detection.
+
+        Uses tool name + arguments. Two batches with the same signature are
+        almost certainly the model re-issuing the same call because it didn't
+        know how to proceed.
+        """
+        parts = []
+        for tc in tool_calls:
+            parts.append(f"{tc.function.name}:{tc.function.arguments or ''}")
+        return "|".join(parts)
+
+    @staticmethod
+    def _tail_is_repeat(signatures: list[str]) -> bool:
+        """True if the last 2+ signatures are identical (a tight repeat loop)."""
+        if len(signatures) < 2:
+            return False
+        return signatures[-1] == signatures[-2]
+
+    async def _finalize_after_stuck(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        store_channel: str,
+        role: str,
+        model: str,
+        provider: str,
+        gate,
+    ) -> str:
+        """When a repeat loop is detected, force a no-tools final synthesis."""
+        client = await self._client(role)
+        messages = messages + [
+            {
+                "role": "system",
+                "content": (
+                    "You were repeating the same tool calls without making progress. "
+                    "Stop calling tools now and give your best final answer using only "
+                    "the information you already have in this conversation."
+                ),
+            }
+        ]
+        async with gate.session(role, model, provider):
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=None,
+            )
+        msg = response.choices[0].message
+        text = (msg.content or "").strip() or "(no response)"
+        await self.memory.append_message(store_channel, "assistant", text)
+        return text

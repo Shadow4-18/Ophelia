@@ -130,6 +130,22 @@ class Settings(BaseSettings):
         description="Base seconds between inner ticks; arousal adjusts speed",
     )
 
+    # Agentic tool loop (per turn)
+    max_tool_rounds: int = Field(
+        default=10,
+        alias="OPHELIA_MAX_TOOL_ROUNDS",
+        description="Hard cap on tool-call rounds in a single turn before bailing out",
+    )
+    tool_loop_resume: bool = Field(
+        default=True,
+        alias="OPHELIA_TOOL_LOOP_RESUME",
+        description=(
+            "If a turn hits the tool-round cap but isn't stuck repeating the same "
+            "tool call, allow the next user turn to resume from the unfinished "
+            "tool chain instead of starting fresh."
+        ),
+    )
+
     # Legacy alias
     autonomy_enabled: bool | None = Field(default=None, alias="OPHELIA_AUTONOMY")
     autonomy_interval_seconds: int | None = Field(
