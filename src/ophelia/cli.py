@@ -494,11 +494,44 @@ def cmd_transfer_cloud_download(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="ophelia")
-    sub = parser.add_subparsers(dest="command", required=True)
+def cmd_start(_: argparse.Namespace) -> int:
+    from ophelia.setup.launcher import action_start
 
-    sub.add_parser("run").set_defaults(func=cmd_run)
+    return action_start()
+
+
+def cmd_stop(_: argparse.Namespace) -> int:
+    from ophelia.setup.launcher import action_stop
+
+    return action_stop()
+
+
+def cmd_restart(_: argparse.Namespace) -> int:
+    from ophelia.setup.launcher import action_restart
+
+    return action_restart()
+
+
+def cmd_dashboard(_: argparse.Namespace) -> int:
+    from ophelia.setup.dashboard import run_dashboard
+
+    run_dashboard()
+    return 0
+
+
+def cmd_menu(_: argparse.Namespace) -> int:
+    from ophelia.setup.launcher import run_launcher
+
+    return run_launcher()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ophelia",
+        description="Ophelia - willful autonomous AI. Run with no args for the menu.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
     p_run = sub.add_parser("run", help="Run Ophelia always-on (foreground)")
     p_run.add_argument(
         "--restart",
@@ -506,6 +539,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Auto-restart on crash (up to 5 times)",
     )
     p_run.set_defaults(func=cmd_run)
+
+    sub.add_parser("start", help="Start Ophelia in tmux (Termux: wake-lock + tmux + run)").set_defaults(
+        func=cmd_start
+    )
+    sub.add_parser("stop", help="Stop the Ophelia tmux session (Termux)").set_defaults(func=cmd_stop)
+    sub.add_parser("restart", help="Restart the Ophelia tmux session (Termux)").set_defaults(
+        func=cmd_restart
+    )
+    sub.add_parser("menu", help="Open the interactive launcher menu").set_defaults(func=cmd_menu)
+    sub.add_parser(
+        "dashboard", help="Live status dashboard (mood, drives, pressure, channels)"
+    ).set_defaults(func=cmd_dashboard)
 
     p_setup = sub.add_parser(
         "setup",
@@ -566,7 +611,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("providers", help="Show resolved AI provider routing").set_defaults(
         func=cmd_providers
     )
-    sub.add_parser("models", help="Local model cookbook (RAM/GPU → Ollama picks)").set_defaults(
+    sub.add_parser("models", help="Local model cookbook (RAM/GPU -> Ollama picks)").set_defaults(
         func=cmd_models
     )
 
@@ -578,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_ui.set_defaults(func=cmd_ui)
 
-    p_chat = sub.add_parser("chat")
+    p_chat = sub.add_parser("chat", help="One-shot chat message (no always-on loop)")
     p_chat.add_argument("message")
     p_chat.set_defaults(func=cmd_chat)
 
@@ -614,11 +659,13 @@ def main(argv: list[str] | None = None) -> int:
         "login",
         help="Fresh SuperGrok OAuth via Hermes browser login, import to Ophelia",
     ).set_defaults(func=cmd_auth_login)
-    auth_sub.add_parser("import-grok").set_defaults(func=cmd_auth_import_grok)
-    p_ih = auth_sub.add_parser("import-hermes")
+    auth_sub.add_parser("import-grok", help="Import OAuth from Grok CLI (~/.grok)").set_defaults(
+        func=cmd_auth_import_grok
+    )
+    p_ih = auth_sub.add_parser("import-hermes", help="Import OAuth from Hermes (~/.hermes)")
     p_ih.add_argument("--hermes-home", default=str(Path.home() / ".hermes"))
     p_ih.set_defaults(func=cmd_auth_import_hermes)
-    p_st = auth_sub.add_parser("set-token")
+    p_st = auth_sub.add_parser("set-token", help="Write a raw xAI API token")
     p_st.add_argument("token")
     p_st.set_defaults(func=cmd_auth_set_token)
     p_ar = auth_sub.add_parser("status", help="Show OAuth files, expiry, refresh token")
@@ -632,10 +679,12 @@ def main(argv: list[str] | None = None) -> int:
     p_rf.add_argument("-v", "--verbose", action="store_true", help="Show auth file details")
     p_rf.set_defaults(func=cmd_auth_refresh)
 
-    xfer = sub.add_parser("transfer", help="Move Hermes data phone ↔ PC")
+    xfer = sub.add_parser("transfer", help="Move Hermes data phone <-> PC")
     xfer_sub = xfer.add_subparsers(dest="transfer_cmd", required=True)
 
-    p_recv = xfer_sub.add_parser("receive", help="PC: wait for phone upload (same Wi-Fi)")
+    p_recv = xfer_sub.add_parser(
+        "receive", help="PC: receive a phone upload over Wi-Fi (not for Termux)"
+    )
     p_recv.add_argument("--host", default="0.0.0.0")
     p_recv.add_argument("--port", type=int, default=8777)
     p_recv.add_argument("--token", default=None)
@@ -643,7 +692,9 @@ def main(argv: list[str] | None = None) -> int:
     p_recv.add_argument("--no-import", action="store_true", help="Save file only")
     p_recv.set_defaults(func=cmd_transfer_receive)
 
-    p_send = xfer_sub.add_parser("send", help="Phone: upload bundle to PC URL")
+    p_send = xfer_sub.add_parser(
+        "send", help="Termux: upload bundle to a PC URL (from `transfer receive`)"
+    )
     p_send.add_argument("url", help="http://PC_IP:8777 from transfer receive")
     p_send.add_argument("--token", default=None)
     p_send.add_argument("--hermes-home", default=str(Path.home() / ".hermes"))
@@ -664,6 +715,14 @@ def main(argv: list[str] | None = None) -> int:
     p_down.set_defaults(func=cmd_transfer_cloud_download)
 
     args = parser.parse_args(argv)
+    if not args.command:
+        # No subcommand → launch the interactive menu on a TTY, else print help.
+        import sys as _sys
+
+        if _sys.stdin.isatty():
+            return cmd_menu(None)
+        parser.print_help()
+        return 0
     return args.func(args)
 
 

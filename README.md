@@ -92,7 +92,10 @@ See [docs/transfer.md](docs/transfer.md), [docs/migrate-old-phone.md](docs/migra
 
 | Command | Purpose |
 |---------|---------|
-| `ophelia setup` | **Step-by-step install guide** (idiot-proof checklist) |
+| `ophelia` | **Interactive menu** — start/stop, configure, diagnose, live dashboard |
+| `ophelia setup` | Step-by-step install guide (idiot-proof checklist) |
+| `ophelia start` | One command: wake-lock + tmux + run (Termux) |
+| `ophelia dashboard` | Live status panel (mood, drives, pressure, channels) |
 | `ophelia ui` | PC workstation (browser) |
 | `ophelia run` | Telegram + Discord + consciousness |
 | `ophelia chat` | One-shot message |
@@ -105,7 +108,17 @@ See [docs/transfer.md](docs/transfer.md), [docs/migrate-old-phone.md](docs/migra
 
 ## Termux (optional pocket host)
 
-Run on a phone **as the host** — not the same as using a phone as a body from a VPS:
+Run on a phone **as the host** — not the same as using a phone as a body from a VPS.
+
+Just type `ophelia` with no args to get the full interactive menu (start/stop, configure, diagnose, migrate, auth, live dashboard):
+
+```bash
+ophelia            # interactive launcher menu (start here)
+ophelia start      # one command: wake-lock + tmux + run
+ophelia dashboard  # live mood/drives/pressure panel
+```
+
+Or the classic manual way:
 
 ```bash
 termux-wake-lock

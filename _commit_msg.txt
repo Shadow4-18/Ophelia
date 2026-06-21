@@ -1,0 +1,34 @@
+Unified interactive launcher + live dashboard for clean Termux UX
+
+The Termux experience was scattered across ~8 shell scripts and ~15 flat
+CLI subcommands with no single entry point. Now `ophelia` (no args) drops
+into a Hermes-style grouped menu, and a live dashboard shows her state.
+
+New commands:
+- ophelia            (no args) -> interactive launcher menu on a TTY
+- ophelia menu       -> same launcher, explicit
+- ophelia start      -> wake-lock plus tmux plus run in one command (Termux)
+- ophelia stop       -> kill the tmux session and release wake lock
+- ophelia restart    -> stop then start
+- ophelia dashboard  -> live curses panel: mood, drives, pressure,
+                        channels, consciousness/dream state, refreshed
+                        every 2s with pause/resume/inner-log hotkeys
+
+Launcher (setup/launcher.py):
+- Grouped actions: Run / Configure / Diagnose / Auth / Migrate
+- Live status header showing running state, mood, pressure, channels
+- Platform-aware: shows Start/Stop/Reattach on Termux, Run on PC
+- Dispatches to existing setup wizard, health check, curator, reflect,
+  auth, migrate, transfer, providers, models, chat
+
+Dashboard (setup/dashboard.py):
+- Curses auto-refresh from heartbeat.json every 2s
+- Hotkeys: r refresh, p pause, s resume, i inner log popup, q back
+- Numbered fallback for non-TTY
+
+CLI cleanup:
+- ophelia with no subcommand now launches the menu (TTY) or prints
+  help (non-TTY) instead of argparse-erroring
+- Added missing help strings for chat, auth import-grok/import-hermes/set-token
+- Platform-aware transfer help: receive is PC only, send is Termux
+- Replaced unicode arrows in help strings with ASCII for cp1252 safety
