@@ -114,14 +114,23 @@ def _section_provider(on_phone: bool) -> None:
     elif provider == "xai-oauth":
         if not _configure_xai_oauth():
             return
+        xai_model = _pick_xai_model()
+        if xai_model:
+            updates["XAI_MODEL"] = xai_model
     elif provider == "xai":
         key = prompt_text("XAI_API_KEY", secret=True, default=read_env_key("XAI_API_KEY"))
         if key:
             updates["XAI_API_KEY"] = key
+        xai_model = _pick_xai_model()
+        if xai_model:
+            updates["XAI_MODEL"] = xai_model
     elif provider == "openai":
         key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
         if key:
             updates["OPENAI_API_KEY"] = key
+        oai_model = _pick_openai_model()
+        if oai_model:
+            updates["OPENAI_MODEL"] = oai_model
     elif provider == "compat":
         base = prompt_text(
             "OPHELIA_COMPAT_BASE_URL",
@@ -353,6 +362,69 @@ def _list_ollama_model_names() -> list[str]:
         return asyncio.run(_fetch())
     except Exception:
         return []
+
+
+def _pick_xai_model() -> str | None:
+    """Model picker for xAI (Grok) — presets plus manual entry."""
+    presets = [
+        "grok-4",
+        "grok-4-fast",
+        "grok-4-fast-reasoning",
+        "grok-4-heavy",
+        "grok-3",
+        "grok-3-mini",
+        "grok-2",
+    ]
+    current = read_env_key("XAI_MODEL") or "grok-4"
+    choices = list(presets)
+    if current not in choices:
+        choices.insert(0, current)
+    choices.append("Type a model name manually...")
+
+    default = next((i for i, c in enumerate(choices) if c == current), 0)
+    pick = radiolist(
+        "xAI chat model",
+        choices,
+        selected=default,
+        description="Grok models available via your SuperGrok OAuth or API key.",
+    )
+    if pick < 0:
+        return None
+    if choices[pick] == "Type a model name manually...":
+        typed = prompt_text("Model name", default=current)
+        return typed
+    return choices[pick]
+
+
+def _pick_openai_model() -> str | None:
+    """Model picker for OpenAI — presets plus manual entry."""
+    presets = [
+        "gpt-4o-mini",
+        "gpt-4o",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+        "o4-mini",
+        "gpt-4-turbo",
+    ]
+    current = read_env_key("OPENAI_MODEL") or "gpt-4o-mini"
+    choices = list(presets)
+    if current not in choices:
+        choices.insert(0, current)
+    choices.append("Type a model name manually...")
+
+    default = next((i for i, c in enumerate(choices) if c == current), 0)
+    pick = radiolist(
+        "OpenAI chat model",
+        choices,
+        selected=default,
+        description="Pick the model your API key has access to.",
+    )
+    if pick < 0:
+        return None
+    if choices[pick] == "Type a model name manually...":
+        typed = prompt_text("Model name", default=current)
+        return typed
+    return choices[pick]
 
 
 def _section_channels() -> None:
