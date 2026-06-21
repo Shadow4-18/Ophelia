@@ -114,23 +114,14 @@ def _section_provider(on_phone: bool) -> None:
     elif provider == "xai-oauth":
         if not _configure_xai_oauth():
             return
-        xai_model = _pick_xai_model()
-        if xai_model:
-            updates["XAI_MODEL"] = xai_model
     elif provider == "xai":
         key = prompt_text("XAI_API_KEY", secret=True, default=read_env_key("XAI_API_KEY"))
         if key:
             updates["XAI_API_KEY"] = key
-        xai_model = _pick_xai_model()
-        if xai_model:
-            updates["XAI_MODEL"] = xai_model
     elif provider == "openai":
         key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
         if key:
             updates["OPENAI_API_KEY"] = key
-        oai_model = _pick_openai_model()
-        if oai_model:
-            updates["OPENAI_MODEL"] = oai_model
     elif provider == "compat":
         base = prompt_text(
             "OPHELIA_COMPAT_BASE_URL",
@@ -155,6 +146,8 @@ def _section_provider(on_phone: bool) -> None:
 
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
+
+    _maybe_configure_models(provider, on_phone=on_phone)
 
 
 def _oauth_status_lines() -> list[str]:
@@ -365,66 +358,348 @@ def _list_ollama_model_names() -> list[str]:
 
 
 def _pick_xai_model() -> str | None:
-    """Model picker for xAI (Grok) — presets plus manual entry."""
-    presets = [
-        "grok-4",
-        "grok-4-fast",
-        "grok-4-fast-reasoning",
-        "grok-4-heavy",
-        "grok-3",
-        "grok-3-mini",
-        "grok-2",
-    ]
-    current = read_env_key("XAI_MODEL") or "grok-4"
-    choices = list(presets)
-    if current not in choices:
-        choices.insert(0, current)
-    choices.append("Type a model name manually...")
-
-    default = next((i for i, c in enumerate(choices) if c == current), 0)
-    pick = radiolist(
-        "xAI chat model",
-        choices,
-        selected=default,
+    """Model picker for xAI (Grok) chat — presets plus manual entry."""
+    return _pick_model_generic(
+        title="xAI (Grok) chat model",
+        env_key="XAI_MODEL",
+        default="grok-4",
+        presets=[
+            "grok-4",
+            "grok-4-fast",
+            "grok-4-fast-reasoning",
+            "grok-4-heavy",
+            "grok-3",
+            "grok-3-mini",
+            "grok-2",
+        ],
         description="Grok models available via your SuperGrok OAuth or API key.",
     )
-    if pick < 0:
-        return None
-    if choices[pick] == "Type a model name manually...":
-        typed = prompt_text("Model name", default=current)
-        return typed
-    return choices[pick]
 
 
 def _pick_openai_model() -> str | None:
-    """Model picker for OpenAI — presets plus manual entry."""
-    presets = [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "gpt-4.1-mini",
-        "gpt-4.1",
-        "o4-mini",
-        "gpt-4-turbo",
-    ]
-    current = read_env_key("OPENAI_MODEL") or "gpt-4o-mini"
+    """Model picker for OpenAI chat — presets plus manual entry."""
+    return _pick_model_generic(
+        title="OpenAI chat model",
+        env_key="OPENAI_MODEL",
+        default="gpt-4o-mini",
+        presets=[
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+            "o4-mini",
+            "gpt-4-turbo",
+        ],
+        description="Pick the model your API key has access to.",
+    )
+
+
+def _pick_model_generic(
+    *,
+    title: str,
+    env_key: str,
+    default: str,
+    presets: list[str],
+    description: str = "",
+) -> str | None:
+    """Shared model picker: presets + current value + manual entry. None = cancel."""
+    current = read_env_key(env_key) or default
     choices = list(presets)
     if current not in choices:
         choices.insert(0, current)
     choices.append("Type a model name manually...")
 
-    default = next((i for i, c in enumerate(choices) if c == current), 0)
-    pick = radiolist(
-        "OpenAI chat model",
-        choices,
-        selected=default,
-        description="Pick the model your API key has access to.",
-    )
+    selected = next((i for i, c in enumerate(choices) if c == current), 0)
+    pick = radiolist(title, choices, selected=selected, description=description)
     if pick < 0:
         return None
     if choices[pick] == "Type a model name manually...":
-        typed = prompt_text("Model name", default=current)
-        return typed
+        return prompt_text("Model name", default=current)
     return choices[pick]
+
+
+# Per-provider, per-role model configuration.
+# Each role maps to an env var and a preset list (or None for free-form text).
+RoleKey = str  # "chat" | "consciousness" | "curator" | "vision" | "image" | "video"
+
+_PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
+    "xai": {
+        "chat": {
+            "env": "XAI_MODEL",
+            "default": "grok-4",
+            "presets": ["grok-4", "grok-4-fast", "grok-4-fast-reasoning", "grok-4-heavy",
+                        "grok-3", "grok-3-mini", "grok-2"],
+        },
+        "consciousness": {
+            "env": "XAI_CONSCIOUSNESS_MODEL",
+            "default": "",
+            "presets": ["grok-4-fast", "grok-3-mini", "grok-4", "grok-3"],
+            "optional": True,
+        },
+        "curator": {
+            "env": "XAI_CURATOR_MODEL",
+            "default": "",
+            "presets": ["grok-4-fast", "grok-3-mini", "grok-4", "grok-3"],
+            "optional": True,
+        },
+        "vision": {
+            "env": "XAI_VISION_MODEL",
+            "default": "",
+            "presets": ["grok-4", "grok-4-fast", "grok-4-vision", "grok-2-vision"],
+            "optional": True,
+        },
+        "image": {
+            "env": "XAI_IMAGE_MODEL",
+            "default": "grok-imagine-image",
+            "presets": ["grok-imagine-image", "grok-2-image", "grok-image"],
+        },
+        "video": {
+            "env": "XAI_VIDEO_MODEL",
+            "default": "grok-imagine-video",
+            "presets": ["grok-imagine-video", "grok-2-video"],
+        },
+    },
+    "xai-oauth": {},  # alias: filled in below
+    "openai": {
+        "chat": {
+            "env": "OPENAI_MODEL",
+            "default": "gpt-4o-mini",
+            "presets": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1",
+                        "o4-mini", "gpt-4-turbo"],
+        },
+        "consciousness": {
+            "env": "OPENAI_CONSCIOUSNESS_MODEL",
+            "default": "",
+            "presets": ["gpt-4o-mini", "gpt-4.1-mini", "o4-mini"],
+            "optional": True,
+        },
+        "curator": {
+            "env": "OPENAI_CURATOR_MODEL",
+            "default": "",
+            "presets": ["gpt-4o-mini", "gpt-4.1-mini", "o4-mini"],
+            "optional": True,
+        },
+        "vision": {
+            "env": "OPENAI_VISION_MODEL",
+            "default": "",
+            "presets": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4-turbo"],
+            "optional": True,
+        },
+        "image": {
+            "env": "OPENAI_IMAGE_MODEL",
+            "default": "dall-e-3",
+            "presets": ["dall-e-3", "dall-e-2", "gpt-image-1"],
+        },
+        "video": None,  # OpenAI has no video gen endpoint
+    },
+    "ollama": {
+        "chat": {
+            "env": "OLLAMA_MODEL",
+            "default": "llama3.2:3b",
+            "presets": ["llama3.2:3b", "llama3.2:1b", "llama3.2", "mistral",
+                        "qwen2.5:7b", "phi3:mini"],
+            "dynamic": True,
+        },
+        "consciousness": {
+            "env": "OLLAMA_CONSCIOUSNESS_MODEL",
+            "default": "",
+            "presets": ["llama3.2:1b", "phi3:mini", "llama3.2:3b"],
+            "optional": True,
+            "dynamic": True,
+        },
+        "curator": {
+            "env": "OLLAMA_CURATOR_MODEL",
+            "default": "",
+            "presets": ["llama3.2:3b", "phi3:mini", "llama3.2:1b"],
+            "optional": True,
+            "dynamic": True,
+        },
+        "vision": {
+            "env": "OLLAMA_VISION_MODEL",
+            "default": "",
+            "presets": ["llava", "llama3.2-vision", "moondream", "bakllava"],
+            "optional": True,
+            "dynamic": True,
+        },
+        "image": {
+            "env": "OLLAMA_IMAGE_MODEL",
+            "default": "",
+            "presets": ["flux", "stable-diffusion", "sd3"],
+            "optional": True,
+            "dynamic": True,
+        },
+        "video": None,
+    },
+    "compat": {
+        "chat": {
+            "env": "OPHELIA_COMPAT_MODEL",
+            "default": "local-model",
+            "presets": [],
+        },
+        "consciousness": {
+            "env": "OPHELIA_COMPAT_CONSCIOUSNESS_MODEL",
+            "default": "",
+            "presets": [],
+            "optional": True,
+        },
+        "curator": {
+            "env": "OPHELIA_COMPAT_CURATOR_MODEL",
+            "default": "",
+            "presets": [],
+            "optional": True,
+        },
+        "vision": {
+            "env": "OPHELIA_COMPAT_VISION_MODEL",
+            "default": "",
+            "presets": [],
+            "optional": True,
+        },
+        "image": None,
+        "video": None,
+    },
+    "auto": {},  # no direct model config; inherits primary provider
+}
+_PROVIDER_ROLE_DEFS["xai-oauth"] = _PROVIDER_ROLE_DEFS["xai"]
+
+_ROLE_LABELS = {
+    "chat": "Chat / main replies",
+    "consciousness": "Consciousness (background ticks)",
+    "curator": "Memory curator",
+    "vision": "Vision (photo understanding)",
+    "image": "Image generation",
+    "video": "Video generation",
+}
+
+
+def _role_summary(provider: str, role: RoleKey) -> str:
+    """One-line current value for a role, e.g. 'grok-4'."""
+    role_def = _PROVIDER_ROLE_DEFS.get(provider, {}).get(role)
+    if not role_def:
+        return "(not available for this provider)"
+    env_val = read_env_key(role_def["env"])
+    if env_val:
+        return env_val
+    default = role_def.get("default", "")
+    if default:
+        return f"{default} (default)"
+    if role_def.get("optional"):
+        return "(inherits chat model)"
+    return "(not set)"
+
+
+def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
+    """Offer the per-role Models sub-menu after a provider is selected."""
+    role_defs = _PROVIDER_ROLE_DEFS.get(provider)
+    if not role_defs:
+        return  # auto / unknown — nothing to configure here
+
+    pick = radiolist(
+        "Configure specific models for each role?",
+        [
+            "Yes — pick models per role (chat, vision, image, video, ...)",
+            "Skip — keep current / default models",
+        ],
+        selected=1,
+        description=(
+            "Ophelia uses different models for different jobs:\n"
+            "  chat, consciousness, curator, vision, image, video.\n"
+            "You can set each one independently."
+        ),
+    )
+    if pick != 0:
+        return
+
+    _models_menu(provider, on_phone=on_phone)
+
+
+def _models_menu(provider: str, *, on_phone: bool) -> None:
+    role_defs = _PROVIDER_ROLE_DEFS[provider]
+    role_order = ["chat", "consciousness", "curator", "vision", "image", "video"]
+    available_roles = [r for r in role_order if role_defs.get(r) is not None]
+
+    while True:
+        items = [f"{_ROLE_LABELS[r]}  —  {_role_summary(provider, r)}" for r in available_roles]
+        items.append("Clear all role overrides (use defaults)")
+        items.append("Back")
+        pick = radiolist(
+            f"Models — {provider}",
+            items,
+            selected=0,
+            description="Pick a role to choose its model. Optional roles inherit chat.",
+        )
+        if pick < 0 or pick == len(items) - 1:
+            return  # back / cancel
+        if pick == len(items) - 2:
+            _clear_role_overrides(provider)
+            pause()
+            continue
+        role = available_roles[pick]
+        _pick_role_model(provider, role, on_phone=on_phone)
+        pause()
+
+
+def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
+    role_def = _PROVIDER_ROLE_DEFS[provider][role]
+    env_key = role_def["env"]
+    default = role_def.get("default", "")
+    presets = list(role_def.get("presets", []))
+    optional = role_def.get("optional", False)
+
+    # For Ollama chat/vision, augment presets with what's actually pulled.
+    if role_def.get("dynamic") and provider == "ollama":
+        pulled = _list_ollama_model_names()
+        for m in pulled[:12]:
+            if m not in presets:
+                presets.insert(0, m)
+
+    current = read_env_key(env_key) or default
+    choices: list[str] = []
+    if current and current not in choices:
+        choices.append(current)
+    for p in presets:
+        if p not in choices:
+            choices.append(p)
+    if optional:
+        choices.append("(inherit chat model / clear override)")
+    choices.append("Type a model name manually...")
+
+    selected = next((i for i, c in enumerate(choices) if c == current), 0)
+    title = f"{_ROLE_LABELS[role]} — {provider}"
+    desc = "Optional: leave unset to inherit the chat model." if optional else ""
+    pick = radiolist(title, choices, selected=selected, description=desc)
+    if pick < 0:
+        return
+
+    chosen = choices[pick]
+    if chosen == "Type a model name manually...":
+        typed = prompt_text("Model name", default=current)
+        if typed:
+            write_env_updates({env_key: typed})
+            print(f"\n  Saved {env_key}={typed}")
+    elif chosen == "(inherit chat model / clear override)":
+        write_env_updates({env_key: None})
+        print(f"\n  Cleared {env_key} — will inherit chat model.")
+    else:
+        write_env_updates({env_key: chosen})
+        print(f"\n  Saved {env_key}={chosen}")
+
+
+def _clear_role_overrides(provider: str) -> None:
+    role_defs = _PROVIDER_ROLE_DEFS[provider]
+    updates: dict[str, str | None] = {}
+    for role, role_def in role_defs.items():
+        if role_def is None:
+            continue
+        if role == "chat":
+            continue  # keep main model
+        env_key = role_def["env"]
+        if read_env_key(env_key):
+            updates[env_key] = None
+    if not updates:
+        print("\n  No role overrides to clear.")
+        return
+    touched = write_env_updates(updates)
+    print(f"\n  Cleared: {', '.join(touched)}")
 
 
 def _section_channels() -> None:

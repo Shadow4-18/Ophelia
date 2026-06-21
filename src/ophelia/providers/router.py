@@ -34,6 +34,7 @@ class LLMBackend(Protocol):
     def default_model(self) -> str: ...
     def label(self) -> str: ...
     def provider_name(self) -> str: ...
+    def model_for_role(self, role: ProviderRole) -> str | None: ...
 
 
 class XAIBackend:
@@ -92,6 +93,14 @@ class XAIBackend:
     def default_model(self) -> str:
         return self.settings.xai_model
 
+    def model_for_role(self, role: ProviderRole) -> str | None:
+        """Per-role model override, if set. None = fall back to default_model()."""
+        if role == "consciousness":
+            return self.settings.xai_consciousness_model
+        if role == "curator":
+            return self.settings.xai_curator_model
+        return None
+
     def label(self) -> str:
         mode = "OAuth" if self.prefer_oauth else "API key"
         return f"xAI Grok ({mode})"
@@ -120,10 +129,18 @@ class OpenAICompatibleBackend:
         model: str,
         label: str,
         provider_name: str,
+        consciousness_model: str | None = None,
+        curator_model: str | None = None,
+        vision_model: str | None = None,
+        image_model: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._consciousness_model = consciousness_model
+        self._curator_model = curator_model
+        self._vision_model = vision_model
+        self._image_model = image_model
         self._label = label
         self._provider_name = provider_name
         self._client: AsyncOpenAI | None = None
@@ -138,6 +155,17 @@ class OpenAICompatibleBackend:
 
     def default_model(self) -> str:
         return self._model
+
+    def model_for_role(self, role: ProviderRole) -> str | None:
+        if role == "consciousness":
+            return self._consciousness_model
+        if role == "curator":
+            return self._curator_model
+        if role == "vision":
+            return self._vision_model
+        if role == "image":
+            return self._image_model
+        return None
 
     def label(self) -> str:
         return self._label
@@ -162,6 +190,12 @@ class OllamaBackend:
 
     def default_model(self) -> str:
         return resolve_ollama_model(self.settings, self.role)
+
+    def model_for_role(self, role: ProviderRole) -> str | None:
+        """Per-role override already resolved by resolve_ollama_model."""
+        m = resolve_ollama_model(self.settings, role)
+        base = self.settings.ollama_model
+        return m if m and m != base else None
 
     def label(self) -> str:
         return f"Ollama ({self.role}) @ {self.settings.ollama_base_url}"
@@ -292,6 +326,10 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             api_key=key,
             base_url=settings.openai_base_url,
             model=settings.openai_model,
+            consciousness_model=settings.openai_consciousness_model,
+            curator_model=settings.openai_curator_model,
+            vision_model=settings.openai_vision_model,
+            image_model=settings.openai_image_model,
             label=f"OpenAI @ {settings.openai_base_url}",
             provider_name="openai",
         )
@@ -307,6 +345,9 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             api_key=key,
             base_url=base,
             model=model,
+            consciousness_model=settings.compat_consciousness_model,
+            curator_model=settings.compat_curator_model,
+            vision_model=settings.compat_vision_model,
             label=f"OpenAI-compatible @ {base}",
             provider_name="compat",
         )
@@ -354,7 +395,11 @@ class ProviderStack:
             return self.settings.openai_vision_model or self.settings.openai_model
         if name == "compat" and role == "vision" and self.settings.compat_vision_model:
             return self.settings.compat_vision_model
-        return self.backend(role).default_model()
+        backend = self.backend(role)
+        override = backend.model_for_role(role) if hasattr(backend, "model_for_role") else None
+        if override:
+            return override
+        return backend.default_model()
 
     def supports_vision(self, role: ProviderRole = "vision") -> bool:
         name = self.name(role)

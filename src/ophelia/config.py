@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     xai_api_key: str | None = Field(default=None, alias="XAI_API_KEY")
     xai_base_url: str = Field(default="https://api.x.ai/v1", alias="XAI_BASE_URL")
     xai_model: str = Field(default="grok-4", alias="XAI_MODEL")
+    xai_consciousness_model: str | None = Field(
+        default=None, alias="XAI_CONSCIOUSNESS_MODEL"
+    )
+    xai_curator_model: str | None = Field(default=None, alias="XAI_CURATOR_MODEL")
     xai_image_model: str = Field(default="grok-imagine-image", alias="XAI_IMAGE_MODEL")
     xai_video_model: str = Field(default="grok-imagine-video", alias="XAI_VIDEO_MODEL")
     vision_model: str | None = Field(default=None, alias="XAI_VISION_MODEL")
@@ -62,6 +66,10 @@ class Settings(BaseSettings):
         default="https://api.openai.com/v1", alias="OPENAI_BASE_URL"
     )
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    openai_consciousness_model: str | None = Field(
+        default=None, alias="OPENAI_CONSCIOUSNESS_MODEL"
+    )
+    openai_curator_model: str | None = Field(default=None, alias="OPENAI_CURATOR_MODEL")
     openai_image_model: str = Field(default="dall-e-3", alias="OPENAI_IMAGE_MODEL")
     openai_vision_model: str | None = Field(default=None, alias="OPENAI_VISION_MODEL")
 
@@ -69,6 +77,12 @@ class Settings(BaseSettings):
     compat_api_key: str | None = Field(default=None, alias="OPHELIA_COMPAT_API_KEY")
     compat_base_url: str | None = Field(default=None, alias="OPHELIA_COMPAT_BASE_URL")
     compat_model: str | None = Field(default=None, alias="OPHELIA_COMPAT_MODEL")
+    compat_consciousness_model: str | None = Field(
+        default=None, alias="OPHELIA_COMPAT_CONSCIOUSNESS_MODEL"
+    )
+    compat_curator_model: str | None = Field(
+        default=None, alias="OPHELIA_COMPAT_CURATOR_MODEL"
+    )
     compat_vision_model: str | None = Field(
         default=None, alias="OPHELIA_COMPAT_VISION_MODEL"
     )
