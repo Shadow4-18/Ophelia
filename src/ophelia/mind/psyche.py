@@ -10,11 +10,18 @@ class Mood:
     valence: float = 0.0  # -1 unpleasant .. +1 pleasant
     arousal: float = 0.3  # 0 calm .. 1 energized
     label: str = "neutral"
+    # Baseline personality setpoint mood drifts toward when idle (homeostasis).
+    baseline_valence: float = 0.15
+    baseline_arousal: float = 0.3
 
 
 @dataclass
 class PsycheState:
-    """Internal state driving human-like autonomy (Neuro prompter analogue)."""
+    """Internal state driving human-like autonomy (Neuro prompter analogue).
+
+    Mood has inertia: between ticks it drifts toward a personality baseline,
+    so she returns to a resting temperament rather than staying stuck in a spike.
+    """
 
     mood: Mood = field(default_factory=Mood)
     feelings: list[str] = field(default_factory=list)
@@ -47,6 +54,8 @@ class PsycheState:
                 valence=float(mood_data.get("valence", 0)),
                 arousal=float(mood_data.get("arousal", 0.3)),
                 label=str(mood_data.get("label", "neutral")),
+                baseline_valence=float(mood_data.get("baseline_valence", 0.15)),
+                baseline_arousal=float(mood_data.get("baseline_arousal", 0.3)),
             ),
             feelings=list(data.get("feelings") or []),
             internal_thought=str(data.get("internal_thought") or ""),
@@ -57,8 +66,13 @@ class PsycheState:
     def apply_tick(self, tick: dict) -> None:
         mood = tick.get("mood") or {}
         if mood:
-            self.mood.valence = max(-1.0, min(1.0, float(mood.get("valence", self.mood.valence))))
-            self.mood.arousal = max(0.0, min(1.0, float(mood.get("arousal", self.mood.arousal))))
+            # Inertia: blend new mood with previous (momentum), then clamp.
+            prev_v = self.mood.valence
+            prev_a = self.mood.arousal
+            new_v = float(mood.get("valence", prev_v))
+            new_a = float(mood.get("arousal", prev_a))
+            self.mood.valence = max(-1.0, min(1.0, 0.55 * new_v + 0.45 * prev_v))
+            self.mood.arousal = max(0.0, min(1.0, 0.55 * new_a + 0.45 * prev_a))
             if mood.get("label"):
                 self.mood.label = str(mood["label"])
         if tick.get("feelings"):
@@ -67,6 +81,16 @@ class PsycheState:
             self.internal_thought = str(tick["internal_thought"])[:2000]
         if tick.get("urges"):
             self.urges = [str(x) for x in tick["urges"]][:6]
+        self.updated_at = time.time()
+
+    def relax(self, elapsed_seconds: float) -> None:
+        """Drift mood toward baseline between ticks (homeostasis)."""
+        if elapsed_seconds <= 0:
+            return
+        # Rate: roughly 0.02 per minute toward baseline.
+        rate = min(0.5, 0.02 * (elapsed_seconds / 60.0))
+        self.mood.valence += (self.mood.baseline_valence - self.mood.valence) * rate
+        self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * rate
         self.updated_at = time.time()
 
     def tick_interval_seconds(self, base: int) -> float:

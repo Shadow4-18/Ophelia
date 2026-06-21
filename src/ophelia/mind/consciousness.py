@@ -66,6 +66,7 @@ class ConsciousnessLoop:
         initiative_threshold: float,
         user_channel: str | None,
         notify: Callable[[str], Awaitable[None]],
+        notify_media: Callable[[list], Awaitable[None]] | None = None,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -81,6 +82,7 @@ class ConsciousnessLoop:
         self.initiative_threshold = initiative_threshold
         self.user_channel = user_channel
         self.notify = notify
+        self.notify_media = notify_media
         self._running = False
         self._pause_logged = False
 
@@ -110,7 +112,9 @@ class ConsciousnessLoop:
                 continue
 
             self.drives.tick_idle(idle, interval=wait)
+            self.psyche.relax(wait)
             await self.memory.save_drives(self.drives)
+            await self.memory.save_psyche(self.psyche)
 
             await self.signals.set_agent_thinking(True)
             try:
@@ -251,16 +255,46 @@ class ConsciousnessLoop:
             if vision_context:
                 prefix = f"[You just saw the screen]\n{vision_context[:2500]}\n\n"
             channel = self.user_channel or "consciousness"
+            # Detect self-directed creative intent so we encourage it explicitly.
+            creative = any(
+                kw in intent.lower()
+                for kw in (
+                    "image", "picture", "draw", "paint", "generate",
+                    "video", "voice", "speak", "say out loud", "tts",
+                    "create", "make art",
+                )
+            )
+            creative_hint = ""
+            if creative:
+                creative_hint = (
+                    " You're feeling creative — go ahead and call generate_image / "
+                    "generate_video / text_to_speech to actually make it. The result "
+                    "will be delivered to the user automatically."
+                )
             result = await self.agent.run_turn(
                 channel,
                 f"{prefix}[Autonomous {action}] {intent}",
                 system_extra=(
                     "You initiated this. Use phone_game_look during active game sessions; "
                     "else phone_see_screen. Then phone_tap / phone_swipe / phone_key. "
-                    "Brief outward_message only if worth disturbing user."
+                    "You may also create media (images/video/voice) proactively when inspired — "
+                    "use generate_image / generate_video / text_to_speech and it will be sent."
+                    + creative_hint
+                    + " Brief outward_message only if worth disturbing user."
                 ),
             )
             outward = outward or result[:2000]
+
+            # Forward any media the agent produced during this autonomous turn.
+            tools = getattr(self.agent, "tools", None)
+            consume = getattr(tools, "consume_pending_artifacts", None)
+            if callable(consume) and self.notify_media:
+                media_paths = consume()
+                if media_paths:
+                    try:
+                        await self.notify_media(media_paths)
+                    except Exception as e:
+                        log.warning("consciousness.media_forward_failed", error=str(e))
 
         if action in ("message", "act", "explore") and outward:
             allowed, reason = self.governor.allow_outreach()

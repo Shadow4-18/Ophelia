@@ -40,15 +40,30 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run(_: argparse.Namespace) -> int:
+def cmd_run(args: argparse.Namespace) -> int:
     settings = Settings()
     ensure_dirs(settings)
-    orch = Orchestrator(settings)
-    try:
-        asyncio.run(orch.start())
-    except KeyboardInterrupt:
-        return 0
-    return 0
+    restart = getattr(args, "restart", False)
+    max_restarts = 5 if restart else 0
+    attempts = 0
+    while True:
+        orch = Orchestrator(settings)
+        try:
+            asyncio.run(orch.start())
+            return 0
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:
+            attempts += 1
+            log = structlog.get_logger()
+            log.exception("ophelia.crashed", attempt=attempts, error=str(e))
+            if attempts > max_restarts:
+                print(f"ophelia crashed {attempts} times; giving up. Last error: {e}", file=sys.stderr)
+                return 1
+            print(f"ophelia crashed (attempt {attempts}): {e}. Restarting in 5s...", file=sys.stderr)
+            import time as _t
+
+            _t.sleep(5)
 
 
 def cmd_auth_import_grok(_: argparse.Namespace) -> int:
@@ -262,6 +277,82 @@ def cmd_curator_run(_: argparse.Namespace) -> int:
     return 0
 
 
+def _control_file(name: str) -> Path:
+    return OPHELIA_HOME / "data" / f"{name}.flag"
+
+
+def cmd_status(_: argparse.Namespace) -> int:
+    """Show Ophelia's current autonomous state from the heartbeat file."""
+    hb = OPHELIA_HOME / "data" / "heartbeat.json"
+    if not hb.is_file():
+        print("No heartbeat — Ophelia is not running (or hasn't written one yet).")
+        return 1
+    import json
+
+    try:
+        data = json.loads(hb.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"Could not read heartbeat: {e}")
+        return 1
+    import time as _t
+
+    age = _t.time() - float(data.get("ts", 0))
+    lines = [
+        f"Ophelia status (heartbeat {age:.0f}s old):",
+        f"  running: {age < 120}",
+        f"  paused:  {data.get('paused', False)}",
+        f"  mood:    {data.get('mood', '?')} (v={data.get('valence', '?')}, a={data.get('arousal', '?')})",
+        f"  drives:  {data.get('drives', '?')}",
+        f"  pressure: {data.get('pressure', '?')}",
+        f"  last_user_msg: {data.get('last_user_msg_ago', '?')}s ago",
+        f"  channels: {data.get('channels', [])}",
+        f"  consciousness: {data.get('consciousness', False)}  dream: {data.get('dream', False)}",
+    ]
+    print("\n".join(lines))
+    return 0
+
+
+def cmd_pause(_: argparse.Namespace) -> int:
+    _control_file("pause").parent.mkdir(parents=True, exist_ok=True)
+    _control_file("pause").write_text("1", encoding="utf-8")
+    print("Pause requested. Running Ophelia will pick it up within a tick.")
+    return 0
+
+
+def cmd_resume(_: argparse.Namespace) -> int:
+    _control_file("pause").unlink(missing_ok=True)
+    print("Resume requested. Running Ophelia will pick it up within a tick.")
+    return 0
+
+
+def cmd_reflect(args: argparse.Namespace) -> int:
+    """Trigger one deliberate reflection cycle immediately."""
+    settings = Settings()
+    ensure_dirs(settings)
+
+    async def _run() -> int:
+        from ophelia.core.agent_loop import AgentLoop
+        from ophelia.memory.store import MemoryStore
+        from ophelia.mind.psyche import PsycheState
+        from ophelia.mind.drives import DriveState
+        from ophelia.mind.inner_log import InnerMonologue
+        from ophelia.tools.registry import ToolRegistry
+
+        mem = MemoryStore(settings.memory_db)
+        await mem.init()
+        artifacts = settings.data_dir / "artifacts"
+        tools = ToolRegistry(settings, artifacts, memory=mem, psyche=PsycheState())
+        drives = DriveState()
+        agent = AgentLoop(settings, mem, tools, PsycheState(), drives=drives)
+        inner = InnerMonologue() if settings.inner_log_enabled else None
+        tools.inner = inner
+        result = await tools._reflect(focus=getattr(args, "focus", "") or "")
+        print(result)
+        return 0
+
+    return asyncio.run(_run())
+
+
 def cmd_inner_tail(args: argparse.Namespace) -> int:
     from ophelia.mind.inner_log import InnerMonologue
 
@@ -408,6 +499,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("run").set_defaults(func=cmd_run)
+    p_run = sub.add_parser("run", help="Run Ophelia always-on (foreground)")
+    p_run.add_argument(
+        "--restart",
+        action="store_true",
+        help="Auto-restart on crash (up to 5 times)",
+    )
+    p_run.set_defaults(func=cmd_run)
 
     p_setup = sub.add_parser(
         "setup",
@@ -485,6 +583,19 @@ def main(argv: list[str] | None = None) -> int:
     p_chat.set_defaults(func=cmd_chat)
 
     sub.add_parser("curator", help="Run memory curator once").set_defaults(func=cmd_curator_run)
+
+    sub.add_parser("status", help="Show live autonomy state (mood, drives, pressure)").set_defaults(
+        func=cmd_status
+    )
+    sub.add_parser("pause", help="Pause autonomy outreach on a running Ophelia").set_defaults(
+        func=cmd_pause
+    )
+    sub.add_parser("resume", help="Resume autonomy outreach on a running Ophelia").set_defaults(
+        func=cmd_resume
+    )
+    p_reflect = sub.add_parser("reflect", help="Run one self-reflection cycle now")
+    p_reflect.add_argument("focus", nargs="?", default="", help="Optional topic to reflect on")
+    p_reflect.set_defaults(func=cmd_reflect)
 
     p_inner = sub.add_parser("inner", help="Inner monologue log")
     p_inner.add_argument("lines", nargs="?", type=int, default=40)

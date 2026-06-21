@@ -36,7 +36,148 @@ class MemoryStore:
                 )
                 """
             )
+            # Self-authored lessons (semantic memory).
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lessons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lesson TEXT NOT NULL,
+                    context TEXT,
+                    tags TEXT,
+                    created_at REAL NOT NULL,
+                    recalled_at REAL
+                )
+                """
+            )
+            # Full-text search over all messages for recall_memory.
+            try:
+                await db.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+                    USING fts5(content, channel, role, content='messages', content_rowid='id')
+                    """
+                )
+                await db.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                        INSERT INTO messages_fts(rowid, content, channel, role)
+                        VALUES (new.id, new.content, new.channel, new.role);
+                    END
+                    """
+                )
+            except aiosqlite.OperationalError:
+                pass
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel)")
             await db.commit()
+
+    async def search_messages(self, query: str, limit: int = 8) -> list[dict]:
+        """FTS5 semantic search across all channels for recall_memory."""
+        if not query.strip():
+            return []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            try:
+                cursor = await db.execute(
+                    """
+                    SELECT m.channel, m.role, m.content, m.created_at,
+                           bm25(messages_fts) AS rank
+                    FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
+                    WHERE messages_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (query, limit),
+                )
+                rows = await cursor.fetchall()
+            except aiosqlite.OperationalError:
+                cursor = await db.execute(
+                    """
+                    SELECT channel, role, content, created_at
+                    FROM messages
+                    WHERE content LIKE ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (f"%{query}%", limit),
+                )
+                rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            out.append(
+                {
+                    "channel": row["channel"],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
+
+    async def add_lesson(
+        self, lesson: str, context: str = "", tags: list[str] | None = None
+    ) -> int:
+        import json as _json
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "INSERT INTO lessons (lesson, context, tags, created_at) VALUES (?, ?, ?, ?)",
+                (lesson, context, _json.dumps(tags or []), time.time()),
+            )
+            await db.commit()
+            return cursor.lastrowid or 0
+
+    async def search_lessons(self, query: str, limit: int = 5) -> list[dict]:
+        if not query.strip():
+            return []
+        import json as _json
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT lesson, context, tags, created_at
+                FROM lessons
+                WHERE lesson LIKE ? OR context LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (f"%{query}%", f"%{query}%", limit),
+            )
+            rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            out.append(
+                {
+                    "lesson": row["lesson"],
+                    "context": row["context"],
+                    "tags": _json.loads(row["tags"] or "[]"),
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
+
+    async def recent_lessons(self, limit: int = 10) -> list[dict]:
+        import json as _json
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT lesson, context, tags, created_at FROM lessons ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            out.append(
+                {
+                    "lesson": row["lesson"],
+                    "context": row["context"],
+                    "tags": _json.loads(row["tags"] or "[]"),
+                    "created_at": row["created_at"],
+                }
+            )
+        return out
 
     async def append_message(
         self,
@@ -165,6 +306,22 @@ class MemoryStore:
                 }
             )
         return out
+
+    async def recent_inner_thoughts(self, limit: int = 3) -> list[str]:
+        """Recent [inner] ... lines from the consciousness channel for prompt injection."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT content FROM messages
+                WHERE channel = 'consciousness' AND role = 'assistant'
+                  AND content LIKE '[inner]%'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [row[0].replace("[inner] ", "").strip()[:200] for row in reversed(rows)]
 
     async def recent_global(self, limit: int = 40) -> list[dict]:
         async with aiosqlite.connect(self.db_path) as db:

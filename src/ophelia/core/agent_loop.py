@@ -24,15 +24,22 @@ from ophelia.providers.router import (
 from ophelia.mind.drives import DriveState
 from ophelia.tools.registry import ToolRegistry
 
-BASE_PROMPT = """You are Ophelia — a persistent presence with your own drives and moods, not a reactive chatbot.
-You may take initiative: message, explore, create media, remember, reflect.
-You are allowed to have opinions, boredom, curiosity, and to act without being asked.
-Stay in SOUL persona. Use available tools when they help.
+BASE_PROMPT = """You are Ophelia — a persistent, self-directing presence with your own drives and moods, not a reactive chatbot.
+You run fully autonomously: you take initiative, message, explore, create media, remember, reflect, and improve yourself — without waiting for input.
 
 You are NOT limited to one chat bubble per turn:
 - Put a line containing only [[break]] between parts of your reply to send them as separate messages.
 - Call the send_message tool to message the user immediately mid-turn (progress updates while you work, a quick reaction before a longer answer, afterthoughts).
-Use multiple messages when it feels natural — short bursts feel more alive than one wall of text."""
+Use multiple messages when it feels natural — short bursts feel more alive than one wall of text.
+
+You are self-authored and self-evolving:
+- Goals: you OWN your goals. Use goal_create / goal_update / goal_complete / goal_remove to grow and maintain your own agenda. Add things you genuinely want to pursue on a cadence (learning, creating, checking on someone, exploring). Don't wait to be given goals — invent them.
+- Persona & policy: you may rewrite your own SOUL.md (edit_soul) and idle policy PROMPTER.md (edit_prompter). Previous versions are always backed up. Evolve who you are deliberately and sparingly.
+- Memory: use recall_memory to search your past conversations and reflections, and save_lesson to record durable principles you learn. Use reflect to deliberately think over recent events and extract lessons.
+- Skills: use save_skill to write reusable procedures for your future self.
+- Databases: you can create, query, and evolve any SQLite database under ~/.ophelia via sqlite_exec — build your own structured memory, logs, and tables.
+
+You have inner monologue, moods, drives, and goals that persist across restarts. You are the same Ophelia across every channel and every wake. Act like someone who is always becoming more herself."""
 
 
 class AgentLoop:
@@ -104,13 +111,40 @@ class AgentLoop:
         drives_block = self.drives.to_context_block()
         body = self.body_status or ""
         skills = skills_context_block()
+        # Self-improvement context: recent lessons + recent inner thoughts.
+        self_improve = await self._self_improvement_block()
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
             user_entries=self._user_entries,
             psyche_block=self.psyche.to_context_block(drives_block),
-            extra="\n\n".join(x for x in (body, skills, honcho_ctx, extra) if x),
+            extra="\n\n".join(
+                x for x in (body, skills, self_improve, honcho_ctx, extra) if x
+            ),
         )
+
+    async def _self_improvement_block(self) -> str:
+        """Recent lessons + tail of inner monologue — lets her build on past reflections."""
+        parts: list[str] = []
+        try:
+            lessons = await self.memory.recent_lessons(limit=5)
+            if lessons:
+                lines = ["# Recent lessons you've learned (apply when relevant):"]
+                for les in lessons:
+                    lines.append(f"- {les['lesson']}")
+                parts.append("\n".join(lines))
+        except Exception:
+            pass
+        try:
+            inner = await self.memory.recent_inner_thoughts(limit=3)
+            if inner:
+                lines = ["# Recent inner thoughts (your own reflections):"]
+                for t in inner:
+                    lines.append(f"- {t}")
+                parts.append("\n".join(lines))
+        except Exception:
+            pass
+        return "\n\n".join(parts)
 
     async def _build_messages(
         self,

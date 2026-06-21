@@ -18,6 +18,7 @@ from ophelia.memory.curator import MemoryCurator
 from ophelia.memory.honcho_client import HonchoClient, load_honcho_config
 from ophelia.memory.store import MemoryStore
 from ophelia.mind.consciousness import ConsciousnessLoop
+from ophelia.mind.dream import DreamLoop
 from ophelia.mind.drives import DriveState
 from ophelia.mind.goals import GoalStore
 from ophelia.mind.initiative import InitiativeGovernor
@@ -97,7 +98,11 @@ class Orchestrator:
             android=self.android,
             vision=self.vision,
             games=self.games,
+            goals=self.goals,
+            memory=self.memory,
+            psyche=self.psyche,
         )
+        self.tools._drives_ref = self.drives
         self.agent = AgentLoop(
             settings,
             self.memory,
@@ -127,7 +132,9 @@ class Orchestrator:
         if self.inner:
             self.inner.notify = self._notify_inner_mirror
             self.signals.inner_mirror = settings.inner_mirror_telegram
+            self.tools.inner = self.inner
         self.consciousness: ConsciousnessLoop | None = None
+        self.dream: DreamLoop | None = None
         self.listen: LocalListenLoop | None = None
 
     def _ensure_goals_file(self) -> None:
@@ -183,6 +190,57 @@ class Orchestrator:
             except Exception as e:
                 log.warning("curator.error", error=str(e))
 
+    async def _heartbeat_loop(self) -> None:
+        """Write a heartbeat file every 30s for `ophelia status` / external monitors."""
+        import json as _json
+        import time as _t
+
+        hb = OPHELIA_HOME / "data" / "heartbeat.json"
+        hb.parent.mkdir(parents=True, exist_ok=True)
+        while not self.signals.terminate:
+            try:
+                age = _t.time() - self.signals.last_user_message_at
+                data = {
+                    "ts": _t.time(),
+                    "paused": self.signals.autonomy_paused,
+                    "mood": self.psyche.mood.label,
+                    "valence": round(self.psyche.mood.valence, 2),
+                    "arousal": round(self.psyche.mood.arousal, 2),
+                    "drives": {
+                        "social": round(self.drives.social, 2),
+                        "curiosity": round(self.drives.curiosity, 2),
+                        "boredom": round(self.drives.boredom, 2),
+                        "agency": round(self.drives.agency, 2),
+                        "expressiveness": round(self.drives.expressiveness, 2),
+                    },
+                    "pressure": round(self.drives.initiative_pressure(), 2),
+                    "last_user_msg_ago": round(age, 0),
+                    "channels": self.hub.configured_names(),
+                    "consciousness": self.settings.consciousness_on(),
+                    "dream": self.settings.dream_enabled,
+                }
+                hb.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            except Exception as e:
+                log.warning("heartbeat.failed", error=str(e))
+            await asyncio.sleep(30)
+
+    async def _pause_poll_loop(self) -> None:
+        """Honor `ophelia pause` / `ophelia resume` control flags from CLI."""
+        flag = OPHELIA_HOME / "data" / "pause.flag"
+        was_paused = False
+        while not self.signals.terminate:
+            try:
+                if flag.is_file() and not self.signals.autonomy_paused:
+                    self.signals.autonomy_paused = True
+                    log.info("autonomy.paused", source="cli_flag")
+                elif not flag.is_file() and self.signals.autonomy_paused and was_paused:
+                    self.signals.autonomy_paused = False
+                    log.info("autonomy.resumed", source="cli_flag")
+                was_paused = self.signals.autonomy_paused
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+
     async def _greet_on_start(self) -> None:
         """Proactive hello when she comes online — first visible sign of autonomy."""
         await asyncio.sleep(3.0)
@@ -221,6 +279,8 @@ class Orchestrator:
 
         tasks: list[asyncio.Task] = [
             asyncio.create_task(self._oauth_refresh_loop()),
+            asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._pause_poll_loop()),
         ]
 
         if self.curator:
@@ -263,8 +323,20 @@ class Orchestrator:
                 initiative_threshold=self.settings.initiative_threshold,
                 user_channel=self.settings.primary_user_channel(),
                 notify=self._notify_spontaneous,
+                notify_media=self.hub.broadcast_proactive_media,
             )
             tasks.append(asyncio.create_task(self.consciousness.run()))
+
+        if self.settings.dream_enabled:
+            self.dream = DreamLoop(
+                self.agent,
+                self.memory,
+                self.signals,
+                self.inner,
+                interval_hours=self.settings.dream_interval_hours,
+                notify=self._notify_spontaneous,
+            )
+            tasks.append(asyncio.create_task(self.dream.run()))
 
         self.listen = LocalListenLoop(self.settings, self.agent, self.signals)
         if self.listen.available():
@@ -278,19 +350,42 @@ class Orchestrator:
             provider=self.settings.provider,
             channels=self.hub.configured_names(),
             consciousness=self.settings.consciousness_on(),
+            dream=self.settings.dream_enabled,
             listen=self.listen.available(),
             curator=bool(self.curator),
             inner=bool(self.inner),
             games=bool(self.games),
         )
+        # Clean shutdown on SIGTERM/SIGINT (e.g. systemd, reboot) so psyche/drives flush.
+        import signal as _signal
+
+        loop = asyncio.get_running_loop()
+        for sig in (_signal.SIGINT, _signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self._request_shutdown)
+            except (NotImplementedError, RuntimeError):
+                # Windows/unsupported — KeyboardInterrupt still works.
+                pass
         try:
             await self.hub.run()
         finally:
             self.signals.terminate = True
             if self.consciousness:
                 self.consciousness.stop()
+            if self.dream:
+                self.dream.stop()
             if self.listen:
                 self.listen.stop()
+            # Final flush of psyche/drives.
+            try:
+                await self.memory.save_psyche(self.psyche)
+                await self.memory.save_drives(self.drives)
+            except Exception:
+                pass
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _request_shutdown(self) -> None:
+        log.info("ophelia.shutdown_requested")
+        self.signals.terminate = True

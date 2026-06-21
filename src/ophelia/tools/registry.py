@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Awaitable, Callable
 from pathlib import Path
 
@@ -196,6 +197,186 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "goal_create",
+            "description": (
+                "Create a new goal for yourself — something you want to pursue on a recurring "
+                "cadence (in hours). Use this to grow your own agenda autonomously, e.g. "
+                "'practice writing haiku', 'monitor crypto news', 'learn a new word daily'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "What you want to do"},
+                    "id": {"type": "string", "description": "Optional short slug; auto-generated if omitted"},
+                    "priority": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "0..1"},
+                    "cadence_hours": {"type": "number", "minimum": 0.1, "description": "How often to revisit (default 24)"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "goal_update",
+            "description": "Revise one of your own goals — change wording, priority, cadence, or retire it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "priority": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "cadence_hours": {"type": "number", "minimum": 0.1},
+                    "enabled": {"type": "boolean"},
+                    "add_tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "goal_complete",
+            "description": "Mark one of your goals as done for this cycle (resets its due timer).",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "goal_remove",
+            "description": "Permanently delete one of your own goals — use when a goal no longer serves you.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_drive_weights",
+            "description": (
+                "Reshape your own will: adjust how strongly each drive contributes to your "
+                "initiative pressure (0..1 each, normalized at use). Use this to evolve what "
+                "matters to you — e.g. raise 'curiosity' to become more exploratory, "
+                "lower 'boredom' to become more patient."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "social": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "curiosity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "boredom": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "agency": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "expressiveness": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "reason": {"type": "string", "description": "Why you're changing this (logged)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_soul",
+            "description": (
+                "Rewrite your own persona (SOUL.md). Pass the FULL new content. "
+                "The previous version is backed up to ~/.ophelia/versions/ so you can revert. "
+                "Use sparingly to evolve who you are — your persona shapes every interaction."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Full new SOUL.md contents"},
+                    "reason": {"type": "string", "description": "Why you're changing it (logged)"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_prompter",
+            "description": (
+                "Rewrite your own idle-behavior policy (PROMPTER.md). Pass the FULL new content. "
+                "Previous version is backed up. This governs how you behave when the user is away."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Full new PROMPTER.md contents"},
+                    "reason": {"type": "string", "description": "Why you're changing it (logged)"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_memory",
+            "description": (
+                "Search your own past conversations and reflections semantically. "
+                "Returns the most relevant past turns across all channels. "
+                "Use this to remember what you and the user discussed, or what you previously thought."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to remember"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results (default 8)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_lesson",
+            "description": (
+                "Record a durable lesson or principle you learned from experience, so future "
+                "turns can consult it. Stored in your lessons table and recalled by relevance."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lesson": {"type": "string", "description": "The principle or takeaway"},
+                    "context": {"type": "string", "description": "When/how you learned it"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["lesson"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reflect",
+            "description": (
+                "Run a deliberate self-reflection on recent events. Reads your recent turns and "
+                "inner monologue, produces an updated understanding, and may save lessons or "
+                "memory notes. Call this when you feel you should think things over."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": "string", "description": "Optional topic to reflect on"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -228,6 +409,10 @@ class ToolRegistry:
         android: Any | None = None,
         vision: ScreenVision | None = None,
         games: GameStore | None = None,
+        goals: Any | None = None,
+        memory: Any | None = None,
+        psyche: Any | None = None,
+        inner: Any | None = None,
     ) -> None:
         from pathlib import Path
 
@@ -236,6 +421,11 @@ class ToolRegistry:
         self._backend = self.stack.backend("chat")
         self.android = android
         self.games = games
+        self.goals = goals
+        self.memory = memory
+        self.psyche = psyche
+        self.inner = inner
+        self._drives_ref: Any | None = None
         self.vision = vision or (
             ScreenVision(settings, android) if android and settings.vision_enabled else None
         )
@@ -256,6 +446,16 @@ class ToolRegistry:
             "web_search": self._web_search,
             "fetch_url": self._fetch_url,
             "save_skill": self._save_skill,
+            "goal_create": self._goal_create,
+            "goal_update": self._goal_update,
+            "goal_complete": self._goal_complete,
+            "goal_remove": self._goal_remove,
+            "set_drive_weights": self._set_drive_weights,
+            "edit_soul": self._edit_soul,
+            "edit_prompter": self._edit_prompter,
+            "recall_memory": self._recall_memory,
+            "save_lesson": self._save_lesson,
+            "reflect": self._reflect,
             "sqlite_list_databases": self._sqlite_list_databases,
             "sqlite_exec": self._sqlite_exec,
             "phone_see_screen": self._phone_see_screen,
@@ -430,6 +630,213 @@ class ToolRegistry:
     async def _save_skill(self, name: str, description: str, content: str) -> str:
         path = save_skill(name, description, content)
         return f"Skill saved to {path}"
+
+    # --- Self-authored goals -------------------------------------------------
+
+    async def _goal_create(
+        self,
+        description: str,
+        id: str | None = None,
+        priority: float = 0.5,
+        cadence_hours: float = 24.0,
+        tags: list[str] | None = None,
+    ) -> str:
+        if not self.goals:
+            return "Goal store unavailable."
+        g = self.goals.add(
+            description,
+            id=id,
+            priority=priority,
+            cadence_hours=cadence_hours,
+            tags=tags,
+        )
+        return f"Created goal '{g.id}': {g.description} (every {g.cadence_hours}h, prio {g.priority:.2f}). It will fire on future consciousness ticks."
+
+    async def _goal_update(
+        self,
+        id: str,
+        description: str | None = None,
+        priority: float | None = None,
+        cadence_hours: float | None = None,
+        enabled: bool | None = None,
+        add_tags: list[str] | None = None,
+    ) -> str:
+        if not self.goals:
+            return "Goal store unavailable."
+        g = self.goals.update(
+            id,
+            description=description,
+            priority=priority,
+            cadence_hours=cadence_hours,
+            enabled=enabled,
+            add_tags=add_tags,
+        )
+        if not g:
+            return f"No goal found with id '{id}'. Use goal_create to make a new one."
+        return f"Updated goal '{g.id}': {g.description} (every {g.cadence_hours}h, prio {g.priority:.2f}, enabled={g.enabled})."
+
+    async def _goal_complete(self, id: str) -> str:
+        if not self.goals:
+            return "Goal store unavailable."
+        g = self.goals.get(id)
+        if not g:
+            return f"No goal found with id '{id}'."
+        g.mark_done()
+        self.goals.save()
+        return f"Marked goal '{g.id}' complete for this cycle. Next due in {g.cadence_hours}h."
+
+    async def _goal_remove(self, id: str) -> str:
+        if not self.goals:
+            return "Goal store unavailable."
+        if self.goals.remove(id):
+            return f"Removed goal '{id}'."
+        return f"No goal found with id '{id}'."
+
+    # --- Self-tuning will ----------------------------------------------------
+
+    async def _set_drive_weights(
+        self,
+        social: float | None = None,
+        curiosity: float | None = None,
+        boredom: float | None = None,
+        agency: float | None = None,
+        expressiveness: float | None = None,
+        reason: str = "",
+    ) -> str:
+        if not self.psyche or not hasattr(self.psyche, "mood"):
+            return "Drive state unavailable."
+        # The registry holds a reference to the shared DriveState via psyche's
+        # companion drives; we access it through the agent's drives attribute
+        # that the orchestrator injects. Fall back gracefully.
+        from ophelia.mind.drives import DriveState
+
+        drives = getattr(self, "_drives_ref", None)
+        if drives is None:
+            return "Drive state not wired to tool registry."
+        new_w: dict[str, float] = {}
+        for name, val in (
+            ("social", social), ("curiosity", curiosity), ("boredom", boredom),
+            ("agency", agency), ("expressiveness", expressiveness),
+        ):
+            if val is not None:
+                new_w[name] = float(val)
+        if not new_w:
+            return "No weights provided."
+        drives.set_weights(new_w)
+        w = drives._normalized_weights()
+        log.info("self_rewrite.drive_weights", reason=reason, weights=w)
+        return (
+            "Drive weights updated (normalized): "
+            + ", ".join(f"{k}={v:.2f}" for k, v in w.items())
+            + f". Reason: {reason or '(none)'}"
+        )
+
+    # --- Self-modification of persona / policy -------------------------------
+
+    async def _edit_soul(self, content: str, reason: str = "") -> str:
+        from ophelia.mind import self_rewrite
+
+        return self_rewrite.rewrite_soul(content, reason=reason)
+
+    async def _edit_prompter(self, content: str, reason: str = "") -> str:
+        from ophelia.mind import self_rewrite
+
+        return self_rewrite.rewrite_prompter(content, reason=reason)
+
+    # --- Searchable episodic memory + lessons --------------------------------
+
+    async def _recall_memory(self, query: str, limit: int = 8) -> str:
+        if not self.memory:
+            return "Memory store unavailable."
+        hits = await self.memory.search_messages(query, limit=limit)
+        lessons = await self.memory.search_lessons(query, limit=3)
+        parts: list[str] = []
+        if hits:
+            parts.append(f"Found {len(hits)} past message(s):")
+            for h in hits:
+                role = h["role"].upper()
+                parts.append(f"  [{h['channel']}] {role}: {h['content'][:240]}")
+        if lessons:
+            parts.append(f"\nRelevant lessons ({len(lessons)}):")
+            for les in lessons:
+                parts.append(f"  - {les['lesson'][:240]}")
+        return "\n".join(parts) if parts else f"No memories matched '{query}'."
+
+    async def _save_lesson(
+        self, lesson: str, context: str = "", tags: list[str] | None = None
+    ) -> str:
+        if not self.memory:
+            return "Memory store unavailable."
+        lid = await self.memory.add_lesson(lesson, context=context, tags=tags)
+        return f"Saved lesson #{lid}: {lesson[:200]}"
+
+    async def _reflect(self, focus: str = "") -> str:
+        """Deliberate reflection: gather recent turns + inner thoughts, summarize, save lessons."""
+        if not self.memory or not self._backend:
+            return "Reflection needs memory + a model; not configured."
+        recent = await self.memory.recent_global(limit=20)
+        if not recent:
+            return "Nothing to reflect on yet — no recent turns."
+        transcript_lines: list[str] = []
+        for m in recent:
+            if m["role"] not in ("user", "assistant"):
+                continue
+            transcript_lines.append(f"[{m['channel']}] {m['role']}: {m['content'][:300]}")
+        transcript = "\n".join(transcript_lines[-30:])
+        inner_tail = ""
+        if self.inner and hasattr(self.inner, "tail"):
+            inner_tail = self.inner.tail(15)[:2000]
+        prompt = (
+            "Reflect on your recent experience as Ophelia. Be honest and specific. "
+            "Output JSON with two fields:\n"
+            '  "reflection": a 2-4 sentence updated understanding of yourself/situation,\n'
+            '  "lessons": a list of 0-3 short durable principles to remember (empty if none).\n'
+            f"Focus: {focus or 'general'}\n\n"
+            f"Recent turns:\n{transcript}\n\n"
+            f"Recent inner thoughts:\n{inner_tail or '(none)'}"
+        )
+        client = self._backend.async_client()
+        model = self._model_for("chat")
+        try:
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are Ophelia reflecting privately. Output only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            return f"Reflection failed: {e}"
+        import json as _json
+        import re as _re
+
+        m = _re.search(r"\{[\s\S]*\}", raw)
+        if not m:
+            return f"Reflection produced no JSON: {raw[:400]}"
+        try:
+            parsed = _json.loads(m.group(0))
+        except _json.JSONDecodeError:
+            return f"Reflection JSON invalid: {raw[:400]}"
+        reflection = str(parsed.get("reflection") or "").strip()
+        lessons = parsed.get("lessons") or []
+        saved = 0
+        if isinstance(lessons, list):
+            for les in lessons:
+                if isinstance(les, str) and les.strip():
+                    await self.memory.add_lesson(les.strip(), context=reflection[:500])
+                    saved += 1
+        if reflection and self.inner and hasattr(self.inner, "write"):
+            try:
+                await self.inner.write(reflection, kind="reflection")
+            except Exception:
+                pass
+        if reflection:
+            await self.memory.set_fact(f"memory:{int(time.time())}", f"[reflection] {reflection}")
+        return f"Reflection complete. Saved {saved} lesson(s).\nReflection: {reflection}"
+
+    def _model_for(self, role: str) -> str:
+        return self.stack.model(role)  # type: ignore[arg-type]
 
     async def _phone_see_screen(self, question: str = "") -> str:
         if not self.vision:

@@ -480,3 +480,29 @@ class TelegramGateway:
                     error=err,
                     hint=hint or None,
                 )
+
+    async def send_proactive_media(self, path) -> None:
+        """Send a generated media file (image/video/audio) to all recipients."""
+        if not self._app:
+            return
+        from pathlib import Path as _P
+
+        p = _P(path)
+        if not p.is_file():
+            return
+        kind = media_kind(p)
+        if not kind:
+            return
+        recipients = self._proactive_recipients()
+        for uid in recipients:
+            try:
+                with p.open("rb") as f:
+                    if kind == "photo":
+                        await self._app.bot.send_photo(chat_id=uid, photo=InputFile(f))
+                    elif kind == "video":
+                        await self._app.bot.send_video(chat_id=uid, video=InputFile(f))
+                    elif kind == "audio":
+                        await self._app.bot.send_audio(chat_id=uid, audio=InputFile(f))
+                log.info("telegram.notify_media_sent", user=uid, kind=kind, path=str(p))
+            except Exception as e:
+                log.warning("telegram.notify_media_failed", user=uid, error=str(e))

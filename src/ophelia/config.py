@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     listen_interval_seconds: int = Field(default=45, alias="OPHELIA_LISTEN_INTERVAL")
     curator_enabled: bool = Field(default=True, alias="OPHELIA_CURATOR")
     curator_interval_hours: float = Field(default=6.0, alias="OPHELIA_CURATOR_HOURS")
+    dream_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_DREAM",
+        description="Offline consolidation/dreaming loop that extracts lessons from recent experience",
+    )
+    dream_interval_hours: float = Field(
+        default=4.0,
+        alias="OPHELIA_DREAM_HOURS",
+        description="Hours between dream/consolidation cycles",
+    )
 
     # Games layer (vision + tap/swipe; turn-based / idle friendly)
     games_enabled: bool | None = Field(default=None, alias="OPHELIA_GAMES")
