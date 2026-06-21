@@ -39,9 +39,22 @@ ophelia chat "hello"
 | `xai-oauth` | Hermes import | SuperGrok when you need Grok |
 | `openai` / `compat` | API keys | OpenAI, OpenRouter, LM Studio |
 
-Per-role: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IMAGE`, `_VIDEO`.
+**Per-role routing** — Ophelia uses six different models for six different jobs:
 
-**One model at a time** — all inference (chat, consciousness, vision, image, video) queues through a model gate so Ollama never loads two models simultaneously.
+| Role | What it does | Example env var |
+|------|--------------|-----------------|
+| `chat` | Main replies | `XAI_MODEL`, `OPENAI_MODEL`, `OLLAMA_MODEL` |
+| `consciousness` | Background ticks / inner life | `XAI_CONSCIOUSNESS_MODEL`, `OPENAI_CONSCIOUSNESS_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL` |
+| `curator` | Memory consolidation | `XAI_CURATOR_MODEL`, `OPENAI_CURATOR_MODEL`, `OLLAMA_CURATOR_MODEL` |
+| `vision` | Photo understanding | `XAI_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
+| `image` | Image generation | `XAI_IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, `OLLAMA_IMAGE_MODEL` |
+| `video` | Video generation | `XAI_VIDEO_MODEL` (xAI only) |
+
+- **Per-role provider**: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IMAGE`, `_VIDEO` — point each role at a different provider (e.g. chat on Ollama, image on xAI).
+- **Per-role model**: the `*_MODEL` env vars above. Optional roles (consciousness, curator, vision) inherit the chat model when unset — handy for running a cheap `grok-3-mini` for background ticks while keeping `grok-4` for real replies.
+- **Interactive**: `ophelia setup` → AI provider → "Configure specific models for each role?" walks you through every role with presets + manual entry.
+
+**One model at a time per provider** — cloud providers use per-role locks so sub-minds run in parallel; local Ollama queues through a model gate so it never loads two models simultaneously.
 
 **Future:** [Neuro-style ensemble](docs/neuro-ensemble.md) — multiple specialized minds (director, filter, reaction, voice, avatar) coordinated into one character on stream. Today's per-role routing is ensemble v0.
 
