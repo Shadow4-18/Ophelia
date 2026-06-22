@@ -464,13 +464,44 @@ class ProviderStack:
         try:
             backend = self.backend(role)
             if isinstance(backend, XAIBackend):
-                if name == "xai-oauth":
-                    if not backend.bearer():
-                        return False, "missing OAuth — ophelia auth login"
-                    return True, "OK (OAuth token present)"
-                if not backend.bearer():
+                if name == "xai-oauth" and not backend.bearer():
+                    return False, "missing OAuth — ophelia auth login"
+                if name == "xai" and not backend.bearer():
                     return False, "missing xAI API key"
-                return True, "OK (API key present)"
+                # Actually ping the API so a bad model name is caught here
+                # rather than failing every turn at runtime.
+                model = self.model(role)
+                try:
+                    client = (
+                        await backend.async_client_fresh()
+                        if isinstance(backend, XAIBackend)
+                        else backend.async_client()
+                    )
+                except Exception as e:
+                    return False, f"credential error: {e}"
+                try:
+                    await asyncio.wait_for(
+                        client.chat.completions.create(
+                            model=model,
+                            messages=[{"role": "user", "content": "ping"}],
+                            max_tokens=1,
+                        ),
+                        timeout=12.0,
+                    )
+                except Exception as e:
+                    from ophelia.providers.errors import api_error_detail
+
+                    detail = api_error_detail(e)
+                    # A 400 here almost always means the model name is wrong.
+                    hint = ""
+                    if "400" in detail:
+                        hint = (
+                            f" — model '{model}' rejected by xAI. "
+                            "Check XAI_MODEL / per-role XAI_*_MODEL in ~/.ophelia/.env. "
+                            "Valid examples: grok-4, grok-4-fast, grok-4-fast-reasoning, grok-3."
+                        )
+                    return False, f"{detail}{hint}"
+                return True, f"OK ({model})"
             if isinstance(backend, OllamaBackend):
                 if not _ollama_reachable(self.settings):
                     return False, f"Ollama not reachable at {self.settings.ollama_base_url}"

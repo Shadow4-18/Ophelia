@@ -242,6 +242,37 @@ class Orchestrator:
                 pass
             await asyncio.sleep(5)
 
+    async def _validate_models_at_startup(self) -> None:
+        """Ping each chat-style role's model once. Warn loudly on failure.
+
+        A bad model name (typo, wrong version) would otherwise fail every turn
+        with a cryptic 400. Catching it here gives the user an actionable hint
+        before any real work starts.
+        """
+        roles_to_check = ("chat", "consciousness", "curator", "vision")
+        for role in roles_to_check:
+            try:
+                ok, msg = await self.stack.check(role)
+            except Exception as e:
+                from ophelia.providers.errors import api_error_detail
+
+                log.error(
+                    "startup.model_check_error",
+                    role=role,
+                    provider=self.stack.name(role),  # type: ignore[arg-type]
+                    model=self.stack.model(role),  # type: ignore[arg-type]
+                    error=api_error_detail(e),
+                )
+                continue
+            if not ok:
+                log.error(
+                    "startup.model_check_failed",
+                    role=role,
+                    provider=self.stack.name(role),  # type: ignore[arg-type]
+                    model=self.stack.model(role),  # type: ignore[arg-type]
+                    detail=msg,
+                )
+
     async def _greet_on_start(self) -> None:
         """Proactive hello when she comes online — first visible sign of autonomy."""
         await asyncio.sleep(3.0)
@@ -277,6 +308,11 @@ class Orchestrator:
                     await xai.bearer_fresh()
                 except Exception as e:
                     log.warning("oauth.startup_refresh_failed", error=str(e))
+
+        # Validate that each configured chat-role model is actually accepted by
+        # its provider. A bad model name (e.g. a typo) would otherwise fail
+        # every single turn with a cryptic 400. Warn loudly here instead.
+        await self._validate_models_at_startup()
 
         tasks: list[asyncio.Task] = [
             asyncio.create_task(self._oauth_refresh_loop()),
