@@ -50,7 +50,7 @@ async def generate_image(
 
     async with gate.session(role, model, provider):
         if provider in ("xai-oauth", "xai"):
-            return await _xai_image(settings, stack, prompt, aspect_ratio, model)
+            return await _xai_image(settings, stack, prompt, aspect_ratio, model, artifacts_dir)
         if provider == "openai":
             return await _openai_image(settings, stack, prompt, model, artifacts_dir)
         if provider == "ollama":
@@ -96,6 +96,7 @@ async def _xai_image(
     prompt: str,
     aspect_ratio: str,
     model: str,
+    artifacts_dir: Path,
 ) -> str:
     backend = stack.backend("image")
     assert isinstance(backend, XAIBackend)
@@ -106,9 +107,20 @@ async def _xai_image(
         extra_body={"aspect_ratio": aspect_ratio},
     )
     url = resp.data[0].url if resp.data else None
-    if not url:
-        return "Image generation returned no URL."
-    return f"Image generated ({model}): {url}"
+    b64 = getattr(resp.data[0], "b64_json", None) if resp.data else None
+    if not url and not b64:
+        return "Image generation returned no URL or bytes."
+    saved = await _save_image_artifact(
+        artifacts_dir=artifacts_dir,
+        prompt=prompt,
+        url=url,
+        b64=b64,
+        model=model,
+    )
+    if not saved:
+        return "Image generation failed to save."
+    log.info("image.saved", provider="xai", model=model, path=str(saved))
+    return f"Image saved to {saved}"
 
 
 async def _openai_image(
@@ -124,13 +136,62 @@ async def _openai_image(
     item = resp.data[0] if resp.data else None
     if not item:
         return "OpenAI image generation returned no data."
-    if item.url:
-        return f"Image generated ({model}): {item.url}"
-    if item.b64_json:
-        out = artifacts_dir / f"image_{abs(hash(prompt)) % 10**8}.png"
-        out.write_bytes(base64.standard_b64decode(item.b64_json))
-        return f"Image saved to {out}"
-    return "Image generation returned no URL or bytes."
+    url = getattr(item, "url", None)
+    b64 = getattr(item, "b64_json", None)
+    if not url and not b64:
+        return "Image generation returned no URL or bytes."
+    saved = await _save_image_artifact(
+        artifacts_dir=artifacts_dir,
+        prompt=prompt,
+        url=url,
+        b64=b64,
+        model=model,
+    )
+    if not saved:
+        return "Image generation failed to save."
+    log.info("image.saved", provider="openai", model=model, path=str(saved))
+    return f"Image saved to {saved}"
+
+
+async def _save_image_artifact(
+    *,
+    artifacts_dir: Path,
+    prompt: str,
+    url: str | None,
+    b64: str | None,
+    model: str,
+) -> Path | None:
+    """Persist an image artifact to disk. Always saves, regardless of source.
+
+    xAI and OpenAI image URLs are temporary and expire — downloading them now
+    means the image survives and can be re-sent to Telegram later.
+    """
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time())
+    slug = abs(hash(prompt)) % 10**8
+    out = artifacts_dir / f"image_{stamp}_{slug}.png"
+
+    if b64:
+        try:
+            out.write_bytes(base64.standard_b64decode(b64))
+            return out
+        except Exception as e:
+            log.warning("image.save_b64_failed", error=str(e))
+
+    if url:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as http:
+                dl = await http.get(url)
+                if dl.status_code >= 400:
+                    # Some signed URLs require auth; retry with empty headers
+                    # (no-op here, but leaves a hook for future bearer retries).
+                    dl = await http.get(url)
+                dl.raise_for_status()
+                out.write_bytes(dl.content)
+                return out
+        except Exception as e:
+            log.warning("image.download_failed", url=url, error=str(e))
+    return None
 
 
 async def _ollama_image(
@@ -157,9 +218,13 @@ async def _ollama_image(
             f"Ollama model '{model}' did not return image bytes. "
             "Try: ollama pull flux (or another image-capable model)."
         )
-    out = artifacts_dir / f"ollama_{abs(hash(prompt)) % 10**8}.png"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time())
+    slug = abs(hash(prompt)) % 10**8
+    out = artifacts_dir / f"ollama_{stamp}_{slug}.png"
     out.write_bytes(base64.standard_b64decode(b64))
-    return f"Image saved to {out} (model={model})"
+    log.info("image.saved", provider="ollama", model=model, path=str(out))
+    return f"Image saved to {out}"
 
 
 async def _xai_video(
