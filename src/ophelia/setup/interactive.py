@@ -571,20 +571,55 @@ _ROLE_LABELS = {
 }
 
 
+_PROVIDER_ENV_BY_ROLE: dict[RoleKey, str] = {
+    "chat": "OPHELIA_PROVIDER_CHAT",
+    "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
+    "curator": "OPHELIA_PROVIDER_CURATOR",
+    "vision": "OPHELIA_PROVIDER_VISION",
+    "image": "OPHELIA_PROVIDER_IMAGE",
+    "video": "OPHELIA_PROVIDER_VIDEO",
+}
+
+# Which providers can serve each role. "auto" = inherit primary provider.
+_ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
+    "chat": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
+    "consciousness": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
+    "curator": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
+    "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
+    "image": ["auto", "ollama", "xai-oauth", "xai", "openai"],
+    "video": ["auto", "xai-oauth", "xai"],
+}
+
+
 def _role_summary(provider: str, role: RoleKey) -> str:
-    """One-line current value for a role, e.g. 'grok-4'."""
+    """One-line current value for a role: provider + model."""
     role_def = _PROVIDER_ROLE_DEFS.get(provider, {}).get(role)
     if not role_def:
         return "(not available for this provider)"
+
+    # Provider for this role (env override or inherited primary)
+    prov_env = _PROVIDER_ENV_BY_ROLE[role]
+    prov_val = read_env_key(prov_env)
+    if prov_val and prov_val.lower() != "auto":
+        prov_label = prov_val.lower()
+    else:
+        primary = read_env_key("OPHELIA_PROVIDER") or "auto"
+        prov_label = f"{primary.lower()} (inherited)" if primary.lower() != "auto" else "auto"
+
+    # Model for this role
     env_val = read_env_key(role_def["env"])
     if env_val:
-        return env_val
-    default = role_def.get("default", "")
-    if default:
-        return f"{default} (default)"
-    if role_def.get("optional"):
-        return "(inherits chat model)"
-    return "(not set)"
+        model_label = env_val
+    else:
+        default = role_def.get("default", "")
+        if default:
+            model_label = f"{default} (default)"
+        elif role_def.get("optional"):
+            model_label = "(inherits chat model)"
+        else:
+            model_label = "(not set)"
+
+    return f"[{prov_label}] {model_label}"
 
 
 def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
@@ -594,16 +629,17 @@ def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
         return  # auto / unknown — nothing to configure here
 
     pick = radiolist(
-        "Configure specific models for each role?",
+        "Configure specific providers/models for each role?",
         [
-            "Yes — pick models per role (chat, vision, image, video, ...)",
-            "Skip — keep current / default models",
+            "Yes — pick provider + model per role (chat, vision, image, video, ...)",
+            "Skip — keep current / default settings",
         ],
         selected=1,
         description=(
-            "Ophelia uses different models for different jobs:\n"
+            "Ophelia uses six roles, each with its own provider and model:\n"
             "  chat, consciousness, curator, vision, image, video.\n"
-            "You can set each one independently."
+            "You can point each role at a different provider (e.g. image on xAI\n"
+            "  API key while chat stays on OAuth) and pick its model independently."
         ),
     )
     if pick != 0:
@@ -622,10 +658,14 @@ def _models_menu(provider: str, *, on_phone: bool) -> None:
         items.append("Clear all role overrides (use defaults)")
         items.append("Back")
         pick = radiolist(
-            f"Models — {provider}",
+            f"Roles — {provider}",
             items,
             selected=0,
-            description="Pick a role to choose its model. Optional roles inherit chat.",
+            description=(
+                "Pick a role to choose its provider AND model.\n"
+                "Each role can use a different backend — e.g. image gen on xAI\n"
+                "  API key while chat stays on OAuth. 'auto' inherits the primary."
+            ),
         )
         if pick < 0 or pick == len(items) - 1:
             return  # back / cancel
@@ -639,14 +679,55 @@ def _models_menu(provider: str, *, on_phone: bool) -> None:
 
 
 def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
-    role_def = _PROVIDER_ROLE_DEFS[provider][role]
+    """Pick the PROVIDER and MODEL for a single role."""
+    # --- Step 1: provider for this role ---
+    prov_env = _PROVIDER_ENV_BY_ROLE[role]
+    current_prov = read_env_key(prov_env) or "auto"
+    prov_options = _ROLE_PROVIDER_OPTIONS.get(role, ["auto"])
+    prov_labels = []
+    for p in prov_options:
+        if p == current_prov:
+            prov_labels.append(f"{p} (current)")
+        else:
+            prov_labels.append(p)
+    # Map label -> provider value
+    prov_pick = radiolist(
+        f"{_ROLE_LABELS[role]} — choose provider",
+        prov_labels,
+        selected=next(
+            (i for i, p in enumerate(prov_options) if p == current_prov), 0
+        ),
+        description=(
+            "Which backend should run this role?\n"
+            "auto = inherit the primary provider set on the main menu."
+        ),
+    )
+    if prov_pick < 0:
+        return
+    chosen_prov = prov_options[prov_pick]
+    if chosen_prov == "auto":
+        write_env_updates({prov_env: None})
+        print(f"\n  Cleared {prov_env} — role will inherit primary provider.")
+    else:
+        write_env_updates({prov_env: chosen_prov})
+        print(f"\n  Saved {prov_env}={chosen_prov}")
+    # Use the chosen provider for the model presets that follow.
+    effective_provider = chosen_prov if chosen_prov != "auto" else provider
+
+    # --- Step 2: model for this role, under the chosen provider ---
+    role_def = _PROVIDER_ROLE_DEFS.get(effective_provider, {}).get(role)
+    if not role_def:
+        print(f"\n  No model presets for {effective_provider}/{role} — set via .env if needed.")
+        pause()
+        return
+
     env_key = role_def["env"]
     default = role_def.get("default", "")
     presets = list(role_def.get("presets", []))
     optional = role_def.get("optional", False)
 
     # For Ollama chat/vision, augment presets with what's actually pulled.
-    if role_def.get("dynamic") and provider == "ollama":
+    if role_def.get("dynamic") and effective_provider == "ollama":
         pulled = _list_ollama_model_names()
         for m in pulled[:12]:
             if m not in presets:
@@ -664,7 +745,7 @@ def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
     choices.append("Type a model name manually...")
 
     selected = next((i for i, c in enumerate(choices) if c == current), 0)
-    title = f"{_ROLE_LABELS[role]} — {provider}"
+    title = f"{_ROLE_LABELS[role]} — model ({effective_provider})"
     desc = "Optional: leave unset to inherit the chat model." if optional else ""
     pick = radiolist(title, choices, selected=selected, description=desc)
     if pick < 0:
@@ -685,16 +766,20 @@ def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
 
 
 def _clear_role_overrides(provider: str) -> None:
-    role_defs = _PROVIDER_ROLE_DEFS[provider]
+    """Clear all per-role provider AND model overrides."""
     updates: dict[str, str | None] = {}
-    for role, role_def in role_defs.items():
-        if role_def is None:
-            continue
-        if role == "chat":
-            continue  # keep main model
-        env_key = role_def["env"]
-        if read_env_key(env_key):
-            updates[env_key] = None
+    role_order = ["chat", "consciousness", "curator", "vision", "image", "video"]
+    for role in role_order:
+        # Clear provider override for every role.
+        prov_env = _PROVIDER_ENV_BY_ROLE[role]
+        if read_env_key(prov_env):
+            updates[prov_env] = None
+        # Clear model override for roles of the current provider.
+        role_def = _PROVIDER_ROLE_DEFS.get(provider, {}).get(role)
+        if role_def and role != "chat":
+            env_key = role_def["env"]
+            if read_env_key(env_key):
+                updates[env_key] = None
     if not updates:
         print("\n  No role overrides to clear.")
         return

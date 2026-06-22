@@ -280,12 +280,31 @@ class AgentLoop:
 
         for round_idx in range(max_tool_rounds):
             rounds_used = round_idx + 1
-            async with gate.session(role, model, provider):
-                response = await client.chat.completions.create(
+            try:
+                async with gate.session(role, model, provider):
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                    )
+            except Exception as e:
+                from ophelia.providers.errors import api_error_detail
+
+                detail = api_error_detail(e)
+                log.error(
+                    "tool_loop.api_error",
+                    channel=store_channel,
+                    role=role,
                     model=model,
-                    messages=messages,
-                    tools=tools,
+                    provider=provider,
+                    round=round_idx + 1,
+                    error=detail,
                 )
+                # Drop any pending resume context — this turn can't continue.
+                self._pending_resume.pop(store_channel, None)
+                raise RuntimeError(
+                    f"LLM call failed for {role}/{model} on {provider}: {detail}"
+                ) from e
             msg = response.choices[0].message
 
             if msg.tool_calls:

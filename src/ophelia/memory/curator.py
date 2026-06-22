@@ -12,6 +12,7 @@ from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.memory.bootstrap import load_hermes_memories, parse_hermes_memory_file
 from ophelia.memory.hermes_sessions import search_hermes_sessions
 from ophelia.memory.store import MemoryStore
+from ophelia.providers.errors import api_error_detail
 from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 
@@ -118,7 +119,7 @@ class MemoryCurator:
                 )
             raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
-            log.warning("curator.llm_failed", error=str(e))
+            log.warning("curator.llm_failed", error=api_error_detail(e), model=model)
             return 0
 
         if raw.upper() == "NONE" or not raw:

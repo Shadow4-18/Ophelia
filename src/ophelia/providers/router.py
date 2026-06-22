@@ -303,9 +303,9 @@ def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> st
     if role_attr and role_attr.strip().lower() != "auto":
         return role_attr.strip().lower()
 
-    if role in MEDIA_ROLES:
-        return _auto_pick_provider(settings, role)
-
+    # An explicitly-set primary provider (anything other than "auto") should
+    # apply to media roles too — otherwise image/video silently fall back to
+    # xai-oauth even when the user deliberately chose xai (API key) or openai.
     primary = (settings.provider or "auto").strip().lower()
     if primary != "auto":
         return primary

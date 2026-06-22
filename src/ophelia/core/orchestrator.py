@@ -24,6 +24,7 @@ from ophelia.mind.goals import GoalStore
 from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.mind.inner_log import InnerMonologue
 from ophelia.mind.psyche import PsycheState
+from ophelia.providers.errors import api_error_detail
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.registry import ToolRegistry
 
@@ -254,7 +255,7 @@ class Orchestrator:
             await self.hub.broadcast_proactive(text)
             log.info("greet.sent")
         except Exception as e:
-            log.warning("greet.failed", error=str(e))
+            log.warning("greet.failed", error=api_error_detail(e))
 
     async def _notify_spontaneous(self, text: str) -> None:
         await self.hub.broadcast_proactive(text)
