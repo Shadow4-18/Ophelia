@@ -33,9 +33,21 @@ class Settings(BaseSettings):
     )
 
     # xAI / Grok
-    xai_api_key: str | None = Field(default=None, alias="XAI_API_KEY")
-    xai_base_url: str = Field(default="https://api.x.ai/v1", alias="XAI_BASE_URL")
-    xai_model: str = Field(default="grok-4", alias="XAI_MODEL")
+    # GROK_API_KEY / GROK_API_URL / GROK_MODEL are accepted as aliases so a
+    # working config from another Grok bot (e.g. a Discord bot) drops in
+    # without renaming. Ophelia treats them identically to XAI_*.
+    xai_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("XAI_API_KEY", "GROK_API_KEY"),
+    )
+    xai_base_url: str = Field(
+        default="https://api.x.ai/v1",
+        validation_alias=AliasChoices("XAI_BASE_URL", "GROK_API_URL"),
+    )
+    xai_model: str = Field(
+        default="grok-4",
+        validation_alias=AliasChoices("XAI_MODEL", "GROK_MODEL"),
+    )
     xai_consciousness_model: str | None = Field(
         default=None, alias="XAI_CONSCIOUSNESS_MODEL"
     )

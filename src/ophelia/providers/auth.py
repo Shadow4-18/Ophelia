@@ -47,6 +47,18 @@ def resolve_xai_bearer(
     hermes_home: Path | None = None,
     prefer_oauth: bool = True,
 ) -> str | None:
+    """Resolve an xAI bearer token.
+
+    prefer_oauth=True  -> xai-oauth mode: OAuth access token first, API key
+                          as a last-resort fallback (kept for compatibility
+                          with setups that only have a key).
+    prefer_oauth=False -> xai mode: API key ONLY. Does NOT fall back to OAuth,
+                          because SuperGrok OAuth tokens are a different tier
+                          and may not have access to the same models — silently
+                          using OAuth when the user asked for an API key causes
+                          cryptic 400s at runtime. Return None and let the
+                          caller report the missing key clearly.
+    """
     sources: list[dict | None] = []
     for path in oauth_auth_paths(
         hermes_home=hermes_home,
@@ -62,11 +74,9 @@ def resolve_xai_bearer(
         if api_key and api_key.strip():
             return api_key.strip()
         return None
+    # xai (API key) mode — strict, no OAuth fallback.
     if api_key and api_key.strip():
         return api_key.strip()
-    for state in sources:
-        if state and state.get("access_token"):
-            return state["access_token"]
     return None
 
 

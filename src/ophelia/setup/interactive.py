@@ -115,9 +115,18 @@ def _section_provider(on_phone: bool) -> None:
         if not _configure_xai_oauth():
             return
     elif provider == "xai":
-        key = prompt_text("XAI_API_KEY", secret=True, default=read_env_key("XAI_API_KEY"))
+        # Recognize GROK_API_KEY (alias used by some Discord bots) as the default.
+        existing_key = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
+        key = prompt_text("XAI_API_KEY", secret=True, default=existing_key)
         if key:
             updates["XAI_API_KEY"] = key
+        elif not existing_key:
+            print(
+                "\n  [WARN] No API key set. xai mode uses the API key ONLY — it will NOT\n"
+                "         fall back to your SuperGrok OAuth token (different tier, may\n"
+                "         not access the same models). Set XAI_API_KEY in ~/.ophelia/.env\n"
+                "         or switch to OPHELIA_PROVIDER=xai-oauth."
+            )
     elif provider == "openai":
         key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
         if key:

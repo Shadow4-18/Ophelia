@@ -106,12 +106,21 @@ class XAIBackend:
         return f"xAI Grok ({mode})"
 
     def _auth_help(self) -> str:
+        if self.prefer_oauth:
+            return (
+                "No xAI OAuth token. Options:\n"
+                "  ophelia auth login           (fresh SuperGrok OAuth via browser)\n"
+                "  ophelia auth import-hermes   (re-sync from ~/.hermes/auth.json)\n"
+                "  ophelia auth import-grok     (Grok CLI login)\n"
+                "Or switch to an API key: set XAI_API_KEY and OPHELIA_PROVIDER=xai"
+            )
         return (
-            "No xAI credentials. Options:\n"
-            "  ophelia auth login           (fresh SuperGrok OAuth via browser)\n"
-            "  ophelia auth import-hermes   (re-sync from ~/.hermes/auth.json)\n"
-            "  ophelia auth import-grok     (Grok CLI login)\n"
-            "  set XAI_API_KEY + OPHELIA_PROVIDER=xai"
+            "No xAI API key found for OPHELIA_PROVIDER=xai. "
+            "Set XAI_API_KEY in ~/.ophelia/.env.\n"
+            "Note: xai mode uses the API key only — it will NOT fall back to your "
+            "SuperGrok OAuth token, because OAuth is a different tier that may not "
+            "have access to the same models.\n"
+            "If you want to use OAuth instead, set OPHELIA_PROVIDER=xai-oauth."
         )
 
     def reset(self) -> None:
