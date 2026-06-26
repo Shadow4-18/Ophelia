@@ -270,6 +270,16 @@ class Settings(BaseSettings):
     ui_open_browser: bool = Field(default=True, alias="OPHELIA_UI_OPEN_BROWSER")
 
     web_search_enabled: bool = Field(default=True, alias="OPHELIA_WEB_SEARCH")
+    # Web search backend. duckduckgo needs no key (free, less reliable);
+    # tavily / serper / brave need an API key (reliable, AI-friendly).
+    web_search_provider: str = Field(
+        default="auto",
+        alias="OPHELIA_WEB_SEARCH_PROVIDER",
+        description="auto | duckduckgo | tavily | serper | brave (auto = first key set, else duckduckgo)",
+    )
+    tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
+    serper_api_key: str | None = Field(default=None, alias="SERPER_API_KEY")
+    brave_api_key: str | None = Field(default=None, alias="BRAVE_API_KEY")
     mcp_config_path: Path = Field(default=OPHELIA_HOME / "mcp.json", alias="OPHELIA_MCP_CONFIG")
 
     @model_validator(mode="after")
@@ -303,6 +313,21 @@ class Settings(BaseSettings):
         if not raw:
             return []
         return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+    def web_search_provider_resolved(self) -> str:
+        """Effective search backend: explicit choice, else first keyed backend,
+        else duckduckgo. 'auto' picks the first available API key."""
+        p = (self.web_search_provider or "auto").strip().lower()
+        if p in ("tavily", "serper", "brave", "duckduckgo"):
+            return p
+        # auto: prefer keyed backends for reliability
+        if self.tavily_api_key:
+            return "tavily"
+        if self.serper_api_key:
+            return "serper"
+        if self.brave_api_key:
+            return "brave"
+        return "duckduckgo"
 
     def allowed_telegram_users(self) -> set[int] | None:
         raw = self.telegram_allowed_user_ids.strip()

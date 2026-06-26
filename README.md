@@ -64,6 +64,30 @@ OPHELIA_FALLBACK_MODEL=deepseek-v4-flash   # optional: same model on every fallb
 Only transient errors trigger fallback — a `400 Bad Request` (wrong model or
 params) is surfaced immediately instead of wasting retries.
 
+## Web search
+
+Grok has built-in live search, but **DeepSeek, OpenAI, and Ollama do not** —
+so on those providers Ophelia uses a `web_search` tool. Pick a backend:
+
+| Backend | Env | Notes |
+|---------|-----|-------|
+| `auto` | *(default)* | First API key set, else DuckDuckGo |
+| `duckduckgo` | none | Free, no key, but often returns nothing (gets blocked) |
+| `tavily` | `TAVILY_API_KEY` | AI-focused, reliable, free tier |
+| `serper` | `SERPER_API_KEY` | Google results, reliable |
+| `brave` | `BRAVE_API_KEY` | Brave Search API, reliable |
+
+```bash
+OPHELIA_WEB_SEARCH=true
+OPHELIA_WEB_SEARCH_PROVIDER=auto
+TAVILY_API_KEY=tvly-...        # or SERPER_API_KEY / BRAVE_API_KEY
+```
+
+Configure it interactively with `ophelia setup` → **Web search**. If a keyed
+backend fails or returns nothing, Ophelia falls back to DuckDuckGo so a search
+never hard-fails the turn.
+
+
 
 - **Per-role provider**: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IMAGE`, `_VIDEO` — point each role at a different provider (e.g. chat on Ollama, image on xAI).
 - **Per-role model**: the `*_MODEL` env vars above. Optional roles (consciousness, curator, vision) inherit the chat model when unset — handy for running a cheap `grok-3-mini` for background ticks while keeping `grok-4` for real replies.

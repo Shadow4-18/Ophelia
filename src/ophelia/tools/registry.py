@@ -126,7 +126,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for current information (no API key).",
+            "description": (
+                "Search the web for current information. Use this whenever you need "
+                "fresh facts, news, prices, or anything past your knowledge cutoff — "
+                "especially since your model may not have built-in web access."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -622,7 +626,7 @@ class ToolRegistry:
         return out or "(no output)"
 
     async def _web_search(self, query: str, max_results: int = 8) -> str:
-        return await search_web(query, max_results=max_results)
+        return await search_web(query, max_results=max_results, settings=self.settings)
 
     async def _fetch_url(self, url: str, max_chars: int = 8000) -> str:
         return await fetch_url(url, max_chars=max_chars)

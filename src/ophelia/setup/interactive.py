@@ -37,6 +37,7 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
             [
                 "AI provider (Ollama / cloud)",
                 "Chat channels (Telegram / Discord)",
+                "Web search (DeepSeek/OpenAI have no built-in search)",
                 "Persona (SOUL.md)",
                 "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
                 "Features (consciousness, games, ...)",
@@ -53,19 +54,21 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         elif idx == 1:
             _section_channels()
         elif idx == 2:
-            _section_persona()
+            _section_web_search()
         elif idx == 3:
-            _section_phone_body(on_phone)
+            _section_persona()
         elif idx == 4:
-            _section_features(on_phone)
+            _section_phone_body(on_phone)
         elif idx == 5:
-            _section_health_check()
+            _section_features(on_phone)
         elif idx == 6:
+            _section_health_check()
+        elif idx == 7:
             print()
             run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-        elif idx == 7:
+        elif idx == 8:
             break
-        if idx != 7:
+        if idx != 8:
             pause()
 
     print()
@@ -1077,6 +1080,88 @@ def _section_phone_body(on_phone: bool) -> None:
                 print("\n  Install platform-tools / adb on this host.\n")
         write_env_updates(updates)
         print(f"\n  Saved phone body settings.\n")
+
+
+def _section_web_search() -> None:
+    """Configure web search backend.
+
+    Grok has built-in live search, but DeepSeek / OpenAI / Ollama do not — so
+    when running on those providers Ophelia relies on the web_search tool.
+    DuckDuckGo works with no key (less reliable); Tavily / Serper / Brave need
+    an API key and are far more reliable for AI use.
+    """
+    current = (read_env_key("OPHELIA_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
+    has_tavily = bool(read_env_key("TAVILY_API_KEY"))
+    has_serper = bool(read_env_key("SERPER_API_KEY"))
+    has_brave = bool(read_env_key("BRAVE_API_KEY"))
+
+    options = [
+        ("auto", "Auto (use the first API key I have, else DuckDuckGo)"),
+        ("duckduckgo", "DuckDuckGo (free — no API key, less reliable)"),
+        ("tavily", "Tavily (AI-focused — free tier, reliable)" + ("  [key set]" if has_tavily else "")),
+        ("serper", "Serper / Google results (reliable)" + ("  [key set]" if has_serper else "")),
+        ("brave", "Brave Search API (reliable)" + ("  [key set]" if has_brave else "")),
+    ]
+    labels = [label for _, label in options]
+    default = next((i for i, (k, _) in enumerate(options) if k == current), 0)
+
+    pick = radiolist(
+        "Choose web search backend",
+        labels,
+        selected=default,
+        description=(
+            "Grok has built-in web search; DeepSeek/OpenAI/Ollama do not.\n"
+            "Pick a keyed backend (Tavily/Serper/Brave) for reliable results,\n"
+            "  or DuckDuckGo for a free no-key option. 'Auto' uses the first\n"
+            "  API key you've set, falling back to DuckDuckGo."
+        ),
+    )
+    if pick < 0:
+        return
+    provider = options[pick][0]
+    updates: dict[str, str | None] = {
+        "OPHELIA_WEB_SEARCH": "true",
+        "OPHELIA_WEB_SEARCH_PROVIDER": provider,
+    }
+
+    if provider in ("tavily", "auto"):
+        key = prompt_text(
+            "TAVILY_API_KEY (optional — get one at https://tavily.com)",
+            secret=True,
+            default=read_env_key("TAVILY_API_KEY") or "",
+        )
+        if key:
+            updates["TAVILY_API_KEY"] = key
+    if provider in ("serper", "auto"):
+        key = prompt_text(
+            "SERPER_API_KEY (optional — get one at https://serper.dev)",
+            secret=True,
+            default=read_env_key("SERPER_API_KEY") or "",
+        )
+        if key:
+            updates["SERPER_API_KEY"] = key
+    if provider in ("brave", "auto"):
+        key = prompt_text(
+            "BRAVE_API_KEY (optional — get one at https://brave.com/search/api/)",
+            secret=True,
+            default=read_env_key("BRAVE_API_KEY") or "",
+        )
+        if key:
+            updates["BRAVE_API_KEY"] = key
+
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    resolved = provider
+    if resolved == "auto":
+        if updates.get("TAVILY_API_KEY") or has_tavily:
+            resolved = "tavily"
+        elif updates.get("SERPER_API_KEY") or has_serper:
+            resolved = "serper"
+        elif updates.get("BRAVE_API_KEY") or has_brave:
+            resolved = "brave"
+        else:
+            resolved = "duckduckgo"
+    print(f"  Active web search backend: {resolved}")
 
 
 def _section_features(on_phone: bool) -> None:
