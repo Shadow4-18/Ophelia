@@ -26,7 +26,7 @@ ROLE_ENV: dict[ProviderRole, str] = {
     "video": "OPHELIA_PROVIDER_VIDEO",
 }
 
-VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "compat", "ollama"})
+VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "deepseek", "compat", "ollama"})
 
 
 class LLMBackend(Protocol):
@@ -245,6 +245,74 @@ def _xai_oauth_available(settings: Settings) -> bool:
     )
 
 
+def _deepseek_available(settings: Settings) -> bool:
+    return bool(settings.deepseek_api_key)
+
+
+def _provider_configured_for_role(
+    settings: Settings, provider: str, role: ProviderRole
+) -> bool:
+    """True if `provider` has the credentials/model needed to serve `role`."""
+    if provider in ("xai-oauth", "xai"):
+        if role == "image":
+            return bool(settings.xai_image_model) and bool(
+                settings.xai_api_key or _xai_oauth_available(settings)
+            )
+        if role == "video":
+            return bool(settings.xai_video_model) and bool(
+                settings.xai_api_key or _xai_oauth_available(settings)
+            )
+        return bool(settings.xai_api_key or _xai_oauth_available(settings))
+    if provider == "ollama":
+        if role in ("image",) and not settings.ollama_image_model:
+            return False
+        return _ollama_reachable(settings)
+    if provider == "openai":
+        if role in ("image",):
+            return bool(settings.openai_api_key)
+        return bool(settings.openai_api_key)
+    if provider == "deepseek":
+        if role in ("image", "video"):
+            return False  # DeepSeek has no image/video gen
+        return _deepseek_available(settings)
+    if provider == "compat":
+        return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
+    return False
+
+
+def _provider_default_model_for_role(
+    settings: Settings, provider: str, role: ProviderRole
+) -> str | None:
+    """The model a fallback provider would use for a role (no per-role override)."""
+    if provider in ("xai-oauth", "xai"):
+        if role == "image":
+            return settings.xai_image_model
+        if role == "video":
+            return settings.xai_video_model
+        if role == "vision":
+            return settings.vision_model or settings.xai_model
+        return settings.xai_model
+    if provider == "ollama":
+        if role == "image":
+            return settings.ollama_image_model or "flux"
+        return resolve_ollama_model(settings, role)
+    if provider == "openai":
+        if role == "image":
+            return settings.openai_image_model
+        if role == "vision":
+            return settings.openai_vision_model or settings.openai_model
+        return settings.openai_model
+    if provider == "deepseek":
+        if role == "vision":
+            return settings.deepseek_vision_model or settings.deepseek_model
+        return settings.deepseek_model
+    if provider == "compat":
+        if role == "vision":
+            return settings.compat_vision_model or settings.compat_model
+        return settings.compat_model
+    return None
+
+
 def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
     """Local-first: prefer Ollama when reachable, cloud as fallback."""
 
@@ -255,6 +323,8 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
             return "xai-oauth"
         if settings.xai_api_key:
             return "xai"
+        if _deepseek_available(settings) and settings.deepseek_vision_model:
+            return "deepseek"
         if settings.openai_api_key:
             return "openai"
         if settings.compat_api_key and settings.compat_base_url:
@@ -290,6 +360,8 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
         return "xai-oauth"
     if settings.xai_api_key:
         return "xai"
+    if _deepseek_available(settings):
+        return "deepseek"
     if settings.openai_api_key:
         return "openai"
     if settings.compat_api_key and settings.compat_base_url and settings.compat_model:
@@ -315,8 +387,12 @@ def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> st
     # An explicitly-set primary provider (anything other than "auto") should
     # apply to media roles too — otherwise image/video silently fall back to
     # xai-oauth even when the user deliberately chose xai (API key) or openai.
+    # But only if the primary can actually serve a media role: providers like
+    # deepseek have no image/video generation, so they must auto-pick here.
     primary = (settings.provider or "auto").strip().lower()
     if primary != "auto":
+        if role in MEDIA_ROLES and not _provider_configured_for_role(settings, primary, role):
+            return _auto_pick_provider(settings, role)
         return primary
     return _auto_pick_provider(settings, role)
 
@@ -342,6 +418,20 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             label=f"OpenAI @ {settings.openai_base_url}",
             provider_name="openai",
         )
+    if n == "deepseek":
+        key = settings.deepseek_api_key
+        if not key:
+            raise RuntimeError("DEEPSEEK_API_KEY missing for OPHELIA_PROVIDER=deepseek")
+        return OpenAICompatibleBackend(
+            api_key=key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+            consciousness_model=settings.deepseek_consciousness_model,
+            curator_model=settings.deepseek_curator_model,
+            vision_model=settings.deepseek_vision_model,
+            label=f"DeepSeek @ {settings.deepseek_base_url}",
+            provider_name="deepseek",
+        )
     if n == "compat":
         key = settings.compat_api_key
         base = settings.compat_base_url
@@ -361,7 +451,8 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             provider_name="compat",
         )
     raise RuntimeError(
-        f"Unknown provider '{name}'. Use: xai-oauth, xai, ollama, openai, compat, auto"
+        f"Unknown provider '{name}'. Use: xai-oauth, xai, ollama, openai, "
+        "deepseek, compat, auto"
     )
 
 
@@ -402,6 +493,8 @@ class ProviderStack:
             return self.settings.vision_model or self.settings.xai_model
         if name == "openai" and role == "vision":
             return self.settings.openai_vision_model or self.settings.openai_model
+        if name == "deepseek" and role == "vision":
+            return self.settings.deepseek_vision_model or self.settings.deepseek_model
         if name == "compat" and role == "vision" and self.settings.compat_vision_model:
             return self.settings.compat_vision_model
         backend = self.backend(role)
@@ -417,6 +510,31 @@ class ProviderStack:
         if name == "ollama":
             return bool(self.settings.ollama_vision_model)
         return True
+
+    def fallback_chain(self, role: ProviderRole = "chat") -> list[tuple[str, str]]:
+        """Ordered (provider, model) pairs to try when the primary fails.
+
+        The primary (role's resolved provider + model) is NOT included — the
+        caller tries it first, then iterates this list. The fallback model
+        (OPHELIA_FALLBACK_MODEL) overrides each fallback provider's default
+        model if set, so a single cheap model can be used across fallbacks.
+        """
+        chain: list[tuple[str, str]] = []
+        primary = self.name(role)
+        for prov in self.settings.fallback_provider_list():
+            if prov == primary or prov == "auto":
+                continue
+            # Skip providers that can't actually serve this role.
+            if not _provider_configured_for_role(self.settings, prov, role):
+                continue
+            if self.settings.fallback_model:
+                model = self.settings.fallback_model
+            else:
+                # Use the fallback provider's role-appropriate model.
+                model = _provider_default_model_for_role(self.settings, prov, role)
+            if model:
+                chain.append((prov, model))
+        return chain
 
     def uses_xai_oauth(self) -> bool:
         for role in ("chat", "consciousness", "vision", "curator", "image", "video"):

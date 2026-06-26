@@ -86,6 +86,7 @@ def _section_provider(on_phone: bool) -> None:
         ("auto", "Auto (Ollama if up, else cloud)"),
         ("xai-oauth", "SuperGrok / xAI OAuth"),
         ("xai", "xAI API key"),
+        ("deepseek", "DeepSeek API key (cheap — V4 Flash)"),
         ("openai", "OpenAI API key"),
         ("compat", "OpenAI-compatible endpoint (LM Studio, etc.)"),
     ]
@@ -96,7 +97,7 @@ def _section_provider(on_phone: bool) -> None:
         "Choose AI provider",
         labels,
         selected=default,
-        description="Local-first: Ollama is free and works offline.",
+        description="Local-first: Ollama is free and works offline. DeepSeek V4 Flash is very cheap for cloud.",
     )
     if pick < 0:
         return
@@ -127,6 +128,18 @@ def _section_provider(on_phone: bool) -> None:
                 "         not access the same models). Set XAI_API_KEY in ~/.ophelia/.env\n"
                 "         or switch to OPHELIA_PROVIDER=xai-oauth."
             )
+    elif provider == "deepseek":
+        key = prompt_text(
+            "DEEPSEEK_API_KEY",
+            secret=True,
+            default=read_env_key("DEEPSEEK_API_KEY"),
+            hint="Get a key at https://platform.deepseek.com",
+        )
+        if key:
+            updates["DEEPSEEK_API_KEY"] = key
+        ds_model = _pick_deepseek_model()
+        if ds_model:
+            updates["DEEPSEEK_MODEL"] = ds_model
     elif provider == "openai":
         key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
         if key:
@@ -157,6 +170,7 @@ def _section_provider(on_phone: bool) -> None:
     print(f"\n  Saved: {', '.join(touched)}")
 
     _maybe_configure_models(provider, on_phone=on_phone)
+    _maybe_configure_fallback()
 
 
 def _oauth_status_lines() -> list[str]:
@@ -403,6 +417,25 @@ def _pick_openai_model() -> str | None:
     )
 
 
+def _pick_deepseek_model() -> str | None:
+    """Model picker for DeepSeek chat — presets plus manual entry."""
+    return _pick_model_generic(
+        title="DeepSeek chat model",
+        env_key="DEEPSEEK_MODEL",
+        default="deepseek-v4-flash",
+        presets=[
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+        description=(
+            "deepseek-v4-flash is very cheap (~$0.14/1M input) — great for\n"
+            "background roles and cost saving. v4-pro is more capable."
+        ),
+    )
+
+
 def _pick_model_generic(
     *,
     title: str,
@@ -501,6 +534,34 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
         },
         "video": None,  # OpenAI has no video gen endpoint
     },
+    "deepseek": {
+        "chat": {
+            "env": "DEEPSEEK_MODEL",
+            "default": "deepseek-v4-flash",
+            "presets": ["deepseek-v4-flash", "deepseek-v4-pro",
+                        "deepseek-chat", "deepseek-reasoner"],
+        },
+        "consciousness": {
+            "env": "DEEPSEEK_CONSCIOUSNESS_MODEL",
+            "default": "",
+            "presets": ["deepseek-v4-flash"],
+            "optional": True,
+        },
+        "curator": {
+            "env": "DEEPSEEK_CURATOR_MODEL",
+            "default": "",
+            "presets": ["deepseek-v4-flash"],
+            "optional": True,
+        },
+        "vision": {
+            "env": "DEEPSEEK_VISION_MODEL",
+            "default": "",
+            "presets": ["deepseek-v4-flash", "deepseek-v4-pro"],
+            "optional": True,
+        },
+        "image": None,   # DeepSeek has no image gen
+        "video": None,   # DeepSeek has no video gen
+    },
     "ollama": {
         "chat": {
             "env": "OLLAMA_MODEL",
@@ -591,10 +652,10 @@ _PROVIDER_ENV_BY_ROLE: dict[RoleKey, str] = {
 
 # Which providers can serve each role. "auto" = inherit primary provider.
 _ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
-    "chat": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
-    "consciousness": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
-    "curator": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
-    "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
+    "chat": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
+    "consciousness": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
+    "curator": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
+    "vision": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "image": ["auto", "ollama", "xai-oauth", "xai", "openai"],
     "video": ["auto", "xai-oauth", "xai"],
 }
@@ -655,6 +716,75 @@ def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
         return
 
     _models_menu(provider, on_phone=on_phone)
+
+
+def _maybe_configure_fallback() -> None:
+    """Offer to set up a fallback provider chain for transient failures."""
+    current = read_env_key("OPHELIA_FALLBACK_PROVIDERS")
+    pick = radiolist(
+        "Set up a fallback provider?",
+        [
+            "Yes — if the primary fails, retry on a cheaper backup (e.g. DeepSeek)",
+            "Skip — no fallback (fail immediately on errors)",
+        ],
+        selected=1 if not current else 0,
+        description=(
+            "If the primary provider hits a rate limit, 5xx, or network error,\n"
+            "Ophelia retries on each fallback provider in order before giving up.\n"
+            "Great for cost: run Grok as primary, DeepSeek V4 Flash as a cheap\n"
+            "  backup. Only transient errors trigger fallback (a 400 is not retried)."
+        ),
+    )
+    if pick != 0:
+        return
+
+    # Which providers are available as fallbacks (have credentials set)?
+    available = []
+    if read_env_key("DEEPSEEK_API_KEY"):
+        available.append("deepseek")
+    if read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY"):
+        available.append("xai")
+    # OAuth availability is harder to detect from env alone; offer it anyway.
+    available.append("xai-oauth")
+    if read_env_key("OPENAI_API_KEY"):
+        available.append("openai")
+    if read_env_key("OPHELIA_COMPAT_API_KEY") and read_env_key("OPHELIA_COMPAT_BASE_URL"):
+        available.append("compat")
+    available.append("ollama")
+
+    if not available:
+        print("\n  No providers with credentials detected. Configure one first.")
+        return
+
+    # Let the user toggle which fallbacks to enable, in order.
+    chosen = checkbox(
+        "Pick fallback providers (order matters — tried top to bottom)",
+        available,
+        selected={i for i, p in enumerate(available) if current and p in current},
+        description=(
+            "Toggle the providers to use as fallbacks. They're tried in the\n"
+            "order listed. The primary provider is never re-tried as a fallback."
+        ),
+    )
+    if not chosen:
+        return
+    ordered = [available[i] for i in sorted(chosen)]
+    updates: dict[str, str | None] = {"OPHELIA_FALLBACK_PROVIDERS": ",".join(ordered)}
+
+    # Optional: a single model to use on every fallback (e.g. always deepseek-v4-flash).
+    fb_model = prompt_text(
+        "OPHELIA_FALLBACK_MODEL (optional — same model on every fallback)",
+        default=read_env_key("OPHELIA_FALLBACK_MODEL") or "",
+        hint="Leave blank to use each fallback provider's own default model",
+    )
+    if fb_model:
+        updates["OPHELIA_FALLBACK_MODEL"] = fb_model
+    else:
+        updates["OPHELIA_FALLBACK_MODEL"] = None
+
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    print(f"  Fallback chain: {' -> '.join(ordered)}")
 
 
 def _models_menu(provider: str, *, on_phone: bool) -> None:

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Provider routing: auto | xai-oauth | xai | ollama | openai | compat
+    # Provider routing: auto | xai-oauth | xai | ollama | openai | deepseek | compat
     provider: str = Field(default="ollama", alias="OPHELIA_PROVIDER")
     provider_chat: str | None = Field(default=None, alias="OPHELIA_PROVIDER_CHAT")
     provider_consciousness: str | None = Field(
@@ -30,6 +30,20 @@ class Settings(BaseSettings):
         default=True,
         alias="OPHELIA_AUTO_LOCAL_CONSCIOUSNESS",
         description="When provider=auto, use Ollama for consciousness ticks if reachable",
+    )
+
+    # Fallback: if the primary provider for a role fails (rate limit, 5xx,
+    # network), retry on these fallback providers in order before giving up.
+    # Comma-separated list of provider names. Empty = no fallback.
+    fallback_providers: str = Field(
+        default="",
+        alias="OPHELIA_FALLBACK_PROVIDERS",
+        description="Comma-separated providers tried in order when the primary fails",
+    )
+    fallback_model: str | None = Field(
+        default=None,
+        alias="OPHELIA_FALLBACK_MODEL",
+        description="If set, use this model name on every fallback provider",
     )
 
     # xAI / Grok
@@ -84,6 +98,22 @@ class Settings(BaseSettings):
     openai_curator_model: str | None = Field(default=None, alias="OPENAI_CURATOR_MODEL")
     openai_image_model: str = Field(default="dall-e-3", alias="OPENAI_IMAGE_MODEL")
     openai_vision_model: str | None = Field(default=None, alias="OPENAI_VISION_MODEL")
+
+    # DeepSeek (OpenAI-compatible; cheap Flash model for cost-sensitive roles)
+    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(
+        default="https://api.deepseek.com/v1", alias="DEEPSEEK_BASE_URL"
+    )
+    deepseek_model: str = Field(default="deepseek-v4-flash", alias="DEEPSEEK_MODEL")
+    deepseek_consciousness_model: str | None = Field(
+        default=None, alias="DEEPSEEK_CONSCIOUSNESS_MODEL"
+    )
+    deepseek_curator_model: str | None = Field(
+        default=None, alias="DEEPSEEK_CURATOR_MODEL"
+    )
+    deepseek_vision_model: str | None = Field(
+        default=None, alias="DEEPSEEK_VISION_MODEL"
+    )
 
     # Generic OpenAI-compatible (OpenRouter, LM Studio, vLLM, etc.)
     compat_api_key: str | None = Field(default=None, alias="OPHELIA_COMPAT_API_KEY")
@@ -266,6 +296,13 @@ class Settings(BaseSettings):
         if self.autonomy_interval_seconds is not None:
             return self.autonomy_interval_seconds
         return self.consciousness_interval_seconds
+
+    def fallback_provider_list(self) -> list[str]:
+        """Ordered list of fallback provider names (excluding the primary)."""
+        raw = self.fallback_providers.strip()
+        if not raw:
+            return []
+        return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
     def allowed_telegram_users(self) -> set[int] | None:
         raw = self.telegram_allowed_user_ids.strip()

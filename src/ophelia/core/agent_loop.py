@@ -107,6 +107,55 @@ class AgentLoop:
             return await backend.async_client_fresh()
         return backend.async_client()
 
+    async def _client_for_provider(self, provider: str, role: str = "chat"):
+        """Get an OpenAI client bound to a specific provider (for fallbacks)."""
+        from ophelia.providers.router import build_backend_for_name
+
+        backend = build_backend_for_name(
+            self.settings, provider, role=role  # type: ignore[arg-type]
+        )
+        if isinstance(backend, XAIBackend):
+            return await backend.async_client_fresh()
+        return backend.async_client()
+
+    def _model_for_provider(self, provider: str, role: str = "chat") -> str:
+        """Resolve the model for a fallback provider, honoring OPHELIA_FALLBACK_MODEL."""
+        if self.settings.fallback_model:
+            return self.settings.fallback_model
+        from ophelia.providers.router import _provider_default_model_for_role
+
+        model = _provider_default_model_for_role(
+            self.settings, provider, role  # type: ignore[arg-type]
+        )
+        return model or self._model(role)
+
+    @staticmethod
+    def _is_transient_error(exc: BaseException) -> bool:
+        """Whether an API error is worth retrying on a fallback provider.
+
+        Retries on rate limits (429), server errors (5xx), timeouts, and
+        network errors. Does NOT retry on 400 (bad request — the model/params
+        are wrong and a fallback won't fix that) or 401/403 (auth — fallback
+        credentials might help, but a 400 means the request shape is bad).
+        """
+        from ophelia.providers.errors import api_error_detail
+
+        detail = api_error_detail(exc).lower()
+        if any(k in detail for k in ("429", "rate limit", "rate_limit")):
+            return True
+        if any(k in detail for k in ("500", "502", "503", "504", "server error", "overloaded")):
+            return True
+        if isinstance(exc, TimeoutError):
+            return True
+        # Network/connection errors
+        if any(k in type(exc).__name__.lower() for k in ("connect", "timeout", "network")):
+            return True
+        # httpx/openai connection errors
+        cause = getattr(exc, "__cause__", None) or exc
+        if any(k in type(cause).__name__.lower() for k in ("connect", "timeout", "network")):
+            return True
+        return False
+
     async def _system_prompt(self, extra: str = "", channel: str = "") -> str:
         honcho_ctx = ""
         if self.honcho and self.honcho.enabled and channel:
@@ -281,12 +330,17 @@ class AgentLoop:
         for round_idx in range(max_tool_rounds):
             rounds_used = round_idx + 1
             try:
-                async with gate.session(role, model, provider):
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        tools=tools,
-                    )
+                response = await self._call_with_fallback(
+                    role=role,
+                    primary_provider=provider,
+                    primary_model=model,
+                    primary_client=client,
+                    messages=messages,
+                    tools=tools,
+                    channel=store_channel,
+                    round_idx=round_idx,
+                    gate=gate,
+                )
             except Exception as e:
                 from ophelia.providers.errors import api_error_detail
 
@@ -451,6 +505,97 @@ class AgentLoop:
         if len(signatures) < 2:
             return False
         return signatures[-1] == signatures[-2]
+
+    async def _call_with_fallback(
+        self,
+        *,
+        role: str,
+        primary_provider: str,
+        primary_model: str,
+        primary_client,
+        messages: list[dict[str, Any]],
+        tools,
+        channel: str,
+        round_idx: int,
+        gate,
+    ):
+        """Try the primary provider, then each fallback on transient failure.
+
+        Returns the raw completion response. Raises only if every provider in
+        the chain fails (or the failure is non-transient, e.g. a 400 bad
+        request — no point retrying that on a different provider).
+        """
+        # Primary attempt
+        try:
+            async with gate.session(role, primary_model, primary_provider):
+                return await primary_client.chat.completions.create(
+                    model=primary_model,
+                    messages=messages,
+                    tools=tools,
+                )
+        except Exception as e:
+            if not self._is_transient_error(e):
+                raise  # Non-transient: 400/401 etc. — don't waste fallbacks.
+            from ophelia.providers.errors import api_error_detail
+
+            log.warning(
+                "tool_loop.fallback_primary_failed",
+                channel=channel,
+                role=role,
+                provider=primary_provider,
+                model=primary_model,
+                error=api_error_detail(e),
+            )
+
+        # Fallback chain
+        fallbacks = self.stack.fallback_chain(role)  # type: ignore[arg-type]
+        for fb_provider, fb_model in fallbacks:
+            try:
+                fb_client = await self._client_for_provider(fb_provider, role)
+            except Exception as e:
+                log.warning(
+                    "tool_loop.fallback_client_failed",
+                    channel=channel,
+                    role=role,
+                    provider=fb_provider,
+                    error=str(e),
+                )
+                continue
+            try:
+                async with gate.session(role, fb_model, fb_provider):
+                    response = await fb_client.chat.completions.create(
+                        model=fb_model,
+                        messages=messages,
+                        tools=tools,
+                    )
+                log.info(
+                    "tool_loop.fallback_succeeded",
+                    channel=channel,
+                    role=role,
+                    provider=fb_provider,
+                    model=fb_model,
+                    round=round_idx + 1,
+                )
+                return response
+            except Exception as e:
+                if not self._is_transient_error(e):
+                    # A 400 on the fallback is informative — surface it.
+                    raise
+                log.warning(
+                    "tool_loop.fallback_failed",
+                    channel=channel,
+                    role=role,
+                    provider=fb_provider,
+                    model=fb_model,
+                    error=api_error_detail(e),
+                )
+                continue
+
+        # All providers failed with transient errors.
+        raise RuntimeError(
+            f"All providers failed for {role} (primary {primary_provider} + "
+            f"{len(fallbacks)} fallbacks). Last error was transient — retry later."
+        )
 
     async def _finalize_after_stuck(
         self,

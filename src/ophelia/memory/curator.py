@@ -105,9 +105,11 @@ class MemoryCurator:
 
         try:
             gate = get_model_gate()
-            async with gate.session("curator", model, stack.name("curator")):
-                resp = await client.chat.completions.create(
-                    model=model,
+            from ophelia.providers.fallback import call_with_fallback
+
+            async def _make_call(client, mdl):
+                return await client.chat.completions.create(
+                    model=mdl,
                     messages=[
                         {"role": "system", "content": CURATOR_PROMPT},
                         {
@@ -117,6 +119,18 @@ class MemoryCurator:
                     ],
                     max_tokens=300,
                 )
+
+            resp = await call_with_fallback(
+                self.settings,
+                stack,
+                role="curator",
+                primary_provider=stack.name("curator"),
+                primary_model=model,
+                primary_client=client,
+                make_call=_make_call,
+                gate=gate,
+                log_tag="curator.fallback",
+            )
             raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             log.warning("curator.llm_failed", error=api_error_detail(e), model=model)

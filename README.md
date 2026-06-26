@@ -37,18 +37,33 @@ ophelia chat "hello"
 | `ollama` | **default** | Local chat, consciousness, vision (`llava`) |
 | `auto` | `OPHELIA_PROVIDER=auto` | Ollama if up, else cloud |
 | `xai-oauth` | Hermes import | SuperGrok when you need Grok |
+| `xai` | `XAI_API_KEY` (or `GROK_API_KEY`) | xAI API key — Grok without OAuth |
+| `deepseek` | `DEEPSEEK_API_KEY` | Very cheap cloud — V4 Flash (~$0.14/1M input) |
 | `openai` / `compat` | API keys | OpenAI, OpenRouter, LM Studio |
 
 **Per-role routing** — Ophelia uses six different models for six different jobs:
 
 | Role | What it does | Example env var |
 |------|--------------|-----------------|
-| `chat` | Main replies | `XAI_MODEL`, `OPENAI_MODEL`, `OLLAMA_MODEL` |
-| `consciousness` | Background ticks / inner life | `XAI_CONSCIOUSNESS_MODEL`, `OPENAI_CONSCIOUSNESS_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL` |
-| `curator` | Memory consolidation | `XAI_CURATOR_MODEL`, `OPENAI_CURATOR_MODEL`, `OLLAMA_CURATOR_MODEL` |
-| `vision` | Photo understanding | `XAI_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
+| `chat` | Main replies | `XAI_MODEL`, `DEEPSEEK_MODEL`, `OPENAI_MODEL`, `OLLAMA_MODEL` |
+| `consciousness` | Background ticks / inner life | `XAI_CONSCIOUSNESS_MODEL`, `DEEPSEEK_CONSCIOUSNESS_MODEL`, `OPENAI_CONSCIOUSNESS_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL` |
+| `curator` | Memory consolidation | `XAI_CURATOR_MODEL`, `DEEPSEEK_CURATOR_MODEL`, `OPENAI_CURATOR_MODEL`, `OLLAMA_CURATOR_MODEL` |
+| `vision` | Photo understanding | `XAI_VISION_MODEL`, `DEEPSEEK_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
 | `image` | Image generation | `XAI_IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, `OLLAMA_IMAGE_MODEL` |
 | `video` | Video generation | `XAI_VIDEO_MODEL` (xAI only) |
+
+**Fallback** — if a provider fails with a transient error (rate limit, 5xx,
+network), Ophelia retries on a fallback chain before giving up. Great for
+cost: run Grok as primary with DeepSeek V4 Flash as a cheap backup.
+
+```bash
+OPHELIA_FALLBACK_PROVIDERS=deepseek,xai-oauth
+OPHELIA_FALLBACK_MODEL=deepseek-v4-flash   # optional: same model on every fallback
+```
+
+Only transient errors trigger fallback — a `400 Bad Request` (wrong model or
+params) is surfaced immediately instead of wasting retries.
+
 
 - **Per-role provider**: `OPHELIA_PROVIDER_CHAT`, `_CONSCIOUSNESS`, `_VISION`, `_CURATOR`, `_IMAGE`, `_VIDEO` — point each role at a different provider (e.g. chat on Ollama, image on xAI).
 - **Per-role model**: the `*_MODEL` env vars above. Optional roles (consciousness, curator, vision) inherit the chat model when unset — handy for running a cheap `grok-3-mini` for background ticks while keeping `grok-4` for real replies.

@@ -96,8 +96,28 @@ class DreamLoop:
             {"role": "system", "content": DREAM_PROMPT},
             {"role": "user", "content": f"Recent experience:\n{transcript}\n\nRecent inner thoughts:\n{inner_tail or '(none)'}"},
         ]
-        async with gate.session("dream", model, provider):
-            resp = await client.chat.completions.create(model=model, messages=messages)
+        from ophelia.providers.fallback import call_with_fallback
+
+        async def _make_call(cl, mdl):
+            return await cl.chat.completions.create(model=mdl, messages=messages)
+
+        try:
+            resp = await call_with_fallback(
+                self.agent.settings,
+                self.agent.stack,  # type: ignore[attr-defined]
+                role="curator",
+                primary_provider=provider,
+                primary_model=model,
+                primary_client=client,
+                make_call=_make_call,
+                gate=gate,
+                log_tag="dream.fallback",
+            )
+        except Exception as e:
+            from ophelia.providers.errors import api_error_detail
+
+            log.warning("dream.llm_failed", error=api_error_detail(e))
+            return
         raw = (resp.choices[0].message.content or "").strip()
 
         import json
