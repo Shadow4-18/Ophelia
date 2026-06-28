@@ -585,7 +585,10 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
         "vision": {
             "env": "OLLAMA_VISION_MODEL",
             "default": "",
-            "presets": ["llava", "llama3.2-vision", "moondream", "bakllava"],
+            "presets": [
+                "openbmb/minicpm-v4.6", "moondream", "openbmb/minicpm-v4",
+                "qwen2.5vl:3b", "llava", "llama3.2-vision", "bakllava",
+            ],
             "optional": True,
             "dynamic": True,
         },

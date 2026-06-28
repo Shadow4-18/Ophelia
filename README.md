@@ -34,7 +34,7 @@ ophelia chat "hello"
 
 | Provider | Env | Use |
 |----------|-----|-----|
-| `ollama` | **default** | Local chat, consciousness, vision (`llava`) |
+| `ollama` | **default** | Local chat, consciousness, vision (`minicpm-v4.6` / `moondream`) |
 | `auto` | `OPHELIA_PROVIDER=auto` | Ollama if up, else cloud |
 | `xai-oauth` | Hermes import | SuperGrok when you need Grok |
 | `xai` | `XAI_API_KEY` (or `GROK_API_KEY`) | xAI API key — Grok without OAuth |
@@ -54,11 +54,12 @@ ophelia chat "hello"
 
 **Capability auto-routing** — DeepSeek has no vision, image, or video
 capability. When DeepSeek is the primary provider, those roles automatically
-route to a capable provider (Ollama `llava` for free local vision, or xAI/
-OpenAI). So you can run cheap DeepSeek for chat/consciousness/curator while
-Grok or Ollama handles vision and media — no extra cost for vision if you have
-Ollama + llava, or it reuses your existing Grok key. Override any role
-explicitly with `OPHELIA_PROVIDER_VISION`, `OPHELIA_PROVIDER_IMAGE`, etc.
+route to a capable provider (Ollama for free local vision, or xAI/OpenAI). So
+you can run cheap DeepSeek for chat/consciousness/curator while Ollama or Grok
+handles vision and media — no extra cost for vision if you run a phone-friendly
+Ollama vision model (`openbmb/minicpm-v4.6` or `moondream`), or it reuses your
+existing Grok key. Override any role explicitly with `OPHELIA_PROVIDER_VISION`,
+`OPHELIA_PROVIDER_IMAGE`, etc.
 
 **Fallback** — if a provider fails with a transient error (rate limit, 5xx,
 network), Ophelia retries on a fallback chain before giving up. Great for
