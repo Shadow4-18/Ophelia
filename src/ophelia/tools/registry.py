@@ -5,6 +5,8 @@ import time
 from typing import Any, Awaitable, Callable
 from pathlib import Path
 
+import structlog
+
 from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore, game_tool_definitions
 from ophelia.android.vision import ScreenVision
@@ -19,6 +21,8 @@ from ophelia.mind.skills import save_skill
 from ophelia.channels.media_reply import artifact_paths_in_text
 
 ToolHandler = Callable[..., Awaitable[str]]
+
+log = structlog.get_logger()
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -91,6 +95,33 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": (
+                "Send a saved file to the user RIGHT NOW — audio, video, image, or any "
+                "document you've saved to disk. Use this to deliver generated audio (TTS), "
+                "video clips, screenshots, transcripts, or any file. The file is sent as a "
+                "downloadable attachment/media in the chat. You CAN send audio and video — "
+                "do not claim you can't."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or ~/relative path to the file to send",
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "Optional short caption to send with the file",
+                    },
+                },
+                "required": ["path"],
             },
         },
     },
@@ -440,12 +471,18 @@ class ToolRegistry:
         # Per-turn reply callback (chat) and always-on proactive fallback (consciousness).
         self._message_sender: Callable[[str], Awaitable[None]] | None = None
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
+        # Per-turn media callback: sends a file (audio/video/image/doc) to the
+        # current chat. Returns True on success. When unset (e.g. autonomous
+        # turns), files are queued to _pending_artifacts for deferred delivery.
+        self._media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
+        self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self._pending_artifacts: list[Path] = []
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
             "generate_video": self._generate_video,
             "text_to_speech": self._text_to_speech,
+            "send_file": self._send_file,
             "run_code": self._run_code,
             "web_search": self._web_search,
             "fetch_url": self._fetch_url,
@@ -478,6 +515,12 @@ class ToolRegistry:
 
     def clear_message_sender(self) -> None:
         self._message_sender = None
+
+    def set_media_sender(self, fn: Callable[[Path, str], Awaitable[bool]]) -> None:
+        self._media_sender = fn
+
+    def clear_media_sender(self) -> None:
+        self._media_sender = None
 
     def consume_pending_artifacts(self) -> list[Path]:
         out = list(self._pending_artifacts)
@@ -591,6 +634,44 @@ class ToolRegistry:
         result = f"TTS saved to {out}"
         self._record_artifacts_from_text(result)
         return result
+
+    async def _send_file(self, path: str, caption: str = "") -> str:
+        """Send any saved file (audio/video/image/doc) to the current chat.
+
+        If a per-turn media sender is registered (live chat), send immediately.
+        Otherwise queue it as a pending artifact so it's delivered after the
+        turn via consume_pending_artifacts(). Either way, tell the model the
+        file was sent so it doesn't claim it can't send files.
+        """
+        from pathlib import Path
+
+        try:
+            p = Path(path).expanduser().resolve()
+        except (OSError, ValueError) as e:
+            return f"Invalid path: {e}"
+        if not p.is_file():
+            return f"File not found: {path}"
+
+        sender = self._media_sender or self.proactive_media_sender
+        if sender is not None:
+            try:
+                ok = await sender(p, caption)
+            except Exception as e:
+                ok = False
+                log.warning("send_file.failed", path=str(p), error=str(e))
+            if ok:
+                log.info("send_file.sent", path=str(p), size=p.stat().st_size)
+                return f"Sent file {p.name} to the user."
+            # Fall through to queue if the live sender reported failure.
+
+        # Deferred delivery: queue for consume_pending_artifacts().
+        if p not in self._pending_artifacts:
+            self._pending_artifacts.append(p)
+        log.info("send_file.queued", path=str(p))
+        return (
+            f"File {p.name} queued for delivery to the user. "
+            "It will be sent as soon as this turn completes."
+        )
 
     async def _run_code(self, code: str) -> str:
         import asyncio

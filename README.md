@@ -48,9 +48,17 @@ ophelia chat "hello"
 | `chat` | Main replies | `XAI_MODEL`, `DEEPSEEK_MODEL`, `OPENAI_MODEL`, `OLLAMA_MODEL` |
 | `consciousness` | Background ticks / inner life | `XAI_CONSCIOUSNESS_MODEL`, `DEEPSEEK_CONSCIOUSNESS_MODEL`, `OPENAI_CONSCIOUSNESS_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL` |
 | `curator` | Memory consolidation | `XAI_CURATOR_MODEL`, `DEEPSEEK_CURATOR_MODEL`, `OPENAI_CURATOR_MODEL`, `OLLAMA_CURATOR_MODEL` |
-| `vision` | Photo understanding | `XAI_VISION_MODEL`, `DEEPSEEK_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
+| `vision` | Photo understanding | `XAI_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
 | `image` | Image generation | `XAI_IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, `OLLAMA_IMAGE_MODEL` |
 | `video` | Video generation | `XAI_VIDEO_MODEL` (xAI only) |
+
+**Capability auto-routing** — DeepSeek has no vision, image, or video
+capability. When DeepSeek is the primary provider, those roles automatically
+route to a capable provider (Ollama `llava` for free local vision, or xAI/
+OpenAI). So you can run cheap DeepSeek for chat/consciousness/curator while
+Grok or Ollama handles vision and media — no extra cost for vision if you have
+Ollama + llava, or it reuses your existing Grok key. Override any role
+explicitly with `OPHELIA_PROVIDER_VISION`, `OPHELIA_PROVIDER_IMAGE`, etc.
 
 **Fallback** — if a provider fails with a transient error (rate limit, 5xx,
 network), Ophelia retries on a fallback chain before giving up. Great for
@@ -124,10 +132,21 @@ Continuous consciousness (not Hermes cron isolation):
 
 | Tool | Notes |
 |------|-------|
-| `web_search` / `fetch_url` | DuckDuckGo, no API key |
+| `web_search` / `fetch_url` | Pluggable backends — DuckDuckGo (free), Tavily, Serper, Brave (see Web search section) |
+| `generate_image` / `generate_video` | xAI / OpenAI / Ollama — saved to artifacts, auto-sent to chat |
+| `text_to_speech` | xAI TTS — saved mp3, auto-sent to chat |
+| `send_file` | Explicitly send any saved file (audio/video/image/doc) to the chat mid-turn |
 | `save_skill` | Learn procedures → `~/.ophelia/skills/` |
 | MCP bridge | `~/.ophelia/mcp.json` + `pip install mcp` |
 | Phone body | Shizuku (on-phone) or ADB (from PC) |
+
+**Sending media** — generated images, videos, and audio are detected in the
+reply ("Image saved to …", "TTS saved to …") and automatically uploaded to
+Telegram/Discord. The `send_file` tool lets Ophelia explicitly deliver any
+saved file (audio, video, screenshots, documents) on demand — so she won't
+claim she can't send audio. On Telegram each type is sent as the right media
+kind (photo/video/audio/document); on Discord everything is sent as a file
+attachment.
 
 ## Migrate from Hermes
 

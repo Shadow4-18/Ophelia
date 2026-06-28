@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import structlog
 
@@ -19,6 +20,7 @@ from ophelia.mind.drives import DriveState
 log = structlog.get_logger()
 
 ReplyFn = Callable[[str], Awaitable[None]]
+MediaReplyFn = Callable[[Path, str], Awaitable[bool]]
 
 
 class ChannelSession:
@@ -59,12 +61,16 @@ class ChannelSession:
         channel: str,
         text: str,
         reply: ReplyFn,
+        *,
+        media_reply: MediaReplyFn | None = None,
     ) -> None:
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
         # Let send_message tool push follow-ups mid-turn through this channel.
         self.agent.tools.set_message_sender(reply)
+        if media_reply is not None:
+            self.agent.tools.set_media_sender(media_reply)
         try:
             out = await self.agent.run_turn(channel, text)
             self.drives.on_user_message()
@@ -79,6 +85,7 @@ class ChannelSession:
             await reply(f"Error: {e}")
         finally:
             self.agent.tools.clear_message_sender()
+            self.agent.tools.clear_media_sender()
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
 

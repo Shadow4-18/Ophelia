@@ -26,7 +26,7 @@ ROLE_ENV: dict[ProviderRole, str] = {
     "video": "OPHELIA_PROVIDER_VIDEO",
 }
 
-VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "deepseek", "compat", "ollama"})
+VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "compat", "ollama"})
 
 
 class LLMBackend(Protocol):
@@ -253,6 +253,18 @@ def _provider_configured_for_role(
     settings: Settings, provider: str, role: ProviderRole
 ) -> bool:
     """True if `provider` has the credentials/model needed to serve `role`."""
+    if role == "vision":
+        if provider not in VISION_CAPABLE:
+            return False
+        if provider == "ollama":
+            return bool(settings.ollama_vision_model)
+        if provider in ("xai-oauth", "xai"):
+            return bool(settings.xai_api_key or _xai_oauth_available(settings))
+        if provider == "openai":
+            return bool(settings.openai_api_key)
+        if provider == "compat":
+            return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
+        return True
     if provider in ("xai-oauth", "xai"):
         if role == "image":
             return bool(settings.xai_image_model) and bool(
@@ -272,8 +284,8 @@ def _provider_configured_for_role(
             return bool(settings.openai_api_key)
         return bool(settings.openai_api_key)
     if provider == "deepseek":
-        if role in ("image", "video"):
-            return False  # DeepSeek has no image/video gen
+        if role in ("image", "video", "vision"):
+            return False  # DeepSeek has no image/video/vision capability
         return _deepseek_available(settings)
     if provider == "compat":
         return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
@@ -323,12 +335,15 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
             return "xai-oauth"
         if settings.xai_api_key:
             return "xai"
-        if _deepseek_available(settings) and settings.deepseek_vision_model:
-            return "deepseek"
         if settings.openai_api_key:
             return "openai"
         if settings.compat_api_key and settings.compat_base_url:
             return "compat"
+        # No vision-capable provider configured. Prefer Grok OAuth (can do
+        # vision) as a last resort; never fall back to deepseek for vision.
+        if _xai_oauth_available(settings):
+            return "xai-oauth"
+        return "ollama"
 
     if role == "image":
         if _ollama_reachable(settings) and settings.ollama_image_model:
@@ -387,11 +402,11 @@ def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> st
     # An explicitly-set primary provider (anything other than "auto") should
     # apply to media roles too — otherwise image/video silently fall back to
     # xai-oauth even when the user deliberately chose xai (API key) or openai.
-    # But only if the primary can actually serve a media role: providers like
-    # deepseek have no image/video generation, so they must auto-pick here.
+    # But only if the primary can actually serve that role: providers like
+    # deepseek have no image/video/vision capability, so they must auto-pick.
     primary = (settings.provider or "auto").strip().lower()
     if primary != "auto":
-        if role in MEDIA_ROLES and not _provider_configured_for_role(settings, primary, role):
+        if not _provider_configured_for_role(settings, primary, role):
             return _auto_pick_provider(settings, role)
         return primary
     return _auto_pick_provider(settings, role)

@@ -556,12 +556,7 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "presets": ["deepseek-v4-flash"],
             "optional": True,
         },
-        "vision": {
-            "env": "DEEPSEEK_VISION_MODEL",
-            "default": "",
-            "presets": ["deepseek-v4-flash", "deepseek-v4-pro"],
-            "optional": True,
-        },
+        "vision": None,   # DeepSeek has no vision capability
         "image": None,   # DeepSeek has no image gen
         "video": None,   # DeepSeek has no video gen
     },
@@ -658,7 +653,7 @@ _ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
     "chat": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "consciousness": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "curator": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
-    "vision": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
+    "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
     "image": ["auto", "ollama", "xai-oauth", "xai", "openai"],
     "video": ["auto", "xai-oauth", "xai"],
 }

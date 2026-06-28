@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import structlog
 
+from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
@@ -128,15 +130,57 @@ class DiscordGateway:
                 await bot.process_commands(message)
                 return
             channel = f"discord:{message.author.id}"
+            tools = getattr(gw.session.agent, "tools", None)
+
+            async def _reply(text: str) -> None:
+                # Send any media artifacts referenced in the reply text first.
+                await gw._send_discord_media(message, text)
+                # Then the text itself (split to Discord's 2000-char limit).
+                if not text:
+                    return
+                for i in range(0, len(text), 2000):
+                    await message.channel.send(text[i : i + 2000])
+
+            async def _media_reply(path: Path, caption: str) -> bool:
+                return await gw._send_discord_file(message, path, caption)
+
             async with message.channel.typing():
                 await gw.session.handle_chat(
                     channel,
                     message.content.strip(),
-                    lambda t: message.channel.send(t[:2000]),
+                    _reply,
+                    media_reply=_media_reply,
                 )
+            # Forward any remaining queued artifacts (e.g. send_file mid-turn).
+            if tools and hasattr(tools, "consume_pending_artifacts"):
+                for p in tools.consume_pending_artifacts():
+                    await gw._send_discord_file(message, p, "")
 
         self._bot = bot
         return bot
+
+    async def _send_discord_media(self, message, text: str) -> None:
+        """Send media artifacts detected in a reply blob (Image/Video/TTS saved to ...)."""
+        for path in artifact_paths_in_text(text):
+            await self._send_discord_file(message, path, "")
+
+    async def _send_discord_file(self, message, path: Path, caption: str) -> bool:
+        """Send a file to the originating Discord channel as an attachment."""
+        import discord
+
+        try:
+            p = Path(path).expanduser()
+            if not p.is_file():
+                return False
+            await message.channel.send(
+                content=caption[:2000] if caption else None,
+                file=discord.File(str(p)),
+            )
+            log.info("discord.send_file", path=str(p))
+            return True
+        except Exception as e:
+            log.warning("discord.send_file_failed", path=str(path), error=str(e))
+            return False
 
     async def run(self) -> None:
         token = self.settings.discord_bot_token
@@ -162,3 +206,23 @@ class DiscordGateway:
                 await user.send(text[:2000])
             except Exception as e:
                 log.warning("discord.notify_failed", user=uid, error=str(e))
+
+    async def send_proactive_media(self, path) -> None:
+        """Send a generated media file (image/video/audio/doc) to all recipients."""
+        if not self._bot:
+            return
+        import discord
+
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return
+        allowed = self.settings.allowed_discord_users()
+        if not allowed:
+            return
+        for uid in allowed:
+            try:
+                user = await self._bot.fetch_user(uid)
+                await user.send(file=discord.File(str(p)))
+                log.info("discord.notify_media_sent", user=uid, path=str(p))
+            except Exception as e:
+                log.warning("discord.notify_media_failed", user=uid, error=str(e))

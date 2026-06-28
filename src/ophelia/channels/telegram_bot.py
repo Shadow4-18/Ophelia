@@ -183,6 +183,7 @@ class TelegramGateway:
                 channel,
                 prompt,
                 lambda t: self._send_reply(update, context, channel, t),
+                media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
             )
         except Exception as e:
             log.exception("telegram.photo_error")
@@ -226,6 +227,7 @@ class TelegramGateway:
                 channel,
                 prompt,
                 lambda t: self._send_reply(update, context, channel, t),
+                media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
             )
         except Exception as e:
             log.exception("telegram.document_error")
@@ -246,6 +248,7 @@ class TelegramGateway:
             channel,
             update.message.text.strip(),
             lambda t: self._send_reply(update, context, channel, t),
+            media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
         )
 
     async def on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -286,6 +289,7 @@ class TelegramGateway:
                 channel,
                 text,
                 lambda t: self._send_reply(update, context, channel, t),
+                media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
             )
         except Exception as e:
             log.exception("telegram.voice_error")
@@ -326,6 +330,33 @@ class TelegramGateway:
                     log.info("telegram.sent_audio", path=str(path))
             except Exception as e:
                 log.warning("telegram.send_media_failed", path=str(path), error=str(e))
+
+    async def _send_media_to_chat(self, update: Update, path: Path, caption: str) -> bool:
+        """Send a single file to the current chat as the appropriate media type.
+
+        Used by the send_file tool to deliver audio/video/images/documents
+        mid-turn. Falls back to sending as a document for unknown types.
+        Returns True on success.
+        """
+        if not update.message:
+            return False
+        kind = media_kind(path)
+        cap = caption[:1024] if caption else None
+        try:
+            with path.open("rb") as f:
+                if kind == "photo":
+                    await update.message.reply_photo(photo=InputFile(f), caption=cap)
+                elif kind == "video":
+                    await update.message.reply_video(video=InputFile(f), caption=cap)
+                elif kind == "audio":
+                    await update.message.reply_audio(audio=InputFile(f), caption=cap)
+                else:
+                    await update.message.reply_document(document=InputFile(f), caption=cap)
+            log.info("telegram.send_file", path=str(path), kind=kind or "document")
+            return True
+        except Exception as e:
+            log.warning("telegram.send_file_failed", path=str(path), error=str(e))
+            return False
 
     async def _send_reply(
         self,
