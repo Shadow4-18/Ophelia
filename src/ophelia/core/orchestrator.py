@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from pathlib import Path
 
@@ -283,12 +284,18 @@ class Orchestrator:
 
         log.info("ollama.autostart", reason="not reachable, ollama wanted")
         log_path = OPHELIA_HOME / "ollama.log"
+        # Keep models resident so infrequent roles (vision) don't reload from
+        # flash on every call. Default 5m is too short; pass our keep-alive as
+        # OLLAMA_KEEP_ALIVE so it applies to every endpoint Ollama serves.
+        env = dict(os.environ)
+        env["OLLAMA_KEEP_ALIVE"] = s.ollama_keep_alive
         try:
             self._ollama_log = open(log_path, "ab")  # kept open for child lifetime
             proc = await asyncio.create_subprocess_exec(
                 "ollama", "serve",
                 stdout=self._ollama_log,
                 stderr=self._ollama_log,
+                env=env,
                 start_new_session=True,  # detach: survives Ophelia exit
             )
         except Exception as e:
@@ -379,6 +386,15 @@ class Orchestrator:
         # every single turn with a cryptic 400. Warn loudly here instead.
         await self._ensure_ollama_running()
         await self._validate_models_at_startup()
+
+        # Preload the Ollama vision model (if it's the vision provider) so the
+        # first photo a user sends isn't a multi-second cold load. Runs in the
+        # background — never blocks startup.
+        try:
+            from ophelia.media.vision_input import warmup_vision
+            asyncio.create_task(warmup_vision(self.settings, stack=self.stack))
+        except Exception as e:
+            log.warning("vision.warmup_skip", error=str(e))
 
         tasks: list[asyncio.Task] = [
             asyncio.create_task(self._oauth_refresh_loop()),

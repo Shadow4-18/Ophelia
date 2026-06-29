@@ -203,6 +203,24 @@ separately. When `ophelia run` needs Ollama (e.g. for local vision with
 `minicpm-v4.6`) and it isn't already running, Ophelia spawns it for you and
 waits for it to come up. Disable with `OPHELIA_OLLAMA_AUTOSTART=false`.
 
+**Why the first photo each time feels slow — and the fix.** Ollama unloads a
+model from memory after 5 minutes of inactivity by default. Vision is called
+rarely (only when you send a photo), so the model almost always gets unloaded
+between calls — every photo then cold-loads ~1GB from flash, a 10–25s stall on
+a phone. Ophelia avoids this two ways:
+
+- It launches `ollama serve` with `OLLAMA_KEEP_ALIVE=30m` (configurable via
+  `OPHELIA_OLLAMA_KEEP_ALIVE`), so the model stays resident between uses.
+  Set `-1` to keep it loaded forever (fastest, more RAM).
+- On startup it sends a 1×1 warmup image so the model is already in memory
+  before the first real photo arrives.
+
+So expect a warm first-token delay of ~2–6s on an S21U (Snapdragon 888, CPU
+only — MiniCPM-V 4.6's "2s" headline number is for an A18 Pro iPhone). Decode
+runs ~3–8 tok/s. If you run `ollama serve` yourself instead of letting Ophelia
+auto-start it, export `OLLAMA_KEEP_ALIVE=30m` before launching it for the same
+benefit.
+
 **Survive a phone reboot** — Ophelia can't start itself after a reboot, so use
 the Termux:Boot add-on. Install it, then drop a script in `~/.termux/boot/`:
 
@@ -211,7 +229,7 @@ mkdir -p ~/.termux/boot
 cat > ~/.termux/boot/start-ophelia <<'EOF'
 #!/data/data/com.termux/files/usr/bin/sh
 termux-wake-lock
-ollama serve >/dev/null 2>&1 &
+OLLAMA_KEEP_ALIVE=30m ollama serve >/dev/null 2>&1 &
 sleep 2 && tmux new -d -s ophelia 'ophelia run'
 EOF
 chmod +x ~/.termux/boot/start-ophelia

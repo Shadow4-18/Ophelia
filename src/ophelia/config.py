@@ -148,6 +148,16 @@ class Settings(BaseSettings):
         alias="OPHELIA_OLLAMA_AUTOSTART",
         description="Auto-start ollama serve if down (auto = on under Termux)",
     )
+    # How long Ollama keeps a model in memory after each call. Default 5m is
+    # too short for infrequent roles like vision — every photo would reload
+    # ~1GB from flash (10-25s stall). 30m keeps it warm between uses; -1 keeps
+    # it loaded indefinitely (more RAM, fastest). Passed to ollama serve as
+    # OLLAMA_KEEP_ALIVE and per-request as keep_alive.
+    ollama_keep_alive: str = Field(
+        default="30m",
+        alias="OPHELIA_OLLAMA_KEEP_ALIVE",
+        description="Ollama model residency (e.g. 30m, 24h, -1 to always keep loaded)",
+    )
 
     # Telegram
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
