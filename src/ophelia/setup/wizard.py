@@ -236,11 +236,23 @@ def _steps_phone() -> list[SetupStep]:
         ),
         SetupStep(
             7,
-            "Keep Termux alive",
-            "Stops Android killing Ophelia when the screen locks.",
-            ["termux-wake-lock"],
+            "Keep Termux alive (survive reboots)",
+            "wake-lock stops Android killing Ophelia when the screen locks. "
+            "Termux:Boot auto-runs Ophelia + Ollama after a phone reboot.",
+            [
+                "termux-wake-lock",
+                "# Install Termux:Boot app, then create a boot script:",
+                "mkdir -p ~/.termux/boot",
+                "cat > ~/.termux/boot/start-ophelia <<'EOF'",
+                "#!/data/data/com.termux/files/usr/bin/sh",
+                "termux-wake-lock",
+                "ollama serve >/dev/null 2>&1 &",
+                "sleep 2 && tmux new -d -s ophelia 'ophelia run'",
+                "EOF",
+                "chmod +x ~/.termux/boot/start-ophelia",
+            ],
             _check_wake_lock_hint,
-            manual_note="Run each time you start a new Termux session (or use Termux:Boot).",
+            manual_note="wake-lock each new session; Termux:Boot handles reboots automatically.",
         ),
         SetupStep(
             8,
@@ -305,12 +317,13 @@ def _steps_pc() -> list[SetupStep]:
         SetupStep(
             3,
             "Install Ollama (local brain)",
-            "Recommended default — free, always-on consciousness later.",
+            "Recommended default — free, always-on consciousness later. "
+            "On Termux, `ophelia run` auto-starts `ollama serve` if it's down.",
             [
                 f"# Download: {ollama_url}",
                 "ollama serve",
                 "ollama pull llama3.2:3b",
-                "ollama pull llava:7b",
+                "ollama pull openbmb/minicpm-v4.6   # phone-friendly vision",
                 "ophelia models",
             ],
             _check_ollama_models,

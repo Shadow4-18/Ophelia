@@ -198,6 +198,25 @@ tmux new -s ophelia
 ophelia run
 ```
 
+**Ollama auto-starts** — on Termux you no longer need to run `ollama serve`
+separately. When `ophelia run` needs Ollama (e.g. for local vision with
+`minicpm-v4.6`) and it isn't already running, Ophelia spawns it for you and
+waits for it to come up. Disable with `OPHELIA_OLLAMA_AUTOSTART=false`.
+
+**Survive a phone reboot** — Ophelia can't start itself after a reboot, so use
+the Termux:Boot add-on. Install it, then drop a script in `~/.termux/boot/`:
+
+```bash
+mkdir -p ~/.termux/boot
+cat > ~/.termux/boot/start-ophelia <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+termux-wake-lock
+ollama serve >/dev/null 2>&1 &
+sleep 2 && tmux new -d -s ophelia 'ophelia run'
+EOF
+chmod +x ~/.termux/boot/start-ophelia
+```
+
 `scripts/install.ps1` · `scripts/install.sh` · `scripts/termux-install.sh` · `scripts/termux-shizuku-setup.sh`
 
 ## License

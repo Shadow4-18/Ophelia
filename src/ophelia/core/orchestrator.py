@@ -42,6 +42,8 @@ class Orchestrator:
         self._ensure_games_file()
 
         self.stack = build_provider_stack(settings)
+        self._ollama_proc: asyncio.subprocess.Process | None = None
+        self._ollama_log = None
         self.memory = MemoryStore(settings.memory_db)
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
@@ -242,6 +244,69 @@ class Orchestrator:
                 pass
             await asyncio.sleep(5)
 
+    async def _ensure_ollama_running(self) -> None:
+        """Start `ollama serve` if Ophelia wants Ollama and it isn't up.
+
+        On Termux, Ollama isn't a system service, so it must be launched each
+        session. Rather than force the user to remember `ollama serve` before
+        `ophelia run`, spawn it ourselves (detached) when:
+          - autostart is enabled (auto-on under Termux, off elsewhere), AND
+          - the `ollama` binary is on PATH, AND
+          - Ollama is plausibly wanted (provider is ollama/auto, or any
+            OLLAMA_*_MODEL is set), AND
+          - it isn't already reachable.
+        Then poll for a few seconds until the API responds.
+        """
+        from ophelia.providers.router import _ollama_reachable
+
+        s = self.settings
+        if not s.ollama_autostart_enabled():
+            return
+        if not shutil.which("ollama"):
+            return
+        if _ollama_reachable(s):
+            return  # already up (e.g. system service on desktop)
+
+        wanted = (
+            (s.provider or "auto").strip().lower() in ("ollama", "auto")
+            or any(
+                (getattr(s, f"provider_{r}", None) or "").strip().lower() == "ollama"
+                for r in ("chat", "consciousness", "vision", "curator", "image", "video")
+            )
+            or bool(s.ollama_vision_model)
+            or bool(s.ollama_consciousness_model)
+            or bool(s.ollama_curator_model)
+            or bool(s.ollama_image_model)
+        )
+        if not wanted:
+            return
+
+        log.info("ollama.autostart", reason="not reachable, ollama wanted")
+        log_path = OPHELIA_HOME / "ollama.log"
+        try:
+            self._ollama_log = open(log_path, "ab")  # kept open for child lifetime
+            proc = await asyncio.create_subprocess_exec(
+                "ollama", "serve",
+                stdout=self._ollama_log,
+                stderr=self._ollama_log,
+                start_new_session=True,  # detach: survives Ophelia exit
+            )
+        except Exception as e:
+            log.warning("ollama.autostart_failed", error=str(e))
+            return
+        self._ollama_proc = proc
+
+        # Poll until the API is up (model load happens on first request).
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            if _ollama_reachable(s):
+                log.info("ollama.autostart_up", pid=proc.pid)
+                return
+        log.warning(
+            "ollama.autostart_timeout",
+            hint=f"ollama may still be starting — see {log_path}",
+        )
+
     async def _validate_models_at_startup(self) -> None:
         """Ping each chat-style role's model once. Warn loudly on failure.
 
@@ -312,6 +377,7 @@ class Orchestrator:
         # Validate that each configured chat-role model is actually accepted by
         # its provider. A bad model name (e.g. a typo) would otherwise fail
         # every single turn with a cryptic 400. Warn loudly here instead.
+        await self._ensure_ollama_running()
         await self._validate_models_at_startup()
 
         tasks: list[asyncio.Task] = [

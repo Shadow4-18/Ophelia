@@ -141,6 +141,13 @@ class Settings(BaseSettings):
     ollama_curator_model: str | None = Field(default=None, alias="OLLAMA_CURATOR_MODEL")
     ollama_vision_model: str | None = Field(default=None, alias="OLLAMA_VISION_MODEL")
     ollama_image_model: str | None = Field(default=None, alias="OLLAMA_IMAGE_MODEL")
+    # Auto-start `ollama serve` when Ophelia needs Ollama and it isn't running.
+    # None = auto (on under Termux, off elsewhere); True/False to force.
+    ollama_autostart: bool | None = Field(
+        default=None,
+        alias="OPHELIA_OLLAMA_AUTOSTART",
+        description="Auto-start ollama serve if down (auto = on under Termux)",
+    )
 
     # Telegram
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
@@ -313,6 +320,14 @@ class Settings(BaseSettings):
         if not raw:
             return []
         return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+    def ollama_autostart_enabled(self) -> bool:
+        """Effective ollama autostart decision: explicit override, else auto (Termux)."""
+        if self.ollama_autostart is not None:
+            return self.ollama_autostart
+        from ophelia.platform import is_termux
+
+        return is_termux()
 
     def web_search_provider_resolved(self) -> str:
         """Effective search backend: explicit choice, else first keyed backend,
