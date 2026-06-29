@@ -129,6 +129,32 @@ Continuous consciousness (not Hermes cron isolation):
 - **Drives** build while idle → initiative to message / explore
 - Outbound messages land in **your Telegram thread** (same SQLite memory)
 
+### Telegram chat commands (remote control)
+
+Ophelia registers its own `/`-command menu with BotFather on startup, so any
+stale commands left over from a previous bot on the same token (e.g. Hermes)
+are replaced. Available from your phone while away from the terminal:
+
+| Command | What it does |
+|---------|--------------|
+| `/status` | Autonomy/thinking/listen/voice state, pending resume, chat provider+model, Ollama reachability |
+| `/pause` · `/resume` | Pause / resume autonomous outreach |
+| `/continue` | Resume an unfinished tool chain that hit the round cap |
+| `/voice on\|off` | Toggle voice replies |
+| `/listen on\|off` | Toggle local mic listening (Termux:API) |
+| `/inner on\|off\|tail` | Inner-monologue mirror |
+| `/game list\|play <id>\|stop\|look` | Android game sessions |
+| `/models` | Per-role provider/model routing |
+| `/help` | List commands |
+
+**Continue button.** When a turn runs out of tool rounds mid-task, the reply
+includes a `▶ Continue` inline button — one tap resumes exactly where she left
+off. `/continue` does the same thing as text.
+
+**Tool-round cap.** `OPHELIA_MAX_TOOL_ROUNDS` (default `25`) bounds how many
+tool calls one turn can make. Raise it (e.g. `40`) if she's building long
+from-scratch artifacts like a math-based synth engine.
+
 ## New tools
 
 | Tool | Notes |

@@ -28,7 +28,7 @@ class ChannelSession:
 
     WELCOME = (
         "Ophelia online.\n"
-        "Commands: pause | resume | voice | listen | inner | game\n"
+        "Commands: /status /pause /resume /voice /listen /inner /game /models /help\n"
         "(Telegram: /command — Discord: !command)"
     )
 
@@ -205,3 +205,65 @@ class ChannelSession:
                 )
             return
         await reply("Usage: game list | play <id> [min] | stop | look | status")
+
+    async def cmd_status(self, channel: str, reply: ReplyFn, *, default_voice: bool = False) -> None:
+        """Remote-control snapshot: what's on, what's running, anything pending."""
+        s = self.signals
+        lines = [
+            f"autonomy: {'PAUSED' if s.autonomy_paused else 'active'}",
+            f"thinking: {s.agent_thinking} | listening(mic): {s.listen_enabled} | inner-mirror: {s.inner_mirror}",
+            f"voice replies: {'on' if self.voice_enabled(channel, default_voice) else 'off'}",
+            f"max_tool_rounds: {self.agent.settings.max_tool_rounds} (resume: {self.agent.settings.tool_loop_resume})",
+        ]
+        pending = list(getattr(self.agent, "_pending_resume", {}).keys())
+        lines.append(f"resume pending: {','.join(pending) if pending else 'none'}")
+        try:
+            from ophelia.providers.router import build_provider_stack
+            stack = build_provider_stack(self.agent.settings)
+            lines.append(f"chat provider: {stack.name('chat')} / {stack.model('chat')}")
+        except Exception as e:
+            lines.append(f"chat provider: ? ({e})")
+        try:
+            from ophelia.providers.router import _ollama_reachable
+        except Exception:
+            _ollama_reachable = None  # type: ignore
+        if _ollama_reachable is not None:
+            try:
+                lines.append(f"ollama reachable: {_ollama_reachable(self.agent.settings)}")
+            except Exception:
+                pass
+        await reply("\n".join(lines)[:4000])
+
+    async def cmd_models(self, reply: ReplyFn) -> None:
+        """Show the per-role provider/model routing — handy when away from the terminal."""
+        from ophelia.providers.router import build_provider_stack
+        try:
+            stack = build_provider_stack(self.agent.settings)
+        except Exception as e:
+            await reply(f"models: ? ({e})")
+            return
+        roles = ["chat", "consciousness", "curator", "vision", "image", "video"]
+        lines = []
+        for role in roles:
+            try:
+                name = stack.name(role)  # type: ignore[arg-type]
+                model = stack.model(role)  # type: ignore[arg-type]
+                lines.append(f"{role}: {name} / {model}")
+            except Exception as e:
+                lines.append(f"{role}: ? ({e})")
+        await reply("\n".join(lines)[:4000])
+
+    async def cmd_help(self, reply: ReplyFn) -> None:
+        await reply(
+            "Commands:\n"
+            "/status — what's on / running / pending\n"
+            "/pause — pause autonomous outreach\n"
+            "/resume — resume autonomous outreach\n"
+            "/voice on|off — voice replies\n"
+            "/listen on|off — local mic listening (Termux:API)\n"
+            "/inner on|off|tail — inner-monologue mirror\n"
+            "/game list|play <id>|stop|look\n"
+            "/models — per-role provider/model routing\n"
+            "/continue — resume an unfinished tool chain\n"
+            "/help — this list"
+        )

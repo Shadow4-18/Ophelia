@@ -5,9 +5,10 @@ import time
 from pathlib import Path
 
 import structlog
-from telegram import InputFile, Update
+from telegram import InputFile, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -47,6 +48,9 @@ class TelegramGateway:
         self._app: Application | None = None
         self._voice_dir = settings.data_dir / "voice"
         self._media_dir = settings.data_dir / "telegram_media"
+        # Last text message we sent, so we can attach a "Continue" inline button
+        # to it when a turn runs out of tool rounds.
+        self._last_text_msg = None
 
     def is_configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
@@ -59,7 +63,7 @@ class TelegramGateway:
 
     async def _reply_text(self, update: Update, text: str) -> None:
         if update.message:
-            await update.message.reply_text(text[:4000])
+            self._last_text_msg = await update.message.reply_text(text[:4000])
 
     def _remember_user(self, user_id: int) -> None:
         self.signals.last_telegram_user_id = user_id
@@ -140,6 +144,46 @@ class TelegramGateway:
             default=self.settings.voice_reply_default,
         )
 
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        channel = f"telegram:{update.effective_user.id}"
+        await self.session.cmd_status(
+            channel,
+            lambda t: self._reply_text(update, t),
+            default_voice=self.settings.voice_reply_default,
+        )
+
+    async def cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        await self.session.cmd_models(lambda t: self._reply_text(update, t))
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        await self.session.cmd_help(lambda t: self._reply_text(update, t))
+
+    async def cmd_continue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Resume an unfinished tool chain — same as tapping the Continue button."""
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        user = update.effective_user
+        channel = f"telegram:{user.id}"
+        self._remember_user(user.id)
+        pending = getattr(self.session.agent, "_pending_resume", {})
+        if channel not in pending:
+            await self._reply_text(update, "Nothing to continue — I'm not mid-task.")
+            return
+        await update.message.chat.send_action("typing")
+        await self.session.handle_chat(
+            channel,
+            "continue",
+            lambda t: self._send_reply(update, context, channel, t),
+            media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+        )
+        await self._maybe_attach_continue(update, context, channel)
+
     async def _bearer(self) -> str | None:
         xai = build_provider_stack(self.settings).xai_backend()
         if not xai:
@@ -188,6 +232,7 @@ class TelegramGateway:
         except Exception as e:
             log.exception("telegram.photo_error")
             await update.message.reply_text(f"Photo error: {e}")
+        await self._maybe_attach_continue(update, context, channel)
 
     async def on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.document:
@@ -232,6 +277,7 @@ class TelegramGateway:
         except Exception as e:
             log.exception("telegram.document_error")
             await update.message.reply_text(f"Image error: {e}")
+        await self._maybe_attach_continue(update, context, channel)
 
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
@@ -250,6 +296,7 @@ class TelegramGateway:
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
         )
+        await self._maybe_attach_continue(update, context, channel)
 
     async def on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.voice:
@@ -296,6 +343,7 @@ class TelegramGateway:
             await update.message.reply_text(f"Voice error: {e}")
         finally:
             await self.signals.set_user_talking(False)
+        await self._maybe_attach_continue(update, context, channel)
 
     async def _send_media_artifacts(
         self,
@@ -390,6 +438,8 @@ class TelegramGateway:
                     )
                     with mp3.open("rb") as audio:
                         await update.message.reply_voice(voice=InputFile(audio))
+                    # Voice went out, not text — no message to edit a button onto.
+                    self._last_text_msg = None
                     return
             except Exception as e:
                 log.warning("telegram.tts_fallback", error=str(e))
@@ -402,6 +452,108 @@ class TelegramGateway:
     ) -> None:
         log.exception("telegram.handler_error", error=str(context.error))
 
+    def _continue_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton("▶ Continue", callback_data="ophelia:continue")]]
+        )
+
+    async def _maybe_attach_continue(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        channel: str,
+    ) -> None:
+        """If the last turn queued a resume, show a Continue button on its reply."""
+        pending = getattr(self.session.agent, "_pending_resume", {})
+        if channel not in pending:
+            return
+        kb = self._continue_keyboard()
+        last = self._last_text_msg
+        if last is not None and last.chat is not None:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=last.chat_id,
+                    message_id=last.message_id,
+                    reply_markup=kb,
+                )
+                return
+            except Exception as e:
+                log.debug("telegram.continue_edit_failed", error=str(e))
+        # Fallback: send a small standalone message with the button (e.g. when
+        # the last reply went out as voice/media instead of text).
+        try:
+            chat = update.effective_chat
+            if chat is not None:
+                self._last_text_msg = await context.bot.send_message(
+                    chat_id=chat.id,
+                    text="Ran out of steps on that one — tap to keep going.",
+                    reply_markup=kb,
+                )
+        except Exception as e:
+            log.warning("telegram.continue_button_failed", error=str(e))
+
+    async def on_continue_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle the inline ▶ Continue button — resume the unfinished chain."""
+        q = update.callback_query
+        if q is None:
+            return
+        await q.answer()
+        user = q.from_user
+        if user is None or not self._allowed(user.id):
+            return
+        channel = f"telegram:{user.id}"
+        self._remember_user(user.id)
+        pending = getattr(self.session.agent, "_pending_resume", {})
+        if channel not in pending:
+            # Already resumed or finished — clear the stale button.
+            try:
+                await q.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        chat = q.message.chat if q.message and q.message.chat else None
+        if chat is None:
+            return
+        await chat.send_action("typing")
+        # Reuse the gateway's reply plumbing by routing through handle_chat with
+        # callbacks that target the callback-query's chat.
+        async def _reply(text: str) -> None:
+            self._last_text_msg = await context.bot.send_message(
+                chat_id=chat.id, text=text[:4000]
+            )
+
+        async def _media(path, caption) -> bool:
+            try:
+                kind = media_kind(path)
+                cap = caption[:1024] if caption else None
+                with path.open("rb") as f:
+                    if kind == "photo":
+                        await context.bot.send_photo(chat_id=chat.id, photo=InputFile(f), caption=cap)
+                    elif kind == "video":
+                        await context.bot.send_video(chat_id=chat.id, video=InputFile(f), caption=cap)
+                    elif kind == "audio":
+                        await context.bot.send_audio(chat_id=chat.id, audio=InputFile(f), caption=cap)
+                    else:
+                        await context.bot.send_document(chat_id=chat.id, document=InputFile(f), caption=cap)
+                return True
+            except Exception as e:
+                log.warning("telegram.continue_media_failed", error=str(e))
+                return False
+
+        await self.session.handle_chat(
+            channel,
+            "continue",
+            _reply,
+            media_reply=_media,
+        )
+        await self._maybe_attach_continue(update, context, channel)
+
     def build_app(self) -> Application:
         token = self.settings.telegram_bot_token
         if not token:
@@ -410,12 +562,17 @@ class TelegramGateway:
         app = Application.builder().token(token).build()
         app.add_error_handler(self._on_error)
         app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("help", self.cmd_help))
+        app.add_handler(CommandHandler("status", self.cmd_status))
+        app.add_handler(CommandHandler("models", self.cmd_models))
         app.add_handler(CommandHandler("pause", self.cmd_pause))
         app.add_handler(CommandHandler("resume", self.cmd_resume))
+        app.add_handler(CommandHandler("continue", self.cmd_continue))
         app.add_handler(CommandHandler("voice", self.cmd_voice))
         app.add_handler(CommandHandler("listen", self.cmd_listen))
         app.add_handler(CommandHandler("inner", self.cmd_inner))
         app.add_handler(CommandHandler("game", self.cmd_game))
+        app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
         app.add_handler(MessageHandler(filters.Document.IMAGE, self.on_document))
@@ -442,6 +599,29 @@ class TelegramGateway:
         app = self.build_app()
         await app.initialize()
         await app.start()
+        # Overwrite BotFather's command menu. Whatever Hermes (or a previous
+        # bot on this token) registered still shows in the "/" picker until we
+        # replace it, so set Ophelia's own commands explicitly.
+        try:
+            from telegram import BotCommand
+
+            await app.bot.set_my_commands(
+                [
+                    BotCommand("status", "what's on / running / pending"),
+                    BotCommand("pause", "pause autonomous outreach"),
+                    BotCommand("resume", "resume autonomous outreach"),
+                    BotCommand("continue", "resume an unfinished task"),
+                    BotCommand("voice", "voice replies on/off"),
+                    BotCommand("listen", "local mic listening on/off"),
+                    BotCommand("inner", "inner-monologue mirror on/off/tail"),
+                    BotCommand("game", "game list / play / stop / look"),
+                    BotCommand("models", "per-role provider/model routing"),
+                    BotCommand("help", "list commands"),
+                ]
+            )
+            log.info("telegram.commands_registered")
+        except Exception as e:
+            log.warning("telegram.set_commands_failed", error=str(e))
         log.info("telegram.ready")
 
     async def run(self) -> None:

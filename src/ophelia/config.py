@@ -191,7 +191,7 @@ class Settings(BaseSettings):
 
     # Agentic tool loop (per turn)
     max_tool_rounds: int = Field(
-        default=10,
+        default=25,
         alias="OPHELIA_MAX_TOOL_ROUNDS",
         description="Hard cap on tool-call rounds in a single turn before bailing out",
     )
