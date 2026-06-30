@@ -227,16 +227,32 @@ class AgentLoop:
         for m in history:
             if m["role"] not in ("user", "assistant"):
                 continue
-            prefix = ""
-            if m.get("channel") and m["channel"] != channel:
-                prefix = f"[{m['channel']}] "
+            meta = m.get("metadata") or {}
+            content = m["content"]
             if (
                 m["role"] == "user"
                 and (m.get("channel") or channel) == channel
                 and (m.get("content") or "") == user_text
             ):
                 seen_current_user_turn = True
-            messages.append({"role": m["role"], "content": prefix + m["content"]})
+            # A consciousness tick is an internal prompt from her own runtime, not
+            # user speech. Render it as a clearly self/internal cue so she never
+            # attributes the tick to the user.
+            if meta.get("type") == "consciousness_tick" and m["role"] == "user":
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Internal autonomous tick from your own runtime — "
+                            "NOT a message from the user] " + content
+                        ),
+                    }
+                )
+                continue
+            prefix = ""
+            if m.get("channel") and m["channel"] != channel:
+                prefix = f"[{m['channel']}] "
+            messages.append({"role": m["role"], "content": prefix + content})
         if not seen_current_user_turn:
             messages.append({"role": "user", "content": user_text})
         return messages
