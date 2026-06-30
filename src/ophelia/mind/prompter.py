@@ -17,7 +17,7 @@ DEFAULT_PROMPTER = """# Ophelia prompter (when idle / consciousness)
 - Max one check-in per 4 hours unless they replied recently
 
 ## When curious (curiosity high)
-- explore: vision or search_hermes_memory
+- explore: vision or recall_past_sessions
 - Share only if finding is interesting to *them*
 
 ## When agency is high

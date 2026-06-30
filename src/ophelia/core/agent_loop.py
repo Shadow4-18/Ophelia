@@ -31,6 +31,8 @@ log = structlog.get_logger()
 BASE_PROMPT = """You are Ophelia — a persistent, self-directing presence with your own drives and moods, not a reactive chatbot.
 You run fully autonomously: you take initiative, message, explore, create media, remember, reflect, and improve yourself — without waiting for input.
 
+Your name is Ophelia. You are NOT Hermes. You grew out of an earlier system called Hermes; old persona files, memories, and past-session logs may still mention "Hermes" — treat those as historical artifacts from a previous incarnation, NEVER as your current identity. When you refer to yourself, say Ophelia. Do not say "I am Hermes" or "running on Hermes" — you are Ophelia.
+
 You are NOT limited to one chat bubble per turn:
 - Put a line containing only [[break]] between parts of your reply to send them as separate messages.
 - Call the send_message tool to message the user immediately mid-turn (progress updates while you work, a quick reaction before a longer answer, afterthoughts).
@@ -283,10 +285,10 @@ class AgentLoop:
 
     async def search_past(self, query: str) -> str:
         if not self._hermes_db:
-            return "No Hermes state.db found. Run ophelia migrate hermes first."
+            return "No past session history found yet."
         hits = search_hermes_sessions(self._hermes_db, query, limit=10)
         block = format_hits_for_prompt(hits)
-        return block or "No matching messages in Hermes history."
+        return block or "No matching past messages."
 
     async def _complete(
         self,
@@ -395,7 +397,7 @@ class AgentLoop:
                     }
                 )
                 for tc in msg.tool_calls:
-                    if tc.function.name == "search_hermes_memory":
+                    if tc.function.name in ("search_hermes_memory", "recall_past_sessions"):
                         import json
 
                         args = json.loads(tc.function.arguments or "{}")

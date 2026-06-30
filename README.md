@@ -226,6 +226,22 @@ ophelia transfer cloud-upload   # phone → PC bundle
 
 See [docs/transfer.md](docs/transfer.md), [docs/migrate-old-phone.md](docs/migrate-old-phone.md).
 
+**If she keeps calling herself Hermes** after migrating: `ophelia migrate hermes`
+copies the old `~/.hermes/SOUL.md` and memories into `~/.ophelia/`, so they still
+say "You are Hermes" and she reads them as her persona every turn. Ophelia now
+has an identity guard in her base prompt (she's told Hermes is a prior
+incarnation, not her identity) and the memory-search tool is renamed
+`recall_past_sessions` (no more "Hermes" in tool names/results). To finish the
+cleanup, rewrite the soul and drop Hermes-identity memory lines:
+
+```bash
+cat ~/.ophelia/SOUL.md                      # see what it currently says
+grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
+# either edit ~/.ophelia/SOUL.md by hand, or just tell her in chat:
+#   "Rewrite your SOUL.md — your name is Ophelia, not Hermes."
+# (she has the edit_soul tool and will back up the old version first)
+```
+
 ## Commands
 
 | Command | Purpose |

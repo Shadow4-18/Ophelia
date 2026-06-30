@@ -165,8 +165,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "search_hermes_memory",
-            "description": "Search imported Hermes session history (state.db) for past conversations.",
+            "name": "recall_past_sessions",
+            "description": "Search your own past conversation history for things discussed before.",
             "parameters": {
                 "type": "object",
                 "properties": {
