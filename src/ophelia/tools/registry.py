@@ -25,6 +25,43 @@ ToolHandler = Callable[..., Awaitable[str]]
 log = structlog.get_logger()
 
 
+# Commands that would let Ophelia accidentally start a second instance of
+# herself (which then fights this one over the Telegram bot token — the
+# "terminated by other getUpdates request" error) or kill her own runtime.
+# Safety guard, not a security boundary.
+_PHONE_SHELL_DENIED = (
+    "ophelia run",
+    "ophelia serve",
+    "ophelia daemon",
+    "ophelia start",
+    "tmux new",
+    "tmux kill-session",
+    "tmux kill-server",
+    "tmux attach",
+    "pkill ophelia",
+    "killall ophelia",
+    "pkill -f ophelia",
+)
+
+
+def _phone_shell_blocked_reason(command: str) -> str | None:
+    cmd = (command or "").strip()
+    if not cmd:
+        return None
+    low = cmd.lower()
+    for needle in _PHONE_SHELL_DENIED:
+        if needle in low:
+            return (
+                f"Refused: '{needle}' in that shell command would start or stop "
+                f"another Ophelia instance. Two instances polling the same Telegram "
+                f"bot token fight forever (the 'terminated by other getUpdates "
+                f"request' error). To check the running instance, use /status "
+                f"instead. If you genuinely need to restart, do it from the Termux "
+                f"session yourself (after killing the old one)."
+            )
+    return None
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -946,6 +983,12 @@ class ToolRegistry:
     async def _phone_shell(self, command: str) -> str:
         if not self.android:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        blocked = _phone_shell_blocked_reason(command)
+        if blocked:
+            # Don't let her accidentally start a second Ophelia (which would
+            # fight with this one over the Telegram bot token) or kill her own
+            # runtime. This is a safety guard, not a security boundary.
+            return blocked
         return await self.android.shell(command)
 
     async def _phone_swipe(

@@ -155,6 +155,19 @@ off. `/continue` does the same thing as text.
 tool calls one turn can make. Raise it (e.g. `40`) if she's building long
 from-scratch artifacts like a math-based synth engine.
 
+**"terminated by other getUpdates request" / Telegram spam.** That error means
+two processes are polling the same bot token at once (Telegram allows only one
+`getUpdates` poller per token). Ophelia now holds a single-instance lock
+(`~/.ophelia/telegram.lock`) so a second `ophelia run` won't start polling, and
+`phone_shell` refuses commands that would spawn another Ophelia or kill her own
+runtime (a common cause — she'd run a "system check" via `phone_shell` and
+accidentally start a second instance). If you still see it (e.g. a stale tmux
+session or Hermes lingering on the token), recover with:
+
+```bash
+pkill -f 'ophelia run'   # kill every instance, then start exactly one
+```
+
 ## New tools
 
 | Tool | Notes |

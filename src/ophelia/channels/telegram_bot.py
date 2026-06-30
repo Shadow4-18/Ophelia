@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from pathlib import Path
 
@@ -20,12 +22,90 @@ from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.channels.telegram_util import ensure_polling_mode
 from ophelia.media.vision_input import describe_image_file
-from ophelia.config import Settings
+from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.core.signals import Signals
 from ophelia.media.voice import synthesize_speech, transcribe_audio
 from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
+
+# fcntl is POSIX-only; on Windows there's no Telegram polling in practice
+# (the phone runs Termux), so the lock becomes a no-op there.
+try:
+    import fcntl as _fcntl  # type: ignore
+except Exception:  # pragma: no cover - Windows / unsupported
+    _fcntl = None  # type: ignore
+
+
+def acquire_telegram_poll_lock() -> bool:
+    """Try to take an exclusive lock so only one Ophelia polls the bot token.
+
+    Returns True if this process got the lock. The lock is held until the
+    process exits (the OS releases the flock automatically). Prevents the
+    "terminated by other getUpdates request" spam when a second instance
+    starts (e.g. an accidental `ophelia run` spawned from phone_shell).
+    """
+    if _fcntl is None:
+        return True  # no-op on platforms without fcntl
+    try:
+        OPHELIA_HOME.mkdir(parents=True, exist_ok=True)
+        fd = os.open(OPHELIA_HOME / "telegram.lock", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return False
+        # Keep fd open for the lifetime of the process; never close it here.
+        return True
+    except Exception as e:
+        log.warning("telegram.lock_failed", error=str(e))
+        return True  # fail open — don't block Telegram on a lock hiccup
+
+
+class _ConflictSpamFilter(logging.Filter):
+    """Collapse PTB's repeated polling-conflict tracebacks into one warning.
+
+    python-telegram-bot's networkloop retries getUpdates on a 409 Conflict
+    forever, logging the full traceback every cycle. When two instances are
+    fighting this floods the log. We emit one concise, actionable warning via
+    structlog and drop the rest.
+    """
+
+    _emitted = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = ""
+        if "Conflict" in msg and "getUpdates" in msg:
+            if not _ConflictSpamFilter._emitted:
+                _ConflictSpamFilter._emitted = True
+                log.error(
+                    "telegram.polling_conflict",
+                    error="409 Conflict: terminated by other getUpdates request",
+                    reason="another process is polling this bot token "
+                    "(a second ophelia run, Hermes, or a stale tmux session)",
+                    fix=(
+                        "run: pkill -f 'ophelia run'  (then restart one instance); "
+                        "only one bot instance may poll a token at a time"
+                    ),
+                )
+            return False
+        return True
+
+
+def _install_conflict_filter() -> None:
+    """Attach the spam filter so PTB's 409-conflict tracebacks don't flood."""
+    filt = _ConflictSpamFilter()
+    # Filter at the emitting logger (records are checked against the emitter's
+    # own filters before propagation).
+    logging.getLogger("telegram.ext._utils.networkloop").addFilter(filt)
+    # Also filter at root handlers — propagated records pass through handler
+    # filters regardless of which logger emitted them, so this catches the
+    # conflict even if PTB's logger name differs across versions.
+    for h in logging.getLogger().handlers:
+        h.addFilter(filt)
 
 
 class TelegramGateway:
@@ -629,15 +709,30 @@ class TelegramGateway:
         app = self._app
         if app is None:
             raise RuntimeError("Telegram app failed to initialize")
+        # Collapse PTB's repeated 409-conflict tracebacks into one clear warning.
+        _install_conflict_filter()
+        # Refuse to start a second poller on the same bot token — that's the
+        # cause of the "terminated by other getUpdates request" spam. Let the
+        # already-running instance keep Telegram; this one skips polling.
+        if not acquire_telegram_poll_lock():
+            log.error(
+                "telegram.poll_lock_held",
+                reason="another Ophelia instance is already polling this bot token",
+                fix="pkill -f 'ophelia run'  then start a single instance",
+            )
+            return
         try:
             await app.updater.start_polling(drop_pending_updates=True)
         except Exception as e:
             err = str(e)
-            if "409" in err or "webhook" in err.lower():
+            if "409" in err or "webhook" in err.lower() or "Conflict" in err:
                 log.error(
                     "telegram.polling_conflict",
                     error=err,
-                    hint="run: hermes gateway stop; or curl deleteWebhook; only one poller per token",
+                    reason="another process is polling this bot token "
+                    "(second ophelia run, Hermes, or a stale tmux session)",
+                    fix="pkill -f 'ophelia run'; ensure no other bot uses this token; "
+                    "only one poller per token",
                 )
             raise
         log.info("telegram.polling")
