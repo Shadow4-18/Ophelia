@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Self
+from typing import ClassVar, Self
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -157,6 +157,89 @@ class Settings(BaseSettings):
         default="30m",
         alias="OPHELIA_OLLAMA_KEEP_ALIVE",
         description="Ollama model residency (e.g. 30m, 24h, -1 to always keep loaded)",
+    )
+
+    # ---- Image generation backends (media-only; selected via OPHELIA_PROVIDER_IMAGE) ----
+    # These providers can't serve chat/vision — only the image role. Several are
+    # NSFW-capable (pollinations, a1111, comfyui, fal, replicate, civitai,
+    # modelslab, ollama). xAI/OpenAI are NOT — they refuse explicit prompts.
+    image_nsfw_allowed: bool = Field(
+        default=False,
+        alias="OPHELIA_IMAGE_NSFW_ALLOWED",
+        description=(
+            "Content tier. When true, the agent may write explicit prompts and "
+            "explicit requests are auto-routed to an uncensored backend (never "
+            "xAI/OpenAI). When false, explicit requests are refused."
+        ),
+    )
+    image_nsfw_provider: str = Field(
+        default="auto",
+        alias="OPHELIA_IMAGE_NSFW_PROVIDER",
+        description=(
+            "Provider used for explicit images. auto = first configured "
+            "uncensored backend (pollinations > a1111 > comfyui > modelslab > "
+            "civitai > fal > replicate > ollama)."
+        ),
+    )
+
+    # Pollinations — free, no API key, lax on NSFW (safe=false).
+    pollinations_base_url: str = Field(
+        default="https://image.pollinations.ai", alias="POLLINATIONS_BASE_URL"
+    )
+    pollinations_image_model: str = Field(
+        default="flux", alias="POLLINATIONS_IMAGE_MODEL"
+    )
+
+    # Automatic1111 / SDWebUI with --api (local, uncensored, LoRAs/samplers).
+    a1111_base_url: str = Field(default="http://127.0.0.1:7860", alias="A1111_BASE_URL")
+    a1111_api_key: str | None = Field(default=None, alias="A1111_API_KEY")
+    a1111_image_model: str | None = Field(
+        default=None,
+        alias="A1111_IMAGE_MODEL",
+        description="Checkpoint name (optional override of webUI default)",
+    )
+    a1111_steps: int = Field(default=30, alias="A1111_STEPS")
+    a1111_sampler: str = Field(default="DPM++ 2M Karras", alias="A1111_SAMPLER")
+    a1111_cfg_scale: float = Field(default=7.0, alias="A1111_CFG_SCALE")
+
+    # ComfyUI (local, uncensored). Uses a txt2img workflow graph; override the
+    # graph by pointing COMFYUI_WORKFLOW_PATH at a workflow JSON export.
+    comfyui_base_url: str = Field(default="http://127.0.0.1:8188", alias="COMFYUI_BASE_URL")
+    comfyui_workflow_path: Path = Field(
+        default=OPHELIA_HOME / "comfyui_workflow.json", alias="COMFYUI_WORKFLOW_PATH"
+    )
+    comfyui_image_model: str | None = Field(
+        default=None,
+        alias="COMFYUI_IMAGE_MODEL",
+        description="Checkpoint filename in ComfyUI (optional)",
+    )
+
+    # fal.ai (fast cloud; flux/sdxl NSFW-tolerant variants).
+    fal_api_key: str | None = Field(default=None, alias="FAL_API_KEY")
+    fal_image_model: str = Field(default="fal-ai/fast-sdxl", alias="FAL_IMAGE_MODEL")
+
+    # Replicate (cloud; many NSFW-allowed community models).
+    replicate_api_key: str | None = Field(default=None, alias="REPLICATE_API_KEY")
+    replicate_image_model: str = Field(
+        default="stability-ai/sdxl", alias="REPLICATE_IMAGE_MODEL"
+    )
+
+    # Civitai Orchestration (hosts NSFW checkpoints/LoRAs; generation API).
+    civitai_api_key: str | None = Field(default=None, alias="CIVITAI_API_KEY")
+    civitai_image_model: str = Field(
+        default="",
+        alias="CIVITAI_IMAGE_MODEL",
+        description="Model URN e.g. urn:air:sdxl:checkpoint:civitai:101055@128078 (optional)",
+    )
+    civitai_base_url: str = Field(
+        default="https://orchestration.civitai.com", alias="CIVITAI_BASE_URL"
+    )
+
+    # ModelsLab (hosted SD APIs; explicit/adult models; safety_checker=false).
+    modelslab_api_key: str | None = Field(default=None, alias="MODELSLAB_API_KEY")
+    modelslab_image_model: str = Field(default="flux", alias="MODELSLAB_IMAGE_MODEL")
+    modelslab_base_url: str = Field(
+        default="https://modelslab.com/api/v6", alias="MODELSLAB_BASE_URL"
     )
 
     # Telegram
@@ -353,6 +436,50 @@ class Settings(BaseSettings):
         if self.brave_api_key:
             return "brave"
         return "duckduckgo"
+
+    # Providers that can serve explicit/NSFW imagery (xAI/OpenAI are NOT here).
+    NSFW_CAPABLE_PROVIDERS: ClassVar[tuple[str, ...]] = (
+        "pollinations",
+        "a1111",
+        "comfyui",
+        "modelslab",
+        "civitai",
+        "fal",
+        "replicate",
+        "ollama",
+    )
+
+    def image_backend_configured(self, provider: str) -> bool:
+        """True if the given image-only media provider has the creds it needs."""
+        p = (provider or "").strip().lower()
+        if p == "pollinations":
+            return True  # free, no key
+        if p == "a1111":
+            return bool(self.a1111_base_url)
+        if p == "comfyui":
+            return bool(self.comfyui_base_url)
+        if p == "modelslab":
+            return bool(self.modelslab_api_key)
+        if p == "civitai":
+            return bool(self.civitai_api_key)
+        if p == "fal":
+            return bool(self.fal_api_key)
+        if p == "replicate":
+            return bool(self.replicate_api_key)
+        if p == "ollama":
+            return bool(self.ollama_image_model)
+        return False
+
+    def image_nsfw_provider_resolved(self) -> str:
+        """Effective NSFW image provider: explicit choice if configured, else
+        the first configured uncensored backend, else pollinations (free)."""
+        p = (self.image_nsfw_provider or "auto").strip().lower()
+        if p != "auto":
+            return p
+        for prov in self.NSFW_CAPABLE_PROVIDERS:
+            if self.image_backend_configured(prov):
+                return prov
+        return "pollinations"  # zero-config free fallback
 
     def allowed_telegram_users(self) -> set[int] | None:
         raw = self.telegram_allowed_user_ids.strip()

@@ -85,14 +85,30 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "generate_image",
-            "description": "Generate an image from a text prompt (xAI, OpenAI, or Ollama flux).",
+            "description": (
+                "Generate an image from a text prompt. Backends: xAI Grok Imagine, "
+                "OpenAI DALL-E, Ollama (local), Pollinations (free), A1111/SDWebUI "
+                "(local), ComfyUI (local), fal.ai, Replicate, Civitai, ModelsLab. "
+                "Set nsfw=true for explicit/pornographic prompts — those are routed "
+                "to an uncensored backend (never xAI/OpenAI) and require "
+                "OPHELIA_IMAGE_NSFW_ALLOWED=true or they will be refused. Only set "
+                "nsfw=true when the user explicitly asks for explicit content; "
+                "leave it false for everything else."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string"},
                     "aspect_ratio": {
                         "type": "string",
-                        "description": "e.g. 1:1, 16:9, 9:16",
+                        "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4",
+                    },
+                    "nsfw": {
+                        "type": "boolean",
+                        "description": (
+                            "True only for explicit/sexual content the user "
+                            "explicitly requested. Routed to an uncensored backend."
+                        ),
                     },
                 },
                 "required": ["prompt"],
@@ -615,13 +631,16 @@ class ToolRegistry:
             )
         return xai
 
-    async def _generate_image(self, prompt: str, aspect_ratio: str = "1:1") -> str:
+    async def _generate_image(
+        self, prompt: str, aspect_ratio: str = "1:1", nsfw: bool = False
+    ) -> str:
         result = await generate_image(
             self.settings,
             self.stack,
             prompt,
             aspect_ratio=aspect_ratio,
             artifacts_dir=self.artifacts_dir,
+            nsfw=nsfw,
         )
         self._record_artifacts_from_text(result)
         return result

@@ -38,6 +38,7 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
                 "AI provider (Ollama / cloud)",
                 "Chat channels (Telegram / Discord)",
                 "Web search (DeepSeek/OpenAI have no built-in search)",
+                "Image generation (backends + NSFW)",
                 "Persona (SOUL.md)",
                 "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
                 "Features (consciousness, games, ...)",
@@ -56,19 +57,21 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         elif idx == 2:
             _section_web_search()
         elif idx == 3:
-            _section_persona()
+            _section_image_backends()
         elif idx == 4:
-            _section_phone_body(on_phone)
+            _section_persona()
         elif idx == 5:
-            _section_features(on_phone)
+            _section_phone_body(on_phone)
         elif idx == 6:
-            _section_health_check()
+            _section_features(on_phone)
         elif idx == 7:
+            _section_health_check()
+        elif idx == 8:
             print()
             run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-        elif idx == 8:
+        elif idx == 9:
             break
-        if idx != 8:
+        if idx != 9:
             pause()
 
     print()
@@ -657,7 +660,20 @@ _ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
     "consciousness": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "curator": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
-    "image": ["auto", "ollama", "xai-oauth", "xai", "openai"],
+    "image": [
+        "auto",
+        "ollama",
+        "xai-oauth",
+        "xai",
+        "openai",
+        "pollinations",
+        "a1111",
+        "comfyui",
+        "fal",
+        "replicate",
+        "civitai",
+        "modelslab",
+    ],
     "video": ["auto", "xai-oauth", "xai"],
 }
 
@@ -1160,6 +1176,184 @@ def _section_web_search() -> None:
         else:
             resolved = "duckduckgo"
     print(f"  Active web search backend: {resolved}")
+
+
+_IMAGE_BACKEND_OPTIONS = [
+    ("auto", "Auto (local Ollama if a model is pulled, else cloud, else Pollinations free)"),
+    ("pollinations", "Pollinations (free, no API key — lax on NSFW)"),
+    ("a1111", "Automatic1111 / SDWebUI (local, uncensored, LoRAs — best local quality)"),
+    ("comfyui", "ComfyUI (local, uncensored — most control)"),
+    ("ollama", "Ollama image model (local)"),
+    ("xai-oauth", "xAI Grok Imagine (OAuth) — censored"),
+    ("xai", "xAI Grok Imagine (API key) — censored"),
+    ("openai", "OpenAI DALL-E — censored"),
+    ("fal", "fal.ai (fast cloud — NSFW-tolerant flux/sdxl)"),
+    ("replicate", "Replicate (cloud — many NSFW-allowed models)"),
+    ("civitai", "Civitai (NSFW checkpoints/LoRAs, generation API)"),
+    ("modelslab", "ModelsLab (hosted SD — explicit/adult models)"),
+]
+
+
+def _section_image_backends() -> None:
+    """Pick the image-generation backend and configure its credentials.
+
+    Several backends are NSFW-capable (pollinations, a1111, comfyui, fal,
+    replicate, civitai, modelslab, ollama). xAI/OpenAI are NOT — explicit
+    prompts are auto-routed away from them when the NSFW tier is enabled.
+    """
+    current = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
+    labels = [label for _, label in _IMAGE_BACKEND_OPTIONS]
+    default = next(
+        (i for i, (k, _) in enumerate(_IMAGE_BACKEND_OPTIONS) if k == current), 0
+    )
+    pick = radiolist(
+        "Choose image generation backend",
+        labels,
+        selected=default,
+        description=(
+            "Backends marked 'censored' (xAI/OpenAI) refuse explicit prompts.\n"
+            "  For NSFW, pick an uncensored backend AND enable the NSFW tier below.\n"
+            "  Pollinations is free and needs no key — image gen works out of the box."
+        ),
+    )
+    if pick < 0:
+        return
+    provider = _IMAGE_BACKEND_OPTIONS[pick][0]
+    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_IMAGE": provider}
+
+    if provider == "pollinations":
+        m = prompt_text(
+            "POLLINATIONS_IMAGE_MODEL",
+            default=read_env_key("POLLINATIONS_IMAGE_MODEL") or "flux",
+            hint="flux, turbo, sdxl, flux-realism, ...",
+        )
+        if m:
+            updates["POLLINATIONS_IMAGE_MODEL"] = m
+    elif provider == "a1111":
+        base = prompt_text(
+            "A1111_BASE_URL",
+            default=read_env_key("A1111_BASE_URL") or "http://127.0.0.1:7860",
+            hint="Run SDWebUI with --api --listen --port 7860",
+        )
+        updates["A1111_BASE_URL"] = base
+        key = prompt_text(
+            "A1111_API_KEY (optional — only if --api-auth is set)",
+            secret=True,
+            default=read_env_key("A1111_API_KEY") or "",
+        )
+        if key:
+            updates["A1111_API_KEY"] = key
+        ckpt = prompt_text(
+            "A1111_IMAGE_MODEL (optional checkpoint name, blank = webUI default)",
+            default=read_env_key("A1111_IMAGE_MODEL") or "",
+        )
+        updates["A1111_IMAGE_MODEL"] = ckpt or None
+    elif provider == "comfyui":
+        base = prompt_text(
+            "COMFYUI_BASE_URL",
+            default=read_env_key("COMFYUI_BASE_URL") or "http://127.0.0.1:8188",
+        )
+        updates["COMFYUI_BASE_URL"] = base
+        ckpt = prompt_text(
+            "COMFYUI_IMAGE_MODEL (optional checkpoint filename, blank = default graph)",
+            default=read_env_key("COMFYUI_IMAGE_MODEL") or "",
+        )
+        updates["COMFYUI_IMAGE_MODEL"] = ckpt or None
+    elif provider == "fal":
+        key = prompt_text(
+            "FAL_API_KEY (get one at https://fal.ai/dashboard/keys)",
+            secret=True,
+            default=read_env_key("FAL_API_KEY") or "",
+        )
+        if key:
+            updates["FAL_API_KEY"] = key
+        m = prompt_text(
+            "FAL_IMAGE_MODEL",
+            default=read_env_key("FAL_IMAGE_MODEL") or "fal-ai/fast-sdxl",
+            hint="fal-ai/fast-sdxl, fal-ai/flux/dev, fal-ai/flux/schnell, ...",
+        )
+        if m:
+            updates["FAL_IMAGE_MODEL"] = m
+    elif provider == "replicate":
+        key = prompt_text(
+            "REPLICATE_API_KEY (get one at https://replicate.com/account/api-tokens)",
+            secret=True,
+            default=read_env_key("REPLICATE_API_KEY") or "",
+        )
+        if key:
+            updates["REPLICATE_API_KEY"] = key
+        m = prompt_text(
+            "REPLICATE_IMAGE_MODEL",
+            default=read_env_key("REPLICATE_IMAGE_MODEL") or "stability-ai/sdxl",
+            hint="owner/model or owner/model:version — e.g. stability-ai/sdxl",
+        )
+        if m:
+            updates["REPLICATE_IMAGE_MODEL"] = m
+    elif provider == "civitai":
+        key = prompt_text(
+            "CIVITAI_API_KEY (account -> API keys)",
+            secret=True,
+            default=read_env_key("CIVITAI_API_KEY") or "",
+        )
+        if key:
+            updates["CIVITAI_API_KEY"] = key
+        m = prompt_text(
+            "CIVITAI_IMAGE_MODEL (optional URN, blank = engine default flux)",
+            default=read_env_key("CIVITAI_IMAGE_MODEL") or "",
+            hint="urn:air:sdxl:checkpoint:civitai:101055@128078",
+        )
+        updates["CIVITAI_IMAGE_MODEL"] = m or None
+    elif provider == "modelslab":
+        key = prompt_text(
+            "MODELSLAB_API_KEY (https://modelslab.com/dashboard/api-keys)",
+            secret=True,
+            default=read_env_key("MODELSLAB_API_KEY") or "",
+        )
+        if key:
+            updates["MODELSLAB_API_KEY"] = key
+        m = prompt_text(
+            "MODELSLAB_IMAGE_MODEL",
+            default=read_env_key("MODELSLAB_IMAGE_MODEL") or "flux",
+            hint="flux, sdxl, ...",
+        )
+        if m:
+            updates["MODELSLAB_IMAGE_MODEL"] = m
+    elif provider == "ollama":
+        m = prompt_text(
+            "OLLAMA_IMAGE_MODEL",
+            default=read_env_key("OLLAMA_IMAGE_MODEL") or "",
+            hint="ollama pull flux (or another image-capable model)",
+        )
+        updates["OLLAMA_IMAGE_MODEL"] = m or None
+
+    # NSFW content tier
+    nsfw_now = (read_env_key("OPHELIA_IMAGE_NSFW_ALLOWED") or "").lower() in (
+        "1", "true", "yes", "on",
+    )
+    pick_n = radiolist(
+        "Enable NSFW content tier? (allows explicit prompts; routes them to an "
+        "uncensored backend — never xAI/OpenAI)",
+        ["No (refuse explicit image requests)", "Yes (allow, route to uncensored)"],
+        selected=1 if nsfw_now else 0,
+    )
+    want_nsfw = pick_n == 1
+    updates["OPHELIA_IMAGE_NSFW_ALLOWED"] = "true" if want_nsfw else "false"
+    if want_nsfw:
+        nsfw_prov = prompt_text(
+            "OPHELIA_IMAGE_NSFW_PROVIDER (auto = first configured uncensored)",
+            default=read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto",
+        )
+        updates["OPHELIA_IMAGE_NSFW_PROVIDER"] = nsfw_prov or "auto"
+
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    print(f"  Active image backend: {provider}")
+    if want_nsfw:
+        s = Settings()
+        print(f"  NSFW tier: ON -> explicit requests route to "
+              f"{s.image_nsfw_provider_resolved()}")
+    else:
+        print("  NSFW tier: OFF (explicit image requests will be refused)")
 
 
 def _section_features(on_phone: bool) -> None:

@@ -49,7 +49,7 @@ ophelia chat "hello"
 | `consciousness` | Background ticks / inner life | `XAI_CONSCIOUSNESS_MODEL`, `DEEPSEEK_CONSCIOUSNESS_MODEL`, `OPENAI_CONSCIOUSNESS_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL` |
 | `curator` | Memory consolidation | `XAI_CURATOR_MODEL`, `DEEPSEEK_CURATOR_MODEL`, `OPENAI_CURATOR_MODEL`, `OLLAMA_CURATOR_MODEL` |
 | `vision` | Photo understanding | `XAI_VISION_MODEL`, `OPENAI_VISION_MODEL`, `OLLAMA_VISION_MODEL` |
-| `image` | Image generation | `XAI_IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, `OLLAMA_IMAGE_MODEL` |
+| `image` | Image generation | `XAI_IMAGE_MODEL`, `OPENAI_IMAGE_MODEL`, `OLLAMA_IMAGE_MODEL`, `POLLINATIONS_IMAGE_MODEL`, `A1111_*`, `COMFYUI_*`, `FAL_*`, `REPLICATE_*`, `CIVITAI_*`, `MODELSLAB_*` (see [Image generation](#image-generation)) |
 | `video` | Video generation | `XAI_VIDEO_MODEL` (xAI only) |
 
 **Capability auto-routing** — DeepSeek has no vision, image, or video
@@ -95,6 +95,52 @@ TAVILY_API_KEY=tvly-...        # or SERPER_API_KEY / BRAVE_API_KEY
 Configure it interactively with `ophelia setup` → **Web search**. If a keyed
 backend fails or returns nothing, Ophelia falls back to DuckDuckGo so a search
 never hard-fails the turn.
+
+## Image generation
+
+Ophelia can generate images through several backends, picked per-role via
+`OPHELIA_PROVIDER_IMAGE` (or `ophelia setup` → **Image generation**):
+
+| Backend | Env | Notes |
+|---------|-----|-------|
+| `pollinations` | none | **Free, no API key**, lax on NSFW — zero-config image gen |
+| `a1111` | `A1111_BASE_URL` | Automatic1111/SDWebUI local (`--api`), uncensored, LoRAs — best local quality |
+| `comfyui` | `COMFYUI_BASE_URL` | ComfyUI local, uncensored, most control (custom workflow JSON) |
+| `ollama` | `OLLAMA_IMAGE_MODEL` | Local (`ollama pull flux`), uncensored |
+| `xai-oauth` / `xai` | `XAI_API_KEY` | Grok Imagine — **censored** |
+| `openai` | `OPENAI_API_KEY` | DALL-E — **censored** |
+| `fal` | `FAL_API_KEY` | Fast cloud, NSFW-tolerant flux/sdxl |
+| `replicate` | `REPLICATE_API_KEY` | Cloud, many NSFW-allowed community models |
+| `civitai` | `CIVITAI_API_KEY` | NSFW checkpoints/LoRAs, generation API |
+| `modelslab` | `MODELSLAB_API_KEY` | Hosted SD, explicit/adult models |
+| `auto` | *(default)* | Ollama if a model is pulled → cloud → Pollinations free |
+
+All generated images are downloaded and saved under `~/.ophelia/data/artifacts`
+(even cloud URLs, which expire) and auto-sent to Telegram/Discord.
+
+### NSFW content tier
+
+`OPHELIA_IMAGE_NSFW_ALLOWED=true` enables the NSFW tier. When on:
+
+- The `generate_image` tool exposes an `nsfw` flag the model **only** sets when
+  you explicitly ask for explicit content (it's `false` for everything else).
+- Explicit requests are **auto-routed to an uncensored backend** — never xAI or
+  OpenAI, which would refuse them and risk flagging your account.
+- When off, explicit image requests are refused with a clear message.
+
+`OPHELIA_IMAGE_NSFW_PROVIDER=auto` picks the first configured uncensored
+backend (pollinations → a1111 → comfyui → modelslab → civitai → fal →
+replicate → ollama). Pollinations is the zero-config default.
+
+```bash
+OPHELIA_PROVIDER_IMAGE=pollinations     # free, no key, NSFW-capable
+OPHELIA_IMAGE_NSFW_ALLOWED=true
+OPHELIA_IMAGE_NSFW_PROVIDER=auto        # route explicit prompts here
+```
+
+> **Local NSFW (recommended for privacy):** run Automatic1111 with `--api
+> --listen` and set `OPHELIA_PROVIDER_IMAGE=a1111`. Nothing leaves your machine,
+> you get LoRAs/samplers, and quality is far above the cloud free tier.
 
 
 
@@ -200,7 +246,7 @@ lock prevents recurrence.
 | Tool | Notes |
 |------|-------|
 | `web_search` / `fetch_url` | Pluggable backends — DuckDuckGo (free), Tavily, Serper, Brave (see Web search section) |
-| `generate_image` / `generate_video` | xAI / OpenAI / Ollama — saved to artifacts, auto-sent to chat |
+| `generate_image` / `generate_video` | xAI / OpenAI / Ollama / Pollinations / A1111 / ComfyUI / fal / Replicate / Civitai / ModelsLab — saved to artifacts, auto-sent to chat (image supports an `nsfw` flag) |
 | `text_to_speech` | xAI TTS — saved mp3, auto-sent to chat |
 | `send_file` | Explicitly send any saved file (audio/video/image/doc) to the chat mid-turn |
 | `save_skill` | Learn procedures → `~/.ophelia/skills/` |

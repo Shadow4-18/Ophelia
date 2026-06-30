@@ -28,6 +28,46 @@ ROLE_ENV: dict[ProviderRole, str] = {
 
 VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "compat", "ollama"})
 
+# Image-only media providers (no chat/vision). Several are NSFW-capable.
+# See Settings.NSFW_CAPABLE_PROVIDERS for the uncensored subset.
+IMAGE_MEDIA_PROVIDERS = frozenset(
+    {"pollinations", "a1111", "comfyui", "fal", "replicate", "civitai", "modelslab"}
+)
+
+
+class MediaOnlyBackend:
+    """Placeholder backend for image-only media providers (pollinations, a1111,
+    comfyui, fal, replicate, civitai, modelslab).
+
+    These providers don't speak the OpenAI chat API — media.py drives them with
+    httpx directly. This class only exists so ProviderStack.backend("image")
+    returns a non-crashing object (e.g. when uses_xai_oauth/xai_backend iterate
+    roles) and exposes the per-role image model.
+    """
+
+    def __init__(self, settings: Settings, name: str, model: str) -> None:
+        self.settings = settings
+        self._name = name
+        self._model = model
+
+    def provider_name(self) -> str:
+        return self._name
+
+    def async_client(self) -> AsyncOpenAI:
+        raise RuntimeError(
+            f"{self._name} is an image-only media provider — no chat client. "
+            "Use ophelia.providers.media.generate_image, not the chat API."
+        )
+
+    def default_model(self) -> str:
+        return self._model
+
+    def model_for_role(self, role: ProviderRole) -> str | None:
+        return self._model if role == "image" else None
+
+    def label(self) -> str:
+        return f"{self._name} (image-only)"
+
 
 class LLMBackend(Protocol):
     def async_client(self) -> AsyncOpenAI: ...
@@ -289,6 +329,11 @@ def _provider_configured_for_role(
         return _deepseek_available(settings)
     if provider == "compat":
         return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
+    # Image-only media providers can only serve the image role.
+    if provider in IMAGE_MEDIA_PROVIDERS:
+        if role != "image":
+            return False
+        return settings.image_backend_configured(provider)
     return False
 
 
@@ -322,7 +367,30 @@ def _provider_default_model_for_role(
         if role == "vision":
             return settings.compat_vision_model or settings.compat_model
         return settings.compat_model
+    if provider in IMAGE_MEDIA_PROVIDERS:
+        if role != "image":
+            return None
+        return _image_media_model(settings, provider)
     return None
+
+
+def _image_media_model(settings: Settings, provider: str) -> str:
+    """Default model string for an image-only media provider."""
+    if provider == "pollinations":
+        return settings.pollinations_image_model
+    if provider == "a1111":
+        return settings.a1111_image_model or "sdxl"
+    if provider == "comfyui":
+        return settings.comfyui_image_model or "sdxl"
+    if provider == "fal":
+        return settings.fal_image_model
+    if provider == "replicate":
+        return settings.replicate_image_model
+    if provider == "civitai":
+        return settings.civitai_image_model or "flux"
+    if provider == "modelslab":
+        return settings.modelslab_image_model
+    return "flux"
 
 
 def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
@@ -354,7 +422,12 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
             return "xai"
         if settings.openai_api_key:
             return "openai"
-        return "xai-oauth"
+        # No LLM-image provider configured — fall to a dedicated image backend.
+        for prov in ("fal", "replicate", "civitai", "modelslab", "a1111", "comfyui"):
+            if settings.image_backend_configured(prov):
+                return prov
+        # Pollinations is free and keyless — image generation always works.
+        return "pollinations"
 
     if role == "video":
         if _xai_oauth_available(settings):
@@ -465,9 +538,12 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             label=f"OpenAI-compatible @ {base}",
             provider_name="compat",
         )
+    if n in IMAGE_MEDIA_PROVIDERS:
+        return MediaOnlyBackend(settings, n, _image_media_model(settings, n))
     raise RuntimeError(
         f"Unknown provider '{name}'. Use: xai-oauth, xai, ollama, openai, "
-        "deepseek, compat, auto"
+        "deepseek, compat, pollinations, a1111, comfyui, fal, replicate, "
+        "civitai, modelslab, auto"
     )
 
 
@@ -502,6 +578,8 @@ class ProviderStack:
                 return self.settings.openai_image_model
             if name == "ollama":
                 return self.settings.ollama_image_model or "flux"
+            if name in IMAGE_MEDIA_PROVIDERS:
+                return _image_media_model(self.settings, name)
         if role == "video":
             return self.settings.xai_video_model
         if name in ("xai-oauth", "xai") and role == "vision":
@@ -517,6 +595,25 @@ class ProviderStack:
         if override:
             return override
         return backend.default_model()
+
+    def image_provider_for(self, *, nsfw: bool = False) -> str:
+        """Resolve the image provider for a request. Explicit NSFW-tagged
+        requests route to an uncensored backend when the NSFW tier is on;
+        everything else uses the normal image-role provider."""
+        if nsfw and self.settings.image_nsfw_allowed:
+            return self.settings.image_nsfw_provider_resolved()
+        return self.name("image")
+
+    def image_model_for(self, provider: str) -> str:
+        if provider in ("xai-oauth", "xai"):
+            return self.settings.xai_image_model
+        if provider == "openai":
+            return self.settings.openai_image_model
+        if provider == "ollama":
+            return self.settings.ollama_image_model or "flux"
+        if provider in IMAGE_MEDIA_PROVIDERS:
+            return _image_media_model(self.settings, provider)
+        return "flux"
 
     def supports_vision(self, role: ProviderRole = "vision") -> bool:
         name = self.name(role)
@@ -573,6 +670,8 @@ class ProviderStack:
                 return bool(self.xai_backend())
             if name == "openai":
                 return bool(self.settings.openai_api_key)
+            if name in IMAGE_MEDIA_PROVIDERS:
+                return self.settings.image_backend_configured(name)
             return False
         if role == "video":
             return self.name("video") in ("xai-oauth", "xai") and bool(self.xai_backend())
@@ -601,6 +700,10 @@ class ProviderStack:
                         return False, f"Ollama not reachable at {self.settings.ollama_base_url}"
                     return True, f"OK ({self.model('image')})"
                 if name == "openai":
+                    return True, f"OK ({self.model('image')})"
+                if name in IMAGE_MEDIA_PROVIDERS:
+                    if not self.settings.image_backend_configured(name):
+                        return False, f"{name} not configured (missing API key / base URL)"
                     return True, f"OK ({self.model('image')})"
         name = self.name(role)
         try:
