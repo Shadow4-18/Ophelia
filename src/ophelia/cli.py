@@ -43,6 +43,24 @@ def cmd_ui(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     settings = Settings()
     ensure_dirs(settings)
+
+    # Single-instance guard: refuse to start a second `ophelia run` next to an
+    # already-running one (e.g. a Termux:Boot/tmux instance). Two instances
+    # fight over the Telegram bot token AND double-run consciousness/dream/
+    # curator/mic. The lock auto-releases when this process exits.
+    from ophelia.core.single_instance import acquire_run_lock
+
+    lock = acquire_run_lock()
+    if lock is None:
+        print("Ophelia is already running.")
+        print("  View the live session:  tmux attach -t ophelia")
+        print("  Stop it:                 ophelia stop   (or: tmux kill-server; pkill -f ophelia)")
+        print("  Then start fresh:        ophelia run")
+        print()
+        print("If you're sure nothing is running, remove the stale lock:")
+        print(f"  rm {OPHELIA_HOME / 'ophelia.run.lock'}")
+        return 0
+
     restart = getattr(args, "restart", False)
     max_restarts = 5 if restart else 0
     attempts = 0

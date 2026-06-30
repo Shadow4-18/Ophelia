@@ -157,25 +157,43 @@ from-scratch artifacts like a math-based synth engine.
 
 **"terminated by other getUpdates request" / Telegram spam.** That error means
 two processes are polling the same bot token at once (Telegram allows only one
-`getUpdates` poller per token). Ophelia now holds a single-instance lock
-(`~/.ophelia/telegram.lock`) so a second `ophelia run` won't start polling, and
-`phone_shell` refuses commands that would spawn another Ophelia or kill her own
-runtime (a common cause — she'd run a "system check" via `phone_shell` and
-accidentally start a second instance). When a conflict does occur, the repeated
-tracebacks are collapsed into one warning and Ophelia logs the culprit processes
-(`telegram.polling_conflict_processes`) with PIDs. Recover with:
+`getUpdates` poller per token). The usual cause is a **second `ophelia run`** —
+most often a detached tmux session left by the Termux:Boot auto-start script
+that you can't see, next to the `ophelia run` you started manually in a fresh
+terminal. Ophelia now guards against this at three levels:
+
+- **Single-instance lock** (`~/.ophelia/ophelia.run.lock`): `ophelia run` takes
+  an exclusive flock *before any background loop starts*. A second `ophelia run`
+  prints "Ophelia is already running" and exits instead of double-running
+  consciousness/dream/curator/mic and fighting over the token. Covers all launch
+  paths (`ophelia run`, `ophelia start`, Termux:Boot) since they all run `ophelia run`.
+- **Poller lock + conflict filter** in the Telegram gateway as a backstop, and
+  `phone_shell` refuses commands that would spawn another Ophelia or kill her
+  own runtime (a common cause — she'd run a "system check" via `phone_shell`
+  and accidentally start a second instance).
+- **One-shot diagnostic**: on conflict, runs `ps -ef` and logs the culprit
+  processes with PIDs (`telegram.polling_conflict_processes`).
+
+**Pick one launch method.** You can't have Termux:Boot auto-start *and* manual
+`ophelia run` without one blocking the other. Either:
+
+- Let Termux:Boot run her (survives reboots) and use `tmux attach -t ophelia` to
+  view / `ophelia stop` to stop — never run `ophelia run` manually; **or**
+- Disable the boot script (`rm ~/.termux/boot/start-ophelia`) and always start
+  manually with `ophelia run`.
+
+Recover from a current duplicate:
 
 ```bash
-ps -ef | grep -E 'ophelia|hermes|tmux'   # see what's running
-pkill -f 'ophelia run'                    # kill every ophelia instance
-tmux kill-server                          # kill any tmux-held ophelia from Termux:Boot
-pkill -f hermes                           # if Hermes still lingers on the token
-# then start exactly one: ophelia run
+tmux kill-server          # kills any tmux-held ophelia from Termux:Boot
+pkill -f ophelia          # kills any foreground/old instance
+ps -ef | grep -E 'ophelia|hermes|tmux'   # confirm only nothing is running
+ophelia run               # then start exactly one
 ```
 
-The most common culprit is a stale `ophelia run` left in a tmux session by the
-Termux:Boot script — `pkill -f 'ophelia run'` may miss it because the shell
-inside tmux has a different argv, so `tmux kill-server` is the reliable fix.
+Note: a leftover from *before* the lock was added doesn't hold the new lock, so
+the first time you upgrade you must kill it manually as above; after that the
+lock prevents recurrence.
 
 ## New tools
 
