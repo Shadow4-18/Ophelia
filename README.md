@@ -161,12 +161,21 @@ two processes are polling the same bot token at once (Telegram allows only one
 (`~/.ophelia/telegram.lock`) so a second `ophelia run` won't start polling, and
 `phone_shell` refuses commands that would spawn another Ophelia or kill her own
 runtime (a common cause — she'd run a "system check" via `phone_shell` and
-accidentally start a second instance). If you still see it (e.g. a stale tmux
-session or Hermes lingering on the token), recover with:
+accidentally start a second instance). When a conflict does occur, the repeated
+tracebacks are collapsed into one warning and Ophelia logs the culprit processes
+(`telegram.polling_conflict_processes`) with PIDs. Recover with:
 
 ```bash
-pkill -f 'ophelia run'   # kill every instance, then start exactly one
+ps -ef | grep -E 'ophelia|hermes|tmux'   # see what's running
+pkill -f 'ophelia run'                    # kill every ophelia instance
+tmux kill-server                          # kill any tmux-held ophelia from Termux:Boot
+pkill -f hermes                           # if Hermes still lingers on the token
+# then start exactly one: ophelia run
 ```
+
+The most common culprit is a stale `ophelia run` left in a tmux session by the
+Termux:Boot script — `pkill -f 'ophelia run'` may miss it because the shell
+inside tmux has a different argv, so `tmux kill-server` is the reliable fix.
 
 ## New tools
 

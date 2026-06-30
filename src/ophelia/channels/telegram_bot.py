@@ -66,33 +66,49 @@ class _ConflictSpamFilter(logging.Filter):
     """Collapse PTB's repeated polling-conflict tracebacks into one warning.
 
     python-telegram-bot's networkloop retries getUpdates on a 409 Conflict
-    forever, logging the full traceback every cycle. When two instances are
-    fighting this floods the log. We emit one concise, actionable warning via
-    structlog and drop the rest.
+    forever, logging the full traceback every cycle. The "Conflict: ...
+    getUpdates" text is in the record's exc_info, not its message (which is
+    just "Exception happened while polling for updates."), so we must inspect
+    the attached exception. We emit one concise warning and drop the rest,
+    and set a flag a background task reads to log the culprit process.
     """
 
     _emitted = False
+    conflict_seen = False
 
-    def filter(self, record: logging.LogRecord) -> bool:
+    @staticmethod
+    def _is_conflict(record: logging.LogRecord) -> bool:
+        # The useful text is on the attached exception, not the message.
+        exc = record.exc_info[1] if record.exc_info else None
+        if exc is not None:
+            cls = type(exc).__name__
+            text = f"{cls} {exc}"
+            if "Conflict" in cls or "Conflict" in text or "getUpdates" in text:
+                return True
         try:
             msg = record.getMessage()
         except Exception:
             msg = ""
-        if "Conflict" in msg and "getUpdates" in msg:
-            if not _ConflictSpamFilter._emitted:
-                _ConflictSpamFilter._emitted = True
-                log.error(
-                    "telegram.polling_conflict",
-                    error="409 Conflict: terminated by other getUpdates request",
-                    reason="another process is polling this bot token "
-                    "(a second ophelia run, Hermes, or a stale tmux session)",
-                    fix=(
-                        "run: pkill -f 'ophelia run'  (then restart one instance); "
-                        "only one bot instance may poll a token at a time"
-                    ),
-                )
-            return False
-        return True
+        return "Conflict" in msg and "getUpdates" in msg
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not self._is_conflict(record):
+            return True
+        _ConflictSpamFilter.conflict_seen = True
+        if not _ConflictSpamFilter._emitted:
+            _ConflictSpamFilter._emitted = True
+            log.error(
+                "telegram.polling_conflict",
+                error="409 Conflict: terminated by other getUpdates request",
+                reason="another process is polling this bot token "
+                "(a second ophelia run, Hermes, or a stale tmux session)",
+                fix=(
+                    "run: pkill -f 'ophelia run'; tmux kill-server; "
+                    "then start exactly one instance. "
+                    "Only one bot instance may poll a token at a time."
+                ),
+            )
+        return False
 
 
 def _install_conflict_filter() -> None:
@@ -634,6 +650,41 @@ class TelegramGateway:
         )
         await self._maybe_attach_continue(update, context, channel)
 
+    async def _conflict_diagnostic(self) -> None:
+        """Once a polling conflict is seen, log the likely culprit process."""
+        while not self.signals.terminate:
+            await asyncio.sleep(5)
+            if _ConflictSpamFilter.conflict_seen:
+                await self._log_polling_processes()
+                return
+
+    async def _log_polling_processes(self) -> None:
+        """List ophelia/hermes/tmux processes so the user can kill the dup."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ps", "-ef",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            text = out.decode(errors="replace")
+        except Exception as e:
+            log.warning("telegram.conflict_diag_failed", error=str(e))
+            return
+        candidates = []
+        for line in text.splitlines():
+            low = line.lower()
+            if "ophelia" in low or "hermes" in low or "tmux" in low:
+                candidates.append(line.strip())
+        log.error(
+            "telegram.polling_conflict_processes",
+            candidates="\n".join(candidates[:40]) or "(none matched by name)",
+            fix=(
+                "kill every line above that's polling this token, then keep one. "
+                "Common: pkill -f 'ophelia run'; tmux kill-server; pkill -f hermes"
+            ),
+        )
+
     def build_app(self) -> Application:
         token = self.settings.telegram_bot_token
         if not token:
@@ -711,6 +762,9 @@ class TelegramGateway:
             raise RuntimeError("Telegram app failed to initialize")
         # Collapse PTB's repeated 409-conflict tracebacks into one clear warning.
         _install_conflict_filter()
+        # If a conflict does appear, log the culprit process once (the second
+        # poller is usually an external leftover our lock can't see).
+        asyncio.create_task(self._conflict_diagnostic())
         # Refuse to start a second poller on the same bot token — that's the
         # cause of the "terminated by other getUpdates request" spam. Let the
         # already-running instance keep Telegram; this one skips polling.
