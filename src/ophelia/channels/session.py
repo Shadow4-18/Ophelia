@@ -10,6 +10,8 @@ from pathlib import Path
 import structlog
 
 from ophelia.android.games import GameStore
+from ophelia.channels.chat_log import ChatLogger
+from ophelia.channels.media_reply import artifact_paths_in_text
 from ophelia.channels.message_split import split_messages
 from ophelia.android.vision import ScreenVision
 from ophelia.core.agent_loop import AgentLoop
@@ -21,6 +23,11 @@ log = structlog.get_logger()
 
 ReplyFn = Callable[[str], Awaitable[None]]
 MediaReplyFn = Callable[[Path, str], Awaitable[bool]]
+
+
+def _sender_id(channel: str) -> str:
+    """Extract the platform id from a 'platform:id' channel string."""
+    return channel.split(":", 1)[1] if ":" in channel else channel
 
 
 class ChannelSession:
@@ -49,6 +56,14 @@ class ChannelSession:
         self.games = games
         self.vision = vision
         self._voice_reply: dict[str, bool] = {}
+        self._chat_logger: ChatLogger | None = None
+
+    def _logger(self) -> ChatLogger | None:
+        if not self.agent.settings.chat_log_enabled:
+            return None
+        if self._chat_logger is None:
+            self._chat_logger = ChatLogger.from_settings(self.agent.settings)
+        return self._chat_logger
 
     def voice_enabled(self, channel: str, default: bool = False) -> bool:
         return self._voice_reply.get(channel, default)
@@ -64,30 +79,118 @@ class ChannelSession:
         *,
         media_reply: MediaReplyFn | None = None,
     ) -> None:
+        settings = self.agent.settings
+        is_owner = settings.is_owner_channel(channel)
+        sender_id = _sender_id(channel)
+        logger = self._logger()
+
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
         # Let send_message tool push follow-ups mid-turn through this channel.
         self.agent.tools.set_message_sender(reply)
+        self.agent.tools.set_owner(is_owner)
         if media_reply is not None:
             self.agent.tools.set_media_sender(media_reply)
+
+        # Log the inbound message (text + any referenced photo path) — universal,
+        # for owner oversight. The "[User sent a photo — saved <path>]" prompt
+        # text carries the inbound media filename; we capture it explicitly too.
+        if logger:
+            inbound_media = self._extract_inbound_media(text, settings)
+            await logger.log(
+                channel=channel,
+                direction="in",
+                text=text,
+                media_path=inbound_media,
+                media_kind="photo" if inbound_media else None,
+                sender_id=sender_id,
+                is_owner=is_owner,
+                role="user",
+            )
+
+        # Wrap the reply/media senders so every outbound chunk + media file is
+        # logged too. Generated images appear as "saved to <path>" in the reply
+        # text — extract and log those as outbound media as well.
+        async def _logged_reply(chunk: str) -> None:
+            if logger:
+                await logger.log(
+                    channel=channel,
+                    direction="out",
+                    text=chunk,
+                    sender_id=sender_id,
+                    is_owner=is_owner,
+                    role="assistant",
+                )
+                for p in artifact_paths_in_text(chunk):
+                    await logger.log(
+                        channel=channel,
+                        direction="out",
+                        text=f"[media sent: {p.name}]",
+                        media_path=p,
+                        media_kind="generated",
+                        sender_id=sender_id,
+                        is_owner=is_owner,
+                        role="media",
+                    )
+            await reply(chunk)
+
+        logged_media_reply: MediaReplyFn | None = None
+        if media_reply is not None:
+            async def _logged_media(path: Path, caption: str) -> bool:
+                ok = await media_reply(path, caption)
+                if logger:
+                    await logger.log(
+                        channel=channel,
+                        direction="out",
+                        text=caption or f"[media sent: {path.name}]",
+                        media_path=path,
+                        media_kind="file",
+                        sender_id=sender_id,
+                        is_owner=is_owner,
+                        role="media",
+                    )
+                return ok
+            logged_media_reply = _logged_media
+
         try:
-            out = await self.agent.run_turn(channel, text)
-            self.drives.on_user_message()
-            await self.memory.save_drives(self.drives)
+            out = await self.agent.run_turn(channel, text, is_owner=is_owner)
+            # Only the owner's messages shape her drives/will. Guests don't.
+            if is_owner:
+                self.drives.on_user_message()
+                await self.memory.save_drives(self.drives)
             self.signals.last_agent_message_at = time.time()
             for i, chunk in enumerate(split_messages(out)):
                 if i:
                     await asyncio.sleep(1.2)
-                await reply(chunk)
+                await _logged_reply(chunk)
         except Exception as e:
             log.exception("channel.chat_error", channel=channel)
-            await reply(f"Error: {e}")
+            await _logged_reply(f"Error: {e}")
         finally:
             self.agent.tools.clear_message_sender()
             self.agent.tools.clear_media_sender()
+            self.agent.tools.clear_owner()
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
+
+    @staticmethod
+    def _extract_inbound_media(text: str, settings) -> str | None:
+        """Pull the saved-photo filename out of the gateway's photo prompt text
+        and resolve it to the absolute path the gateway downloaded it to."""
+        marker = "saved "
+        idx = text.find(marker)
+        if idx < 0:
+            return None
+        rest = text[idx + len(marker) :]
+        end = rest.find("]")
+        token = rest[:end] if end >= 0 else rest.split()[0]
+        token = token.strip().strip(".")
+        if not token:
+            return None
+        # Gateways download inbound photos to <data_dir>/telegram_media/<name>.
+        resolved = settings.data_dir / "telegram_media" / token
+        return str(resolved) if resolved.is_file() else token
 
     async def cmd_pause(self, reply: ReplyFn) -> None:
         self.signals.autonomy_paused = True

@@ -264,6 +264,25 @@ class Settings(BaseSettings):
     # Which channel consciousness mirrors into (e.g. telegram:123 or discord:456)
     primary_channel: str | None = Field(default=None, alias="OPHELIA_PRIMARY_CHANNEL")
 
+    # Owner identity — the one user whose conversations shape her memory/personality/
+    # soul/evolution. Everyone else is a sandboxed guest. Channel-style, e.g.
+    # "telegram:12345" or comma-separated "telegram:111,discord:222". If unset,
+    # primary_user_channel() is treated as the owner (backward compatible).
+    owner_id: str = Field(
+        default="",
+        alias="OPHELIA_OWNER_ID",
+        description=(
+            "Channel-style owner id(s): 'telegram:12345' or comma-separated. "
+            "Only this user shapes her identity; all others are sandboxed guests."
+        ),
+    )
+    # Universal chat log: every inbound/outbound message + media, for oversight.
+    chat_log_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_CHAT_LOG",
+        description="Log every message sent to/from her (text + media) to ~/.ophelia/data/logs/",
+    )
+
     # Consciousness loop (Neuro-style; NOT isolated cron sessions)
     consciousness_enabled: bool = Field(default=True, alias="OPHELIA_CONSCIOUSNESS")
     consciousness_interval_seconds: int = Field(
@@ -526,6 +545,35 @@ class Settings(BaseSettings):
             uid = next(iter(self.allowed_discord_users()))
             return f"discord:{uid}"
         return None
+
+    def owner_channels(self) -> set[str]:
+        """The set of channel strings that count as the owner (shape her identity).
+        From OPHELIA_OWNER_ID (channel-style, comma-separated); falls back to
+        primary_user_channel() when unset so existing single-user setups keep
+        working."""
+        raw = self.owner_id.strip()
+        chans: set[str] = set()
+        if raw:
+            for tok in raw.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if ":" in tok:
+                    chans.add(tok.lower())
+                else:
+                    # Bare numeric id — bind to whichever platforms are enabled.
+                    if self.telegram_enabled is not False:
+                        chans.add(f"telegram:{tok}")
+                    if self.discord_enabled is not False:
+                        chans.add(f"discord:{tok}")
+            if chans:
+                return chans
+        pc = self.primary_user_channel()
+        return {pc.lower()} if pc else set()
+
+    def is_owner_channel(self, channel: str) -> bool:
+        """True if this inbound channel is the owner (not a sandboxed guest)."""
+        return bool(channel) and channel.lower() in self.owner_channels()
 
     def outreach_configured(self) -> bool:
         tg = self.telegram_enabled and self.telegram_bot_token and self.allowed_telegram_users()

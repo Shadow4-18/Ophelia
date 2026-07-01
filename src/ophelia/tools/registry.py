@@ -62,6 +62,42 @@ def _phone_shell_blocked_reason(command: str) -> str | None:
     return None
 
 
+# Tools a sandboxed GUEST may not call. These either shape her identity
+# (soul/prompter/lessons/goals/drives/skills), touch private memory/databases,
+# spend money/resources (media generation), or control her phone body. Guests
+# get conversational tools only: send_message, send_file, web_search, fetch_url.
+GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
+    {
+        "edit_soul",
+        "edit_prompter",
+        "save_lesson",
+        "reflect",
+        "set_drive_weights",
+        "goal_create",
+        "goal_update",
+        "goal_complete",
+        "goal_remove",
+        "save_skill",
+        "sqlite_list_databases",
+        "sqlite_exec",
+        "run_code",
+        "recall_memory",
+        "generate_image",
+        "generate_video",
+        "text_to_speech",
+        "phone_see_screen",
+        "phone_ui_dump",
+        "phone_tap",
+        "phone_open_app",
+        "phone_shell",
+        "phone_swipe",
+        "phone_key",
+        "phone_game_look",
+        "phone_game_open",
+    }
+)
+
+
 async def _resolve_tap_coords(
     android: object, x: int | float, y: int | float
 ) -> tuple[int, int, str]:
@@ -575,6 +611,7 @@ class ToolRegistry:
         self._media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self._pending_artifacts: list[Path] = []
+        self._is_owner: bool = True
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
@@ -620,6 +657,14 @@ class ToolRegistry:
     def clear_media_sender(self) -> None:
         self._media_sender = None
 
+    def set_owner(self, is_owner: bool) -> None:
+        """Mark whether the current turn is from the owner (full powers) or a
+        sandboxed guest (identity-shaping / private / costly tools disabled)."""
+        self._is_owner = is_owner
+
+    def clear_owner(self) -> None:
+        self._is_owner = True
+
     def consume_pending_artifacts(self) -> list[Path]:
         out = list(self._pending_artifacts)
         self._pending_artifacts.clear()
@@ -655,6 +700,16 @@ class ToolRegistry:
 
     async def dispatch(self, name: str, arguments: str) -> str:
         await self.ensure_mcp()
+        # Sandbox guests: block identity-shaping / private / costly tools, and
+        # block any MCP tool (unknown surface — could do anything).
+        if not self._is_owner:
+            if name in GUEST_DENIED_TOOLS:
+                return (
+                    f"That action ('{name}') is owner-only and isn't available in "
+                    f"this conversation. Just talk to me normally."
+                )
+            if name not in self._handlers:
+                return "External tools aren't available in this conversation."
         try:
             args = json.loads(arguments) if arguments else {}
         except json.JSONDecodeError:

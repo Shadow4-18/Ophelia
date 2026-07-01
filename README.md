@@ -281,6 +281,56 @@ Note: a leftover from *before* the lock was added doesn't hold the new lock, so
 the first time you upgrade you must kill it manually as above; after that the
 lock prevents recurrence.
 
+## Owner vs guests (multi-user sandboxing)
+
+By default Ophelia treats every allowed user equally — anyone in your
+`TELEGRAM_ALLOWED_USER_IDS` / `DISCORD_ALLOWED_USER_IDS` can talk to her and
+those conversations shape her. If you want to **let other people message her
+without affecting her memory, personality, soul, or evolution**, mark yourself
+as the owner:
+
+```env
+OPHELIA_OWNER_ID=telegram:123456789          # channel-style; comma-separate for multiple
+```
+
+Then add other people's IDs to the allowlist as usual. Anyone in the allowlist
+who **isn't** the owner becomes a **sandboxed guest**:
+
+- **She's still herself** — guests get her full SOUL personality in replies.
+- **Her identity is untouched** — guest turns are stored in a separate
+  quarantined table that her curator, dream, and reflection loops never read,
+  so guest content never becomes memory, lessons, mood, or goals.
+- **Private life stays private** — guests don't see her inner thoughts,
+  long-term `MEMORY`, the `USER` profile, or her mood/psyche.
+- **Identity-shaping & costly tools are disabled** for guests: `edit_soul`,
+  `edit_prompter`, `save_lesson`, `reflect`, goals, drives, skills, `sqlite_*`,
+  `run_code`, `recall_memory`, media generation, phone control, and MCP tools.
+  Guests get conversation only.
+- **Drives aren't bumped** by guest messages — only yours move her social will.
+
+If `OPHELIA_OWNER_ID` is unset, the first allowed user is treated as the owner
+(backward compatible with single-user setups).
+
+## Chat log (oversight)
+
+Every message sent to her and every reply she sends back is logged — text and
+media (photos sent to her, images/audio/video she sends back) — to
+`~/.ophelia/data/logs/` (a SQLite index + an organized `media/` folder with
+stable filenames). Logging covers **both owner and guests**, so you can see
+everything anyone says to her and everything she says back.
+
+```bash
+ophelia logs                                  # recent entries (oldest→newest)
+ophelia logs --channel telegram:12345          # one user's conversation
+ophelia logs --media                          # only entries with attached media
+ophelia logs --direction in --since 2026-07-01 # inbound since a date
+ophelia logs --limit 200
+```
+
+Each line shows timestamp, direction (`<-` to her / `->` from her), channel,
+owner/guest, the message text, and the path to any attached media. Disable with
+`OPHELIA_CHAT_LOG=false`.
+
 ## New tools
 
 | Tool | Notes |
@@ -343,6 +393,8 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia providers` | Show AI routing |
 | `ophelia check` / `ophelia doctor` | **Self-check** — version, deps, providers, services |
 | `ophelia transfer *` | Phone ↔ PC data move |
+| `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
+| `ophelia logs` | View the universal chat log (messages + media, with filters) |
 
 **Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
 

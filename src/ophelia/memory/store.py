@@ -69,6 +69,24 @@ class MemoryStore:
                 pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel)")
+            # Quarantined store for GUEST conversations. Deliberately separate from
+            # `messages` so curator / dream / reflect (which read `messages` and
+            # `recent_global`) never ingest guest content into her identity. Guests
+            # get continuity within their own thread, but it never touches her.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guest_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_guest_channel ON guest_messages(channel)"
+            )
             await db.commit()
 
     async def search_messages(self, query: str, limit: int = 8) -> list[dict]:
@@ -348,3 +366,37 @@ class MemoryStore:
                 }
             )
         return out
+
+    # --- Guest (sandboxed) conversation store -------------------------------
+    # Completely separate from `messages` so background identity loops can't
+    # reach guest content. She can hold a conversation with a guest (with
+    # per-guest continuity) but it never becomes part of her.
+
+    async def append_guest_message(
+        self, channel: str, role: str, content: str
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO guest_messages (channel, role, content, created_at) VALUES (?, ?, ?, ?)",
+                (channel, role, content, time.time()),
+            )
+            await db.commit()
+
+    async def recent_guest(self, channel: str, limit: int = 35) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT role, content, created_at
+                FROM guest_messages
+                WHERE channel = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (channel, limit),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {"role": row["role"], "content": row["content"], "channel": channel}
+            for row in reversed(rows)
+        ]

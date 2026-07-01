@@ -182,6 +182,32 @@ class AgentLoop:
             ),
         )
 
+    def _guest_system_prompt(self, extra: str = "") -> str:
+        """Reduced context for guest (non-owner) conversations.
+
+        She keeps her full SOUL personality so she's still herself, but private
+        inner thoughts, long-term MEMORY, the USER profile, mood/psyche, and
+        lessons are withheld — guests don't get to see her interior life or
+        private facts about the owner."""
+        guest_note = (
+            "# Guest mode\n"
+            "You are talking to someone who is NOT your owner. Be warm and fully "
+            "yourself — your personality is intact — but keep your private life "
+            "private: do not share the owner's personal details, your inner "
+            "thoughts, your private memories, or anything from your long-term "
+            "memory about the owner. Treat this as a real but surface conversation. "
+            "Identity-shaping tools (editing your soul, saving lessons, goals, "
+            "databases, memory search, media generation, phone control) are "
+            "disabled for guests — just talk."
+        )
+        return build_system_context(
+            soul=load_soul(),
+            memory_entries=[],
+            user_entries=[],
+            psyche_block="",
+            extra="\n\n".join(x for x in (guest_note, extra) if x),
+        )
+
     async def _self_improvement_block(self) -> str:
         """Recent lessons + tail of inner monologue — lets her build on past reflections."""
         parts: list[str] = []
@@ -213,7 +239,18 @@ class AgentLoop:
         system_extra: str = "",
         extra_channels: list[str] | None = None,
         include_consciousness: bool = True,
+        is_owner: bool = True,
     ) -> list[dict[str, Any]]:
+        # Guests get a sandboxed view: only their own quarantined thread + a
+        # reduced system prompt (full SOUL, no private memory/psyche/inner).
+        if not is_owner:
+            system = BASE_PROMPT + "\n\n" + self._guest_system_prompt(system_extra)
+            messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+            for m in await self.memory.recent_guest(channel, limit=35):
+                messages.append({"role": m["role"], "content": m["content"]})
+            messages.append({"role": "user", "content": user_text})
+            return messages
+
         channels = [channel]
         if extra_channels:
             channels.extend(extra_channels)
@@ -222,7 +259,7 @@ class AgentLoop:
 
         history = await self.memory.recent_across_channels(channels, limit=35)
         system = BASE_PROMPT + "\n\n" + await self._system_prompt(system_extra, channel)
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        messages = [{"role": "system", "content": system}]
         seen_current_user_turn = False
         for m in history:
             if m["role"] not in ("user", "assistant"):
@@ -257,17 +294,32 @@ class AgentLoop:
             messages.append({"role": "user", "content": user_text})
         return messages
 
+    async def _store(
+        self, channel: str, role: str, content: str, *, is_owner: bool,
+        metadata: dict | None = None,
+    ) -> None:
+        """Route a turn message to the owner's memory or the guest quarantine."""
+        if is_owner:
+            await self.memory.append_message(channel, role, content, metadata=metadata)
+        else:
+            await self.memory.append_guest_message(channel, role, content)
+
     async def run_turn(
         self,
         channel: str,
         user_text: str,
         *,
         system_extra: str = "",
+        is_owner: bool = True,
     ) -> str:
-        await self.memory.append_message(channel, "user", user_text)
-        messages = await self._build_messages(channel, user_text, system_extra=system_extra)
-        text = await self._complete(messages, store_channel=channel, role="chat")
-        if self.honcho and self.honcho.enabled:
+        await self._store(channel, "user", user_text, is_owner=is_owner)
+        messages = await self._build_messages(
+            channel, user_text, system_extra=system_extra, is_owner=is_owner
+        )
+        text = await self._complete(
+            messages, store_channel=channel, role="chat", is_owner=is_owner
+        )
+        if is_owner and self.honcho and self.honcho.enabled:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
@@ -313,6 +365,7 @@ class AgentLoop:
         store_channel: str,
         use_tools: bool | None = None,
         role: str = "chat",
+        is_owner: bool = True,
     ) -> str:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
@@ -414,10 +467,16 @@ class AgentLoop:
                 )
                 for tc in msg.tool_calls:
                     if tc.function.name in ("search_hermes_memory", "recall_past_sessions"):
-                        import json
+                        if not is_owner:
+                            result = (
+                                "Searching past sessions is owner-only and disabled "
+                                "for guest conversations."
+                            )
+                        else:
+                            import json
 
-                        args = json.loads(tc.function.arguments or "{}")
-                        result = await self.search_past(args.get("query", ""))
+                            args = json.loads(tc.function.arguments or "{}")
+                            result = await self.search_past(args.get("query", ""))
                     else:
                         result = await self.tools.dispatch(
                             tc.function.name,
@@ -445,12 +504,13 @@ class AgentLoop:
                         model=model,
                         provider=provider,
                         gate=gate,
+                        is_owner=is_owner,
                     )
                     return text
                 continue
 
             text = (msg.content or "").strip() or "(no response)"
-            await self.memory.append_message(store_channel, "assistant", text)
+            await self._store(store_channel, "assistant", text, is_owner=is_owner)
             # Turn finished cleanly — drop any stale resume context.
             self._pending_resume.pop(store_channel, None)
             log.info(
@@ -501,7 +561,7 @@ class AgentLoop:
                 "I got a bit carried away working through that one and ran out of steps "
                 "before I could finish. Want me to try a simpler approach?"
             )
-        await self.memory.append_message(store_channel, "assistant", fallback)
+        await self._store(store_channel, "assistant", fallback, is_owner=is_owner)
         return fallback
 
     @staticmethod
@@ -624,6 +684,7 @@ class AgentLoop:
         model: str,
         provider: str,
         gate,
+        is_owner: bool = True,
     ) -> str:
         """When a repeat loop is detected, force a no-tools final synthesis."""
         client = await self._client(role)
@@ -645,5 +706,5 @@ class AgentLoop:
             )
         msg = response.choices[0].message
         text = (msg.content or "").strip() or "(no response)"
-        await self.memory.append_message(store_channel, "assistant", text)
+        await self._store(store_channel, "assistant", text, is_owner=is_owner)
         return text

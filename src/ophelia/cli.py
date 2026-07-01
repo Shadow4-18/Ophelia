@@ -643,6 +643,62 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
     return asyncio.run(_run())
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    """View the universal chat log: every message sent to/from Ophelia, with
+    media. Filters by user/channel, direction, media-only, date, and limit."""
+    import asyncio
+    import datetime as _dt
+
+    from ophelia.channels.chat_log import ChatLogger
+
+    settings = Settings()
+    ensure_dirs(settings)
+    logger = ChatLogger.from_settings(settings)
+
+    def _parse_date(s: str | None) -> float | None:
+        if not s:
+            return None
+        try:
+            return _dt.datetime.fromisoformat(s).timestamp()
+        except ValueError:
+            try:
+                return _dt.datetime.strptime(s, "%Y-%m-%d").timestamp()
+            except ValueError:
+                print(f"Unrecognized date: {s} (use YYYY-MM-DD or ISO datetime)")
+                raise SystemExit(2)
+
+    since = _parse_date(args.since)
+    until = _parse_date(args.until)
+
+    async def _run() -> int:
+        rows = await logger.query(
+            channel=args.channel,
+            direction=args.direction,
+            media_only=args.media,
+            since=since,
+            until=until,
+            limit=args.limit,
+        )
+        if not rows:
+            print("(no log entries match)")
+            return 0
+        rows = list(reversed(rows))  # oldest -> newest for reading
+        for r in rows:
+            ts = _dt.datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d %H:%M:%S")
+            arrow = "->" if r["direction"] == "out" else "<-"
+            who = "owner" if r["is_owner"] else "guest"
+            chan = r["channel"]
+            body = (r["text"] or "").replace("\n", " ")[:160]
+            media = ""
+            if r["media_path"]:
+                media = f"  [media:{r['media_kind'] or '?'} {r['media_path']}]"
+            print(f"{ts}  {arrow} {chan} ({who})  {body}{media}")
+        print(f"\n{len(rows)} entries.")
+        return 0
+
+    return asyncio.run(_run())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ophelia",
@@ -838,6 +894,25 @@ def main(argv: list[str] | None = None) -> int:
         "calibrate",
         help="Diagnose + calibrate touch: native size, screenshot scale, grid save, tap corners.",
     ).set_defaults(func=cmd_phone_calibrate)
+
+    p_logs = sub.add_parser(
+        "logs", help="View the universal chat log (messages + media sent to/from her)"
+    )
+    p_logs.add_argument(
+        "--channel", default=None, help="Filter by channel, e.g. telegram:12345"
+    )
+    p_logs.add_argument(
+        "--direction", default=None, choices=["in", "out"], help="in=to her, out=from her"
+    )
+    p_logs.add_argument(
+        "--media", action="store_true", help="Only show entries with attached media"
+    )
+    p_logs.add_argument("--since", default=None, help="From date (YYYY-MM-DD or ISO)")
+    p_logs.add_argument("--until", default=None, help="To date (YYYY-MM-DD or ISO)")
+    p_logs.add_argument(
+        "--limit", type=int, default=80, help="Max entries (most recent first)"
+    )
+    p_logs.set_defaults(func=cmd_logs)
 
     args = parser.parse_args(argv)
     if not args.command:
