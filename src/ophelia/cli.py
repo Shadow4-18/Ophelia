@@ -573,7 +573,7 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
         if native:
             print(f"Native display (wm size): {native[0]} x {native[1]} px")
         else:
-            print("Native display: unknown (wm size failed).")
+            print("Native display: unknown (wm size + dumpsys display both failed).")
             print("  Check Shizuku is running / ADB is connected.")
 
         shots = settings.data_dir / "screenshots"
@@ -595,6 +595,16 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
                 print("  must be scaled by the above factor — the grid overlay handles this.")
         else:
             print("Screenshot pixels:        unreadable")
+
+        # If both shell queries failed, fall back to the screenshot size so the
+        # live tap test can still run. On most phones screencap == native, so
+        # this is a reasonable stand-in and unblocks calibration diagnosis.
+        used_fallback = False
+        if not native and shot_px:
+            native = shot_px
+            used_fallback = True
+            print(f"Native display: using screenshot size as stand-in ({native[0]}x{native[1]}).")
+            print("  ASSUMES screencap == native. If taps below are off, this assumption is wrong.")
 
         annotated = raw.with_name("calibrate_grid.png")
         if annotate_screenshot_file(raw, annotated, native or shot_px):

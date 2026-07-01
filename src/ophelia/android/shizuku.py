@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -298,23 +299,32 @@ class AndroidBody:
 
     async def display_size(self) -> tuple[int, int] | None:
         """Native display resolution in pixels, cached. `input tap` coordinates
-        are in this space. Parsed from `wm size` (e.g. 'Physical size: 1440x3200')."""
+        are in this space. Tries `wm size`, then `dumpsys display`; both with
+        stderr merged because some Shizuku/rish setups route the output to
+        stderr (which `shell()` otherwise drops, yielding a false 'unknown')."""
         if self._display_size:
             return self._display_size
-        try:
-            out = await self.shell("wm size")
-        except Exception as e:
-            log.warning("display_size.shell_failed", error=str(e))
-            return None
-        for line in out.splitlines():
-            line = line.strip()
-            if line.lower().startswith("physical size:"):
-                rest = line.split(":", 1)[1].strip()
-                try:
-                    w, h = rest.split("x")
-                    self._display_size = (int(w), int(h))
-                    return self._display_size
-                except Exception:
-                    pass
-        log.warning("display_size.parse_failed", output=out[:200])
+        # Order: wm size is cheapest and most explicit; dumpsys display is the
+        # reliable fallback (contains "real size WxH" in DisplayDeviceInfo).
+        candidates = ["wm size 2>&1", "dumpsys display 2>&1"]
+        last_out = ""
+        for cmd in candidates:
+            try:
+                out = await self.shell(cmd)
+            except Exception as e:
+                log.warning("display_size.shell_failed", cmd=cmd, error=str(e))
+                continue
+            if not out or out == "(ok)":
+                continue
+            last_out = out
+            m = (
+                re.search(r"physical size:\s*(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
+                or re.search(r"real size\s+(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
+                or re.search(r"init\s+(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
+            )
+            if m:
+                self._display_size = (int(m.group(1)), int(m.group(2)))
+                log.info("display_size.resolved", cmd=cmd, size=self._display_size)
+                return self._display_size
+        log.warning("display_size.parse_failed", output=last_out[:200])
         return None
