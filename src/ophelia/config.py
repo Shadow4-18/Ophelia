@@ -316,6 +316,14 @@ class Settings(BaseSettings):
         description="e.g. 23-08 = no outreach 11pm-8am",
     )
     vision_enabled: bool = Field(default=True, alias="OPHELIA_VISION_ENABLED")
+    # Draw a coordinate grid (with pixel labels) on screenshots sent to vision
+    # so tap coordinates are read in native pixels, not the model's internally
+    # resized image space. Fixes the classic "taps land off-target" problem.
+    vision_grid_overlay: bool = Field(
+        default=True,
+        alias="OPHELIA_VISION_GRID",
+        description="Annotate screenshots with a native-pixel grid for accurate taps",
+    )
 
     # Tier 2: inner log, listen, curator
     inner_log_enabled: bool = Field(default=True, alias="OPHELIA_INNER_LOG")

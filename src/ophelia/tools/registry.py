@@ -62,6 +62,51 @@ def _phone_shell_blocked_reason(command: str) -> str | None:
     return None
 
 
+async def _resolve_tap_coords(
+    android: object, x: int | float, y: int | float
+) -> tuple[int, int, str]:
+    """Normalize a tap coordinate into native-display pixels.
+
+    - Native integer coords (the common case, e.g. from ui-dump bounds or the
+      grid labels) pass through unchanged.
+    - Floats in 0..1 are treated as normalized fractions and scaled to native
+      (unambiguous — no native tap is a non-integer float).
+    - Anything outside the native bounds is clamped and flagged so she re-reads
+      the screen instead of silently mis-tapping.
+    Returns (x, y, note) where `note` is "" or a diagnostic suffix.
+    """
+    xf, yf = float(x), float(y)
+    native = None
+    try:
+        native = await android.display_size()  # type: ignore[attr-defined]
+    except Exception:
+        native = None
+
+    note = ""
+    # Normalized fractions -> native pixels.
+    if native and 0.0 <= xf <= 1.0 and 0.0 <= yf <= 1.0 and (xf != int(xf) or yf != int(yf) or (xf == 0.0 and yf == 0.0)):
+        # Only treat as fraction when at least one is a true float, to avoid
+        # mis-reading integer 0/1 native taps.
+        if xf != int(xf) or yf != int(yf):
+            xi = round(xf * native[0])
+            yi = round(yf * native[1])
+            return xi, yi, f"  [scaled {xf}x{yf} -> {xi},{yi} native]"
+
+    xi, yi = int(round(xf)), int(round(yf))
+    if native:
+        nw, nh = native
+        ox, oy = xi, yi
+        xi = max(0, min(xi, nw - 1))
+        yi = max(0, min(yi, nh - 1))
+        if (xi, yi) != (ox, oy):
+            note = (
+                f"  [WARN: tap {ox},{oy} out of native bounds {nw}x{nh}; "
+                f"clamped to {xi},{yi}. Re-read the screen with phone_see_screen "
+                f"and use ui-dump bounds or the grid labels for coordinates.]"
+            )
+    return xi, yi, note
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -989,10 +1034,12 @@ class ToolRegistry:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
         return await self.android.ui_dump()
 
-    async def _phone_tap(self, x: int, y: int) -> str:
+    async def _phone_tap(self, x: int | float, y: int | float) -> str:
         if not self.android:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
-        return await self.android.tap(x, y)
+        x, y, note = await _resolve_tap_coords(self.android, x, y)
+        result = await self.android.tap(x, y)
+        return f"{result}{note}"
 
     async def _phone_open_app(self, package: str) -> str:
         if not self.android:
@@ -1012,15 +1059,18 @@ class ToolRegistry:
 
     async def _phone_swipe(
         self,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
+        x1: int | float,
+        y1: int | float,
+        x2: int | float,
+        y2: int | float,
         duration_ms: int = 300,
     ) -> str:
         if not self.android:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
-        return await self.android.swipe(x1, y1, x2, y2, duration_ms)
+        x1, y1, n1 = await _resolve_tap_coords(self.android, x1, y1)
+        x2, y2, n2 = await _resolve_tap_coords(self.android, x2, y2)
+        result = await self.android.swipe(x1, y1, x2, y2, duration_ms)
+        return f"{result}{n1}{n2}"
 
     async def _phone_key(self, key: str) -> str:
         if not self.android:

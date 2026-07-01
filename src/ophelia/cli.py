@@ -543,6 +543,96 @@ def cmd_menu(_: argparse.Namespace) -> int:
     return run_launcher()
 
 
+def cmd_phone_calibrate(_: argparse.Namespace) -> int:
+    """Diagnose + calibrate touch input: reports native display size vs
+    screenshot pixel size, saves a grid-annotated screenshot, and taps the four
+    corners + center so the user can verify (with Pointer Location on) where
+    taps actually land."""
+    import asyncio
+
+    from ophelia.android.factory import build_android_body
+    from ophelia.android.vision import annotate_screenshot_file, png_size
+
+    settings = Settings()
+    ensure_dirs(settings)
+    android = build_android_body(settings)
+    if not android:
+        print("Phone body disabled. Set OPHELIA_ANDROID_ENABLED=true (Termux) or")
+        print("OPHELIA_ADB_DEVICE=ip:5555 (PC -> phone wireless debugging).")
+        return 1
+    if android.mode == "termux_only":
+        print("No Shizuku/ADB path available. Start Shizuku on the phone or connect ADB.")
+        print(f"  mode: {android.mode}")
+        return 1
+
+    async def _run() -> int:
+        await android.ensure_ready() if hasattr(android, "ensure_ready") else None
+        native = await android.display_size()
+        print()
+        print("== Touch calibration ==")
+        if native:
+            print(f"Native display (wm size): {native[0]} x {native[1]} px")
+        else:
+            print("Native display: unknown (wm size failed).")
+            print("  Check Shizuku is running / ADB is connected.")
+
+        shots = settings.data_dir / "screenshots"
+        shots.mkdir(parents=True, exist_ok=True)
+        raw = shots / f"calibrate_{int(__import__('time').time())}.png"
+        res = await android.screenshot_path(raw)
+        if not raw.is_file():
+            print(f"\nScreenshot failed: {res}")
+            return 1
+        shot_px = png_size(raw.read_bytes())
+        if shot_px:
+            print(f"Screenshot pixels:        {shot_px[0]} x {shot_px[1]} px")
+        if native and shot_px:
+            sx, sy = shot_px[0] / native[0], shot_px[1] / native[1]
+            print(f"Screenshot/native scale:  {sx:.3f} x {sy:.3f}"
+                  + ("  (== 1.0, screencap is native)" if abs(sx - 1) < 1e-3 and abs(sy - 1) < 1e-3 else "  (differs!)"))
+            if abs(sx - 1) > 1e-3 or abs(sy - 1) > 1e-3:
+                print("  NOTE: screencap is not native. Tap coords from the screenshot")
+                print("  must be scaled by the above factor — the grid overlay handles this.")
+        else:
+            print("Screenshot pixels:        unreadable")
+
+        annotated = raw.with_name("calibrate_grid.png")
+        if annotate_screenshot_file(raw, annotated, native or shot_px):
+            print(f"\nGrid-annotated screenshot saved: {annotated}")
+            print("Open it to see the native-pixel coordinate labels she reads.")
+
+        print()
+        print("== Live tap test ==")
+        print("Tip: enable Developer Options -> Pointer location on the phone to see")
+        print("     exactly where each tap lands (a crosshair + x,y shows on touch).")
+        if not native:
+            print("\n(skipping taps — native size unknown)")
+            return 0
+        nw, nh = native
+        targets = [
+            ("top-left",     10, 10),
+            ("top-right",    nw - 10, 10),
+            ("center",       nw // 2, nh // 2),
+            ("bottom-left",  10, nh - 10),
+            ("bottom-right", nw - 10, nh - 10),
+        ]
+        for name, tx, ty in targets:
+            print(f"  tapping {name:12} at ({tx:4d}, {ty:4d}) ... ", end="", flush=True)
+            try:
+                r = await android.tap(tx, ty)
+                print(r.splitlines()[0][:60] if r else "ok")
+            except Exception as e:
+                print(f"error: {e}")
+            await asyncio.sleep(1.5)
+        print()
+        print("If the crosshair landed where the label said, calibration is correct.")
+        print("If taps are consistently offset/scaled, that points to a device-level")
+        print("issue (density/letterboxing) — report it so a correction can be added.")
+        return 0
+
+    return asyncio.run(_run())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ophelia",
@@ -731,6 +821,13 @@ def main(argv: list[str] | None = None) -> int:
     p_down.add_argument("--output", default=None)
     p_down.add_argument("--no-import", action="store_true")
     p_down.set_defaults(func=cmd_transfer_cloud_download)
+
+    phone = sub.add_parser("phone", help="Phone body tools (touch calibration)")
+    phone_sub = phone.add_subparsers(dest="phone_cmd", required=True)
+    phone_sub.add_parser(
+        "calibrate",
+        help="Diagnose + calibrate touch: native size, screenshot scale, grid save, tap corners.",
+    ).set_defaults(func=cmd_phone_calibrate)
 
     args = parser.parse_args(argv)
     if not args.command:

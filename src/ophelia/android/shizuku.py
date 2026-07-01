@@ -33,6 +33,7 @@ class AndroidBody:
         self._adb_path = adb_util.find_adb()
         self._adb_ready = False
         self._adb_mode = "none"
+        self._display_size: tuple[int, int] | None = None
 
     def _find_rish(self) -> Path | None:
         for candidate in (
@@ -294,3 +295,26 @@ class AndroidBody:
             target = self.adb_device or "default USB/wireless"
             return f"Phone body: adb → {target}{root}"
         return f"Phone body: {self.mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"
+
+    async def display_size(self) -> tuple[int, int] | None:
+        """Native display resolution in pixels, cached. `input tap` coordinates
+        are in this space. Parsed from `wm size` (e.g. 'Physical size: 1440x3200')."""
+        if self._display_size:
+            return self._display_size
+        try:
+            out = await self.shell("wm size")
+        except Exception as e:
+            log.warning("display_size.shell_failed", error=str(e))
+            return None
+        for line in out.splitlines():
+            line = line.strip()
+            if line.lower().startswith("physical size:"):
+                rest = line.split(":", 1)[1].strip()
+                try:
+                    w, h = rest.split("x")
+                    self._display_size = (int(w), int(h))
+                    return self._display_size
+                except Exception:
+                    pass
+        log.warning("display_size.parse_failed", output=out[:200])
+        return None

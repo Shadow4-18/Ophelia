@@ -167,6 +167,36 @@ Leave `OPHELIA_ANDROID_ENABLED=false` (default on PC/server) for a **software-on
 
 Full ADB guide: [docs/remote-adb.md](docs/remote-adb.md)
 
+### Touch accuracy & calibration
+
+`input tap X Y` expects **native display pixels** (e.g. 1440×3200 on an S21U).
+Taps miss when coordinates come back in the wrong space — usually because the
+vision model sees an internally-resized image and guesses x,y in *that* space.
+Ophelia handles this three ways:
+
+- **Coordinate grid overlay** (`OPHELIA_VISION_GRID=true`, default): screenshots
+  sent to vision are annotated with a yellow grid + native-pixel labels, so she
+  reads exact coordinates off the image instead of guessing.
+- **Native-size prompt injection**: the vision prompt is told the native
+  resolution and to prefer the accessibility tree (`phone_ui_dump`) bounds
+  center for taps — those are already native pixels and pixel-exact.
+- **Auto-scale + guard**: `phone_tap`/`phone_swipe` accept normalized fractions
+  (0.0–1.0) and scale them to native; coordinates outside the native bounds are
+  clamped and flagged so she re-reads the screen instead of silently mis-tapping.
+
+Calibrate with one command:
+
+```bash
+ophelia phone calibrate
+```
+
+It reports `wm size` vs the screenshot's real pixel size (and the scale factor
+between them), saves a grid-annotated screenshot to
+`~/.ophelia/data/screenshots/calibrate_grid.png`, and taps the four corners +
+center so — with **Developer Options → Pointer location** enabled on the phone —
+you can see exactly where each tap lands. If the crosshair matches the label,
+calibration is correct.
+
 ## Neuro-like inner life
 
 Continuous consciousness (not Hermes cron isolation):

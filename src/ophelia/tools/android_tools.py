@@ -10,8 +10,9 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "phone_see_screen",
             "description": (
-                "Capture screenshot + Grok vision + UI tree. Primary way to SEE the phone. "
-                "Use before tap or when exploring."
+                "Capture screenshot + vision + UI tree. Primary way to SEE the phone. "
+                "Use before tap or when exploring. The screenshot has a yellow "
+                "coordinate grid with native-pixel labels for accurate taps."
             ),
             "parameters": {
                 "type": "object",
@@ -36,12 +37,19 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "phone_tap",
-            "description": "Tap screen coordinates (from ui-dump bounds center).",
+            "description": (
+                "Tap screen coordinates in NATIVE pixels. Best source: the bounds "
+                "center of the target element from phone_ui_dump (already native). "
+                "For canvas/games with no UI tree, read x,y off the grid labels on "
+                "the phone_see_screen screenshot. You may also pass normalized "
+                "fractions (0.0..1.0) which are auto-scaled to native. Never use "
+                "percentage 0..100."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
+                    "x": {"type": "number", "description": "native px (int) or fraction 0..1"},
+                    "y": {"type": "number", "description": "native px (int) or fraction 0..1"},
                 },
                 "required": ["x", "y"],
             },
@@ -65,7 +73,7 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "phone_swipe",
-            "description": "Swipe between two points (scroll, drag pieces, puzzles).",
+            "description": "Swipe between two points in NATIVE pixels (scroll, drag pieces, puzzles). Same coordinate rules as phone_tap (ui-dump bounds or grid labels; fractions 0..1 allowed).",
             "parameters": {
                 "type": "object",
                 "properties": {
