@@ -240,9 +240,11 @@ class AgentLoop:
         extra_channels: list[str] | None = None,
         include_consciousness: bool = True,
         is_owner: bool = True,
+        current_is_tick: bool = False,
     ) -> list[dict[str, Any]]:
         # Guests get a sandboxed view: only their own quarantined thread + a
         # reduced system prompt (full SOUL, no private memory/psyche/inner).
+        # Consciousness ticks are never shown to guests.
         if not is_owner:
             system = BASE_PROMPT + "\n\n" + self._guest_system_prompt(system_extra)
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -266,25 +268,25 @@ class AgentLoop:
                 continue
             meta = m.get("metadata") or {}
             content = m["content"]
-            if (
-                m["role"] == "user"
+            is_current_tick = (
+                meta.get("type") == "consciousness_tick"
+                and m["role"] == "user"
                 and (m.get("channel") or channel) == channel
                 and (m.get("content") or "") == user_text
-            ):
+            )
+            if is_current_tick:
                 seen_current_user_turn = True
-            # A consciousness tick is an internal prompt from her own runtime, not
-            # user speech. Render it as a clearly self/internal cue so she never
-            # attributes the tick to the user.
+            # Consciousness ticks are internal runtime prompts, NOT user speech.
+            # Render them with a hard [TICK]...[END TICK] boundary so they can
+            # never bleed into an adjacent real user message:
+            #   - PAST ticks -> role "system" (structurally separate from user
+            #     turns; the model can't conflate a system block with a user one).
+            #   - The CURRENT tick -> role "user" so she actually responds to it,
+            #     but still wrapped in the hard delimiter.
             if meta.get("type") == "consciousness_tick" and m["role"] == "user":
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[Internal autonomous tick from your own runtime — "
-                            "NOT a message from the user] " + content
-                        ),
-                    }
-                )
+                wrapped = f"[TICK]\n{content}\n[END TICK]"
+                role = "user" if (is_current_tick and current_is_tick) else "system"
+                messages.append({"role": role, "content": wrapped})
                 continue
             prefix = ""
             if m.get("channel") and m["channel"] != channel:
@@ -343,6 +345,7 @@ class AgentLoop:
             user_text,
             system_extra=system_extra,
             extra_channels=extra,
+            current_is_tick=True,
         )
         return await self._complete(
             messages,
