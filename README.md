@@ -205,6 +205,16 @@ Continuous consciousness (not Hermes cron isolation):
 - **Drives** build while idle → initiative to message / explore
 - Outbound messages land in **your Telegram thread** (same SQLite memory)
 
+### Adaptive ticks (attention system)
+
+The inner loop is state-aware, not a fixed pulse:
+
+- **Backs off when busy** — ticks are skipped while she's mid-turn (`agent_thinking`) or a model call is in flight, so she's never interrupted mid-sentence or mid-creation.
+- **Action cooldown** (`OPHELIA_TICK_ACTION_COOLDOWN`, default 300s) — after she acts or reaches out, the next tick backs off for N seconds instead of knocking immediately.
+- **Contextual nudges** — when a goal is due, the tick tells her *what she was last doing* and *how overdue* the goal is, not just "tick."
+- **Rotating idle nudge** (`OPHELIA_TICK_IDLE_NUDGE_ROTATE`, default on) — when nothing's due and she's been idle a while, the suggested mode rotates (reflect → create → explore → social) so ticks aren't identical every time.
+- **Silence is the baseline** — the prompt frames a no-action tick as correct, not something she must justify; drives/initiative pressure still surface real urges.
+
 ### Telegram chat commands (remote control)
 
 Ophelia registers its own `/`-command menu with BotFather on startup, so any

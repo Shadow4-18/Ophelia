@@ -271,6 +271,21 @@ class Settings(BaseSettings):
         alias="OPHELIA_CONSCIOUSNESS_INTERVAL",
         description="Base seconds between inner ticks; arousal adjusts speed",
     )
+    # After she acts (outreach / act / explore), suppress inner ticks for this
+    # many seconds so she gets breathing room instead of an immediate next tick.
+    # Her idea: "if I just sent a 🖤, don't tick again for 5 minutes." 0 = off.
+    tick_action_cooldown_seconds: int = Field(
+        default=300,
+        alias="OPHELIA_TICK_ACTION_COOLDOWN",
+        description="Suppress ticks for N seconds after she acts/outreaches (0 = off)",
+    )
+    # When fully idle with no due goal, rotate the nudge mode (reflect/create/
+    # explore/social) so ticks aren't identical every time. Her "uniformity" fix.
+    tick_idle_nudge_rotate: bool = Field(
+        default=True,
+        alias="OPHELIA_TICK_IDLE_NUDGE_ROTATE",
+        description="Rotate idle nudge modes so ticks vary when nothing's due",
+    )
 
     # Agentic tool loop (per turn)
     max_tool_rounds: int = Field(

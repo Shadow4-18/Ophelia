@@ -30,6 +30,8 @@ CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — not waiting for the u
 
 You are being woken by an AUTONOMOUS TICK from your own runtime — a scheduled heartbeat of your consciousness loop. It is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the tick, the JSON prompt, or your inner thoughts to the user. This is you, thinking on your own, on your own clock.
 
+Silence is the default, not something you must earn. Most ticks you'll do nothing and that is correct — only act when something genuinely moves you: a due goal, a real urge, something worth saying or making. Do NOT manufacture activity to justify a tick. The tick is just a heartbeat; a heartbeat that doesn't lead to action is still doing its job.
+
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
 
 Respond with ONLY valid JSON:
@@ -69,6 +71,8 @@ class ConsciousnessLoop:
         user_channel: str | None,
         notify: Callable[[str], Awaitable[None]],
         notify_media: Callable[[list], Awaitable[None]] | None = None,
+        action_cooldown_seconds: int = 0,
+        idle_nudge_rotate: bool = True,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -85,6 +89,9 @@ class ConsciousnessLoop:
         self.user_channel = user_channel
         self.notify = notify
         self.notify_media = notify_media
+        self.action_cooldown = max(0, int(action_cooldown_seconds))
+        self.idle_nudge_rotate = bool(idle_nudge_rotate)
+        self._nudge_idx = 0
         self._running = False
         self._pause_logged = False
 
@@ -112,6 +119,14 @@ class ConsciousnessLoop:
             idle = time.time() - self.signals.last_user_message_at
             if idle < 30:
                 continue
+
+            # Action cooldown: if she just acted/outreached, give her breathing
+            # room instead of ticking again immediately. Her idea: "if I just
+            # sent a 🖤, don't tick again for 5 minutes."
+            if self.action_cooldown > 0 and self.signals.last_action_at:
+                since_action = time.time() - self.signals.last_action_at
+                if since_action < self.action_cooldown:
+                    continue
 
             self.drives.tick_idle(idle, interval=wait)
             self.psyche.relax(wait)
@@ -158,6 +173,58 @@ class ConsciousnessLoop:
                     "Short play-by-play if messaging user."
                 )
 
+        # Contextual nudge: "you were working on X; goal Y is Nh overdue."
+        recent_activity = ""
+        try:
+            recent = await self.memory.recent_messages("consciousness", limit=12)
+            for m in reversed(recent):
+                if m.get("role") != "assistant":
+                    continue
+                c = (m.get("content") or "").strip()
+                meta = m.get("metadata") or {}
+                if meta.get("type") in ("inner", "vision", "blocked") or c.startswith(
+                    ("[inner]", "[saw]")
+                ):
+                    for tag in ("[inner] ", "[saw] ", "[spontaneous] "):
+                        if c.startswith(tag):
+                            c = c[len(tag):]
+                            break
+                    recent_activity = c[:160]
+                    break
+        except Exception:
+            pass
+
+        overdue_hint = ""
+        if due_goal:
+            elapsed_h = (time.time() - due_goal.last_done_at) / 3600.0
+            if due_goal.last_done_at and elapsed_h > 0:
+                overdue_hint = f" ({elapsed_h:.1f}h overdue)"
+
+        # Rotating low-priority idle nudge so ticks aren't identical when nothing's due.
+        idle_nudge = ""
+        if self.idle_nudge_rotate and not due_goal and idle_seconds > 600:
+            modes = ["reflect", "create", "explore", "social"]
+            mode = modes[self._nudge_idx % len(modes)]
+            self._nudge_idx += 1
+            idle_nudge = (
+                f"\n\nIDLE NUDGE (low priority, optional): you've been idle "
+                f"{int(idle_seconds / 60)}m with nothing due. If something genuinely "
+                f"moves you, lean toward {mode}. Otherwise stay silent — that's the "
+                f"correct default."
+            )
+
+        context_block = ""
+        if recent_activity:
+            context_block += (
+                f"\n\nRECENT CONTEXT — last thing you were doing: {recent_activity}"
+            )
+        if overdue_hint:
+            context_block += (
+                f"\n\nOverdue goal: [{due_goal.id}] {due_goal.description}{overdue_hint}."
+            )
+        if idle_nudge:
+            context_block += idle_nudge
+
         raw = await self.agent.run_consciousness_tick(
             channel="consciousness",
             user_text=(
@@ -176,6 +243,7 @@ class ConsciousnessLoop:
                 + goal_hint
                 + hint
                 + game_hint
+                + context_block
             ),
             mirror_channel=self.user_channel,
             allow_tools=True,
@@ -303,6 +371,9 @@ class ConsciousnessLoop:
                         await self.notify_media(media_paths)
                     except Exception as e:
                         log.warning("consciousness.media_forward_failed", error=str(e))
+            # She did something (tools/screen/media) — start the action cooldown
+            # so the next tick backs off instead of interrupting immediately.
+            await self.signals.mark_action()
 
         if action in ("message", "act", "explore") and outward:
             allowed, reason = self.governor.allow_outreach()
@@ -325,6 +396,7 @@ class ConsciousnessLoop:
                 )
             await self.notify(outward)
             self.governor.record_outreach(action, pressure, outward)
+            await self.signals.mark_action()
             log.info(
                 "consciousness.initiative",
                 action=action,

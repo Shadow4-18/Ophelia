@@ -443,6 +443,8 @@ class Orchestrator:
                 user_channel=self.settings.primary_user_channel(),
                 notify=self._notify_spontaneous,
                 notify_media=self.hub.broadcast_proactive_media,
+                action_cooldown_seconds=self.settings.tick_action_cooldown_seconds,
+                idle_nudge_rotate=self.settings.tick_idle_nudge_rotate,
             )
             tasks.append(asyncio.create_task(self.consciousness.run()))
 

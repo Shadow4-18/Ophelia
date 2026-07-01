@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 
 
@@ -12,6 +13,10 @@ class Signals:
     agent_thinking: bool = False
     last_user_message_at: float = 0.0
     last_agent_message_at: float = 0.0
+    # Last time she took an autonomous action (outreach/act/explore). Used by the
+    # consciousness loop's action cooldown so she isn't ticked again immediately
+    # after she just did something.
+    last_action_at: float = 0.0
     last_telegram_user_id: int | None = None
     autonomy_paused: bool = False
     listen_enabled: bool = False
@@ -26,3 +31,7 @@ class Signals:
     async def set_agent_thinking(self, value: bool) -> None:
         async with self._lock:
             self.agent_thinking = value
+
+    async def mark_action(self) -> None:
+        async with self._lock:
+            self.last_action_at = time.time()
