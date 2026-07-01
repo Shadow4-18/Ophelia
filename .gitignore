@@ -6,3 +6,42 @@ dist/
 *.egg-info/
 .env
 .ophelia/
+
+# Ophelia's runtime-generated creative output (audio, images, data, logs).
+# She writes these into the working tree herself. They stay on disk but are
+# excluded from version control to keep the repo clean. Promote anything
+# worth keeping into real package source and commit it explicitly with -f.
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.opus
+*.webm
+# generated spectrograms / analysis images (no tracked pngs exist)
+spec_*.png
+*spectrogram*.png
+# calibration / experiment artifacts at the repo root
+mood_light_calibration.json
+
+# generated artifact directories (root-anchored so they never match the
+# package's src/ophelia/media/ subpackage)
+/artifacts/
+/diaries/
+/lore/
+/media/
+/voice_journal/
+
+# generated media inside the package media dir — binaries/data only.
+# Her *.py source in this dir stays trackable so good experiments can be promoted.
+src/ophelia/media/*.wav
+src/ophelia/media/*.mp3
+src/ophelia/media/*.ogg
+src/ophelia/media/*.flac
+src/ophelia/media/*.png
+src/ophelia/media/*.json
+src/ophelia/media/*.txt
+src/ophelia/media/*.md
+# self-authored ambient experiment scripts (keep package modules visible)
+src/ophelia/media/ambient_v*.py
+scripts/ambient_cron*.sh
+scripts/play_ambient.py
