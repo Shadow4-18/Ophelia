@@ -5,6 +5,10 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.channels.guest_approval import (
+    GuestApprovals,
+    append_user_to_allowlist,
+)
 from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.config import Settings
@@ -27,15 +31,77 @@ class DiscordGateway:
         self.signals = signals
         self._bot = None
         self._task: asyncio.Task | None = None
+        self._guest_approvals = GuestApprovals()
 
     def is_configured(self) -> bool:
         return bool(self.settings.discord_bot_token)
 
     def _allowed(self, user_id: int) -> bool:
+        """Owner-only gate for control commands."""
+        return self.settings.is_owner_channel(f"discord:{user_id}")
+
+    def _owner_discord_ids(self) -> list[int]:
+        ids: list[int] = []
+        for c in self.settings.owner_channels():
+            if c.startswith("discord:"):
+                raw = c.split(":", 1)[1]
+                if raw.isdigit():
+                    ids.append(int(raw))
+        allowed = self.settings.allowed_discord_users() or set()
+        return ids or sorted(allowed)
+
+    async def _send_owner_dm(self, text: str) -> None:
+        if not self._bot:
+            return
+        for uid in self._owner_discord_ids():
+            try:
+                user = await self._bot.fetch_user(uid)
+                await user.send(text[:2000])
+            except Exception as e:
+                log.warning("discord.owner_dm_failed", user=uid, error=str(e))
+
+    async def _admit_discord(self, message) -> str:
+        """Decide what to do with an inbound Discord chat message.
+        Returns 'ok' | 'held' | 'rejected' (see TelegramGateway._admit_chat)."""
+        author = message.author
+        if author.bot:
+            return "rejected"
+        uid = author.id
+        if self.settings.is_owner_channel(f"discord:{uid}"):
+            return "ok"
         allowed = self.settings.allowed_discord_users()
-        if allowed is None:
-            return True
-        return user_id in allowed
+        if allowed is not None and uid in allowed:
+            return "ok"
+        mode = (self.settings.guest_admission or "approve").lower()
+        if mode == "open":
+            return "ok"
+        if mode == "reject":
+            await message.channel.send("Unauthorized.")
+            return "rejected"
+        # approve mode
+        if self._guest_approvals.is_denied("discord", uid):
+            await message.channel.send("Sorry — the owner hasn't approved this chat.")
+            return "rejected"
+        if self._guest_approvals.is_pending("discord", uid):
+            await message.channel.send(
+                "I've asked my owner to OK our chat — still waiting. Hang tight 💙"
+            )
+            return "held"
+        name = str(author)
+        preview = message.content.strip()[:300] or "(media)"
+        added = self._guest_approvals.add_pending("discord", uid, name, preview)
+        if added:
+            await self._send_owner_dm(
+                f"🌙 Someone new wants to talk to me on Discord:\n\n"
+                f"Name: {name}\nDiscord ID: {uid}\nFirst message: {preview}\n\n"
+                f"Reply with `!approve {uid}` to add them as a sandboxed guest, "
+                f"or `!deny {uid}` to decline."
+            )
+        await message.channel.send(
+            "Hi! I'm Ophelia 🌙 I've asked my owner to OK our chat — once they "
+            "say yes I'll be able to talk with you. Give me a moment."
+        )
+        return "held"
 
     def _build_bot(self):
         import discord
@@ -120,14 +186,66 @@ class DiscordGateway:
                 android_factory=_android,
             )
 
+        @bot.command(name="approve")
+        async def cmd_approve(ctx, user_id: str = "") -> None:
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            uid_s = user_id.strip()
+            if not uid_s.isdigit():
+                await ctx.send("Usage: !approve <discord user id>")
+                return
+            uid = int(uid_s)
+            append_user_to_allowlist(gw.settings, "discord", uid)
+            rec = gw._guest_approvals.set_status("discord", uid, "approved") or {}
+            name = rec.get("display_name") or str(uid)
+            await ctx.send(f"✅ Approved {name} (discord:{uid}) — added as a guest.")
+            # Notify the guest and replay their first held message.
+            try:
+                user = await bot.fetch_user(uid)
+                await user.send(
+                    "Good news — my owner said yes 💙 I'm around now. Say hi any time!"
+                )
+                first_msg = rec.get("first_message") or ""
+                if first_msg:
+
+                    async def _reply(t: str) -> None:
+                        await user.send(t[:2000])
+
+                    async def _media(path: Path, caption: str) -> bool:
+                        return await gw._send_discord_file_to_user(user, path, caption)
+
+                    asyncio.create_task(
+                        gw.session.handle_chat(
+                            f"discord:{uid}", first_msg, _reply, media_reply=_media
+                        )
+                    )
+            except Exception as e:
+                log.warning("discord.approve_notify_failed", error=str(e))
+
+        @bot.command(name="deny")
+        async def cmd_deny(ctx, user_id: str = "") -> None:
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            uid_s = user_id.strip()
+            if not uid_s.isdigit():
+                await ctx.send("Usage: !deny <discord user id>")
+                return
+            uid = int(uid_s)
+            rec = gw._guest_approvals.set_status("discord", uid, "denied") or {}
+            name = rec.get("display_name") or str(uid)
+            await ctx.send(f"❌ Declined {name} (discord:{uid}).")
+
         @bot.event
         async def on_message(message) -> None:
             if message.author.bot:
                 return
-            if not gw._allowed(message.author.id):
-                return
             if message.content.startswith("!"):
                 await bot.process_commands(message)
+                return
+            admission = await gw._admit_discord(message)
+            if admission != "ok":
                 return
             channel = f"discord:{message.author.id}"
             tools = getattr(gw.session.agent, "tools", None)
@@ -180,6 +298,24 @@ class DiscordGateway:
             return True
         except Exception as e:
             log.warning("discord.send_file_failed", path=str(path), error=str(e))
+            return False
+
+    async def _send_discord_file_to_user(self, user, path: Path, caption: str) -> bool:
+        """Send a file to a specific Discord user's DM (used when replaying a
+        newly-approved guest's first message)."""
+        import discord
+
+        try:
+            p = Path(path).expanduser()
+            if not p.is_file():
+                return False
+            await user.send(
+                content=caption[:2000] if caption else None,
+                file=discord.File(str(p)),
+            )
+            return True
+        except Exception as e:
+            log.warning("discord.send_file_to_user_failed", path=str(path), error=str(e))
             return False
 
     async def run(self) -> None:

@@ -282,6 +282,16 @@ class Settings(BaseSettings):
         alias="OPHELIA_CHAT_LOG",
         description="Log every message sent to/from her (text + media) to ~/.ophelia/data/logs/",
     )
+    # How unknown (non-owner, non-allowlisted) users are handled when they message her.
+    #   approve — hold their message and prompt the owner to Accept/Decline (default).
+    #              Accepting auto-adds their ID to the platform allowlist in ~/.ophelia/.env.
+    #   open    — admit unknown users immediately as sandboxed guests (no prompt).
+    #   reject  — refuse unknown users outright (strict; pre-this-feature behavior).
+    guest_admission: str = Field(
+        default="approve",
+        alias="OPHELIA_GUEST_ADMISSION",
+        description="approve | open | reject — how unknown users who message her are handled",
+    )
 
     # Consciousness loop (Neuro-style; NOT isolated cron sessions)
     consciousness_enabled: bool = Field(default=True, alias="OPHELIA_CONSCIOUSNESS")

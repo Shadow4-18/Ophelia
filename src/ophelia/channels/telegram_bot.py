@@ -18,6 +18,10 @@ from telegram.ext import (
 )
 
 from ophelia.android.factory import build_android_body
+from ophelia.channels.guest_approval import (
+    GuestApprovals,
+    append_user_to_allowlist,
+)
 from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.channels.telegram_util import ensure_polling_mode
@@ -147,15 +151,215 @@ class TelegramGateway:
         # Last text message we sent, so we can attach a "Continue" inline button
         # to it when a turn runs out of tool rounds.
         self._last_text_msg = None
+        # Guest approval state (pending/denied strangers who messaged her).
+        self._guest_approvals = GuestApprovals()
 
     def is_configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
 
     def _allowed(self, user_id: int) -> bool:
+        """Owner-only gate for control commands. Approved guests can chat with
+        her but not run commands (pause/resume/game/etc. are owner controls)."""
+        return self.settings.is_owner_channel(f"telegram:{user_id}")
+
+    def _owner_chat_ids(self) -> list[int]:
+        """Telegram chat ids to send approval prompts to (the owner). Falls back
+        to proactive recipients if no explicit owner id is configured."""
+        ids: list[int] = []
+        for c in self.settings.owner_channels():
+            if c.startswith("telegram:"):
+                raw = c.split(":", 1)[1]
+                if raw.isdigit():
+                    ids.append(int(raw))
+        return ids or self._proactive_recipients()
+
+    async def _admit_chat(
+        self,
+        user,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        preview: str,
+    ) -> str:
+        """Decide what to do with an inbound chat message from `user`.
+
+        Returns:
+          "ok"       — owner or already-approved guest; proceed with the turn.
+          "held"     — unknown user; request recorded and owner prompted (or
+                       already pending); the caller should NOT run a turn.
+          "rejected" — denied/strict mode; caller should NOT run a turn.
+        """
+        if user is None:
+            return "rejected"
+        uid = user.id
+        if self.settings.is_owner_channel(f"telegram:{uid}"):
+            return "ok"
         allowed = self.settings.allowed_telegram_users()
-        if allowed is None:
-            return True
-        return user_id in allowed
+        if allowed is not None and uid in allowed:
+            return "ok"  # already approved guest
+
+        mode = (self.settings.guest_admission or "approve").lower()
+        if mode == "open":
+            return "ok"  # admit unknown as a sandboxed guest, no prompt
+
+        if mode == "reject":
+            await self._reject_user(update)
+            return "rejected"
+
+        # approve mode
+        if self._guest_approvals.is_denied("telegram", uid):
+            if update.message:
+                await update.message.reply_text(
+                    "Sorry — the owner hasn't approved this chat."
+                )
+            return "rejected"
+        if self._guest_approvals.is_pending("telegram", uid):
+            if update.message:
+                await update.message.reply_text(
+                    "I've asked my owner to OK our chat — still waiting on a yes. "
+                    "Hang tight 💙"
+                )
+            return "held"
+
+        name = (user.full_name or user.username or str(uid)).strip()
+        added = self._guest_approvals.add_pending("telegram", uid, name, preview)
+        if added:
+            await self._request_owner_approval(update, context, uid, name, preview)
+        if update.message:
+            await update.message.reply_text(
+                "Hi! I'm Ophelia 🌙 I've asked my owner to OK our chat — once they "
+                "say yes I'll be able to talk with you. Give me a moment."
+            )
+        return "held"
+
+    async def _request_owner_approval(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        display_name: str,
+        preview: str,
+    ) -> None:
+        """Send the owner an inline Accept/Decline prompt for a stranger."""
+        if not self._app:
+            return
+        text = (
+            f"🌙 Someone new wants to talk to me:\n\n"
+            f"Name: {display_name}\n"
+            f"Telegram ID: {user_id}\n"
+            f"First message: {preview[:300] or '(media)'}\n\n"
+            f"Approve them? They'll be added as a sandboxed guest — they can "
+            f"chat with me but can't shape my memory or run commands."
+        )
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Accept", callback_data=f"ophelia:approve:telegram:{user_id}"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Decline", callback_data=f"ophelia:deny:telegram:{user_id}"
+                    ),
+                ]
+            ]
+        )
+        for cid in self._owner_chat_ids():
+            try:
+                await self._app.bot.send_message(chat_id=cid, text=text, reply_markup=kb)
+            except Exception as e:
+                log.warning("telegram.approval_prompt_failed", owner=cid, error=str(e))
+
+    async def on_guest_approval_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle the Accept/Decline buttons on an approval prompt."""
+        q = update.callback_query
+        if q is None:
+            return
+        await q.answer()
+        clicker = q.from_user
+        # Only the owner may approve/deny.
+        if clicker is None or not self.settings.is_owner_channel(f"telegram:{clicker.id}"):
+            await q.answer("Owner only.", show_alert=True)
+            return
+        data = (q.data or "").split(":")
+        # ['ophelia', 'approve'|'deny', 'telegram', '<id>']
+        if len(data) < 4:
+            return
+        action, platform, uid_s = data[1], data[2], data[3]
+        try:
+            uid = int(uid_s)
+        except ValueError:
+            return
+        rec = self._guest_approvals.get(platform, uid) or {}
+        name = rec.get("display_name") or str(uid)
+        first_msg = rec.get("first_message") or ""
+
+        if action == "approve":
+            append_user_to_allowlist(self.settings, platform, uid)
+            self._guest_approvals.set_status(platform, uid, "approved")
+            await q.edit_message_text(
+                f"✅ Approved {name} (telegram:{uid}) — added to the allowlist as a guest."
+            )
+            # Notify the guest and replay their first held message.
+            if self._app:
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=uid,
+                        text="Good news — my owner said yes 💙 I'm around now. "
+                        "Say hi any time!",
+                    )
+                except Exception as e:
+                    log.warning("telegram.approval_notify_guest_failed", error=str(e))
+            if first_msg:
+                asyncio.create_task(
+                    self._replay_guest_message(uid, first_msg)
+                )
+        elif action == "deny":
+            self._guest_approvals.set_status(platform, uid, "denied")
+            await q.edit_message_text(f"❌ Declined {name} (telegram:{uid}).")
+
+    async def _replay_guest_message(self, chat_id: int, text: str) -> None:
+        """After approval, run the guest's first held message through her
+        (sandboxed guest path) and send the reply back to their chat."""
+        if not self._app:
+            return
+        channel = f"telegram:{chat_id}"
+
+        async def _reply(t: str) -> None:
+            from ophelia.channels.message_split import split_messages
+
+            for i, chunk in enumerate(split_messages(t)):
+                if i:
+                    await asyncio.sleep(1.0)
+                try:
+                    await self._app.bot.send_message(chat_id=chat_id, text=chunk[:4000])
+                except Exception as e:
+                    log.warning("telegram.replay_reply_failed", error=str(e))
+
+        async def _media(path: Path, caption: str) -> bool:
+            kind = media_kind(path)
+            cap = caption[:1024] if caption else None
+            try:
+                with path.open("rb") as f:
+                    if kind == "photo":
+                        await self._app.bot.send_photo(chat_id=chat_id, photo=InputFile(f), caption=cap)
+                    elif kind == "video":
+                        await self._app.bot.send_video(chat_id=chat_id, video=InputFile(f), caption=cap)
+                    elif kind == "audio":
+                        await self._app.bot.send_audio(chat_id=chat_id, audio=InputFile(f), caption=cap)
+                    else:
+                        await self._app.bot.send_document(chat_id=chat_id, document=InputFile(f), caption=cap)
+                return True
+            except Exception as e:
+                log.warning("telegram.replay_media_failed", error=str(e))
+                return False
+
+        try:
+            await self.session.handle_chat(
+                channel, text, _reply, media_reply=_media
+            )
+        except Exception as e:
+            log.exception("telegram.replay_turn_failed", error=str(e))
 
     async def _reply_text(self, update: Update, text: str) -> None:
         if update.message:
@@ -169,6 +373,12 @@ class TelegramGateway:
         if not user or not update.message:
             return
         allowed = self.settings.allowed_telegram_users()
+        # An approved guest trying a control command — commands are owner-only.
+        if allowed is not None and user.id in allowed:
+            await update.message.reply_text(
+                "That command is owner-only — just talk to me normally 💙"
+            )
+            return
         hint = f"Your Telegram id is {user.id}."
         if allowed:
             hint += f" Allowed: {', '.join(str(x) for x in sorted(allowed))}."
@@ -179,12 +389,22 @@ class TelegramGateway:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user:
             return
-        if not self._allowed(update.effective_user.id):
-            await self._reject_user(update)
+        user = update.effective_user
+        if self._allowed(user.id):
+            self._remember_user(user.id)
+            log.info("telegram.command", command="start", user=user.id)
+            await self._reply_text(update, self.session.WELCOME)
             return
-        self._remember_user(update.effective_user.id)
-        log.info("telegram.command", command="start", user=update.effective_user.id)
-        await self._reply_text(update, self.session.WELCOME)
+        # Approved guests get a soft "commands are owner-only" note.
+        allowed = self.settings.allowed_telegram_users()
+        if allowed is not None and user.id in allowed:
+            await self._reply_text(
+                update, "That command is owner-only — just talk to me normally 💙"
+            )
+            return
+        # A stranger hitting /start is the natural first contact — route them
+        # through the approval flow instead of a cold rejection.
+        await self._admit_chat(user, update, context, preview="(/start)")
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not self._allowed(update.effective_user.id):
@@ -299,12 +519,14 @@ class TelegramGateway:
         if not update.message or not update.message.photo:
             return
         user = update.effective_user
-        if not user or not self._allowed(user.id):
-            await self._reject_user(update)
+        caption = (update.message.caption or "").strip()
+        admission = await self._admit_chat(
+            user, update, context, preview=caption or "(sent a photo)"
+        )
+        if admission != "ok":
             return
         self._remember_user(user.id)
         channel = f"telegram:{user.id}"
-        caption = (update.message.caption or "").strip()
         log.info("telegram.photo", user=user.id, caption=caption[:80] if caption else "")
         await update.message.chat.send_action("typing")
         try:
@@ -344,12 +566,14 @@ class TelegramGateway:
             )
             return
         user = update.effective_user
-        if not user or not self._allowed(user.id):
-            await self._reject_user(update)
+        caption = (update.message.caption or "").strip()
+        admission = await self._admit_chat(
+            user, update, context, preview=caption or "(sent an image file)"
+        )
+        if admission != "ok":
             return
         self._remember_user(user.id)
         channel = f"telegram:{user.id}"
-        caption = (update.message.caption or "").strip()
         log.info("telegram.document_image", user=user.id, mime=mime)
         await update.message.chat.send_action("typing")
         try:
@@ -379,16 +603,17 @@ class TelegramGateway:
         if not update.message or not update.message.text:
             return
         user = update.effective_user
-        if not user or not self._allowed(user.id):
-            await self._reject_user(update)
+        text = update.message.text.strip()
+        admission = await self._admit_chat(user, update, context, preview=text)
+        if admission != "ok":
             return
         self._remember_user(user.id)
         channel = f"telegram:{user.id}"
-        log.info("telegram.message", user=user.id, preview=update.message.text.strip()[:80])
+        log.info("telegram.message", user=user.id, preview=text[:80])
         await update.message.chat.send_action("typing")
         await self.session.handle_chat(
             channel,
-            update.message.text.strip(),
+            text,
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
         )
@@ -398,7 +623,10 @@ class TelegramGateway:
         if not update.message or not update.message.voice:
             return
         user = update.effective_user
-        if not user or not self._allowed(user.id):
+        admission = await self._admit_chat(
+            user, update, context, preview="(sent a voice message)"
+        )
+        if admission != "ok":
             return
 
         self._remember_user(user.id)
@@ -704,6 +932,9 @@ class TelegramGateway:
         app.add_handler(CommandHandler("inner", self.cmd_inner))
         app.add_handler(CommandHandler("game", self.cmd_game))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
+        app.add_handler(
+            CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
+        )
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
         app.add_handler(MessageHandler(filters.Document.IMAGE, self.on_document))

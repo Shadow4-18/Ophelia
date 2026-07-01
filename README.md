@@ -311,6 +311,29 @@ who **isn't** the owner becomes a **sandboxed guest**:
 If `OPHELIA_OWNER_ID` is unset, the first allowed user is treated as the owner
 (backward compatible with single-user setups).
 
+### Approving guests without knowing their IDs
+
+You don't have to collect your friends' Telegram/Discord IDs ahead of time.
+Set the admission mode to `approve` (the default):
+
+```env
+OPHELIA_GUEST_ADMISSION=approve
+```
+
+When a stranger messages her, she holds their message and asks **you** to
+approve them:
+
+- **Telegram** — you get a message with their name, ID, and first message, plus
+  **✅ Accept / ❌ Decline** buttons. Tap Accept and she automatically appends
+  their ID to `TELEGRAM_ALLOWED_USER_IDS` in `~/.ophelia/.env` (no restart
+  needed) and replies to them — they're in as a sandboxed guest.
+- **Discord** — you get a DM with their details; reply `!approve <id>` or
+  `!deny <id>`.
+
+While they wait they get a gentle "I've asked my owner to OK our chat" note, and
+they won't re-prompt you on every message. Other modes: `open` (anyone chats as
+a guest immediately, no prompt) and `reject` (refuse strangers outright).
+
 ## Chat log (oversight)
 
 Every message sent to her and every reply she sends back is logged — text and
