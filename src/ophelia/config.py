@@ -345,6 +345,38 @@ class Settings(BaseSettings):
     # Voice (Telegram)
     voice_reply_default: bool = Field(default=False, alias="OPHELIA_VOICE_REPLY")
     tts_voice_id: str = Field(default="eve", alias="XAI_TTS_VOICE")
+    # TTS backend: auto | xai | elevenlabs | openai | kokoro
+    # auto = first configured of: elevenlabs -> kokoro -> openai -> xai
+    tts_provider: str = Field(default="auto", alias="OPHELIA_TTS_PROVIDER")
+    # ElevenLabs (cloud, best quality)
+    elevenlabs_api_key: str | None = Field(default=None, alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: str = Field(
+        default="21m00Tcm4TlvDq8ikWAM", alias="ELEVENLABS_VOICE_ID"
+    )
+    elevenlabs_tts_model: str = Field(
+        default="eleven_multilingual_v2", alias="ELEVENLABS_TTS_MODEL"
+    )
+    # OpenAI TTS (cloud; uses OPENAI_API_KEY)
+    openai_tts_model: str = Field(default="gpt-4o-mini-tts", alias="OPENAI_TTS_MODEL")
+    openai_tts_voice: str = Field(default="nova", alias="OPENAI_TTS_VOICE")
+    # Kokoro-82M via a local OpenAI-compatible server (Kokoro-FastAPI on PC, or
+    # the Rust `koko openai` server natively in Termux). Fully offline.
+    kokoro_tts_url: str | None = Field(default=None, alias="KOKORO_TTS_URL")
+    kokoro_tts_voice: str = Field(
+        default="af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)",
+        alias="KOKORO_TTS_VOICE",
+        description=(
+            "Kokoro preset or mix expression, e.g. af_heart or "
+            "af_bella(0.7)+bf_emma(0.3)"
+        ),
+    )
+    kokoro_tts_speed: float = Field(
+        default=1.0,
+        alias="KOKORO_TTS_SPEED",
+        ge=0.5,
+        le=2.0,
+        description="Speech rate for Kokoro (0.85 thoughtful, 1.0 normal, 1.15 hyped)",
+    )
 
     # Initiative / will (lower = more spontaneous)
     initiative_threshold: float = Field(default=0.55, alias="OPHELIA_INITIATIVE_THRESHOLD")
@@ -375,6 +407,57 @@ class Settings(BaseSettings):
     listen_enabled_default: bool | None = Field(default=None, alias="OPHELIA_LISTEN")
     listen_seconds: int = Field(default=5, alias="OPHELIA_LISTEN_SECONDS")
     listen_interval_seconds: int = Field(default=45, alias="OPHELIA_LISTEN_INTERVAL")
+
+    # Life context — authoritative time/schedule/presence (phone is stationary at home)
+    timezone: str = Field(
+        default="UTC",
+        alias="OPHELIA_TIMEZONE",
+        description="IANA timezone e.g. America/New_York",
+    )
+    work_days: str = Field(
+        default="",
+        alias="OPHELIA_WORK_DAYS",
+        description="Owner work days e.g. Thu,Wed,Tue,Fri",
+    )
+    work_hours: str = Field(
+        default="",
+        alias="OPHELIA_WORK_HOURS",
+        description="Owner work hours e.g. 18-06 (6pm-6am cross-midnight)",
+    )
+    home_wifi_ssid: str = Field(default="", alias="OPHELIA_HOME_WIFI_SSID")
+    sleep_hours: str = Field(
+        default="",
+        alias="OPHELIA_SLEEP_HOURS",
+        description="Owner sleep window e.g. 1-7 (overrides quiet_hours for sleep mode)",
+    )
+    sleep_mode_enabled: bool = Field(default=True, alias="OPHELIA_SLEEP_MODE")
+
+    # Wake word (Termux mic — say her name to talk)
+    wake_word_enabled: bool = Field(default=False, alias="OPHELIA_WAKE_WORD")
+    wake_word: str = Field(default="ophelia", alias="OPHELIA_WAKE_WORD_NAME")
+    wake_word_rms_threshold: int = Field(default=200, alias="OPHELIA_WAKE_RMS")
+
+    # Autonomous life (Neuro-style presence)
+    spontaneous_voice_enabled: bool = Field(
+        default=True, alias="OPHELIA_SPONTANEOUS_VOICE"
+    )
+    ambient_commentary_enabled: bool = Field(
+        default=True, alias="OPHELIA_AMBIENT_COMMENTARY"
+    )
+    ambient_commentary_minutes: int = Field(
+        default=45, alias="OPHELIA_AMBIENT_COMMENTARY_MINUTES"
+    )
+    alarms: str = Field(
+        default="",
+        alias="OPHELIA_ALARMS",
+        description="Comma times HH:MM e.g. 06:30,07:00",
+    )
+    auto_game_boredom: float = Field(
+        default=0.85, alias="OPHELIA_AUTO_GAME_BOREDOM"
+    )
+    proactive_share_enabled: bool = Field(
+        default=True, alias="OPHELIA_PROACTIVE_SHARE"
+    )
     curator_enabled: bool = Field(default=True, alias="OPHELIA_CURATOR")
     curator_interval_hours: float = Field(default=6.0, alias="OPHELIA_CURATOR_HOURS")
     dream_enabled: bool = Field(

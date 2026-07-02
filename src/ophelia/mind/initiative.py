@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ophelia.config import OPHELIA_HOME
 
@@ -15,6 +16,7 @@ from ophelia.config import OPHELIA_HOME
 class InitiativeGovernor:
     max_spontaneous_per_hour: int = 4
     quiet_hours: str = ""  # e.g. "23-08" = 11pm to 8am
+    timezone: str = "UTC"
     log_path: Path = field(default_factory=lambda: OPHELIA_HOME / "data" / "initiative_log.jsonl")
     _recent: list[float] = field(default_factory=list)
 
@@ -23,8 +25,16 @@ class InitiativeGovernor:
         return cls(
             max_spontaneous_per_hour=settings.max_spontaneous_per_hour,
             quiet_hours=settings.quiet_hours or "",
+            timezone=settings.timezone or "UTC",
             log_path=settings.data_dir / "initiative_log.jsonl",
         )
+
+    def _local_hour(self) -> int:
+        try:
+            tz = ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("UTC")
+        return datetime.now(tz=tz).hour
 
     def _in_quiet_hours(self) -> bool:
         raw = self.quiet_hours.strip()
@@ -36,7 +46,7 @@ class InitiativeGovernor:
             end_h = int(end_s.strip())
         except ValueError:
             return False
-        hour = datetime.now().hour
+        hour = self._local_hour()
         if start_h <= end_h:
             return start_h <= hour < end_h
         return hour >= start_h or hour < end_h

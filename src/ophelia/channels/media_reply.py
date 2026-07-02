@@ -7,11 +7,11 @@ from pathlib import Path
 
 PHOTO_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".webm"})
-AUDIO_SUFFIXES = frozenset({".mp3", ".ogg", ".opus", ".m4a"})
+AUDIO_SUFFIXES = frozenset({".mp3", ".ogg", ".opus", ".m4a", ".wav"})
 
 _SAVED_TO = re.compile(
     r"(?:saved to|Saved to|Image saved to|Video saved to|TTS saved to)\s+"
-    r"([^\s\n\"']+\.(?:mp4|mov|webm|png|jpe?g|webp|gif|mp3|ogg|opus|m4a))",
+    r"([^\s\n\"']+\.(?:mp4|mov|webm|png|jpe?g|webp|gif|mp3|ogg|opus|m4a|wav))",
     re.IGNORECASE,
 )
 

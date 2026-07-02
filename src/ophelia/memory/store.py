@@ -87,6 +87,18 @@ class MemoryStore:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_guest_channel ON guest_messages(channel)"
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS humor_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    outbound TEXT NOT NULL,
+                    user_reply TEXT,
+                    score REAL NOT NULL DEFAULT 0,
+                    latency_s REAL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
             await db.commit()
 
     async def search_messages(self, query: str, limit: int = 8) -> list[dict]:
@@ -399,4 +411,58 @@ class MemoryStore:
         return [
             {"role": row["role"], "content": row["content"], "channel": channel}
             for row in reversed(rows)
+        ]
+
+    async def record_humor_outbound(self, text: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO humor_events (outbound, score, created_at) VALUES (?, 0, ?)",
+                (text, time.time()),
+            )
+            await db.commit()
+
+    async def record_humor_reaction(
+        self,
+        outbound: str,
+        *,
+        user_reply: str,
+        score: float,
+        latency_s: float,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE humor_events
+                SET user_reply = ?, score = ?, latency_s = ?
+                WHERE id = (
+                    SELECT id FROM humor_events
+                    WHERE outbound = ? AND user_reply IS NULL
+                    ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (user_reply, score, latency_s, outbound),
+            )
+            await db.commit()
+
+    async def humor_hints(self, limit: int = 4) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT outbound, user_reply, score
+                FROM humor_events
+                WHERE user_reply IS NOT NULL
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "outbound": row["outbound"],
+                "user_reply": row["user_reply"],
+                "score": row["score"],
+            }
+            for row in rows
         ]

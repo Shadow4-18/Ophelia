@@ -39,6 +39,7 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
                 "Chat channels (Telegram / Discord)",
                 "Web search (DeepSeek/OpenAI have no built-in search)",
                 "Image generation (backends + NSFW)",
+                "Voice / TTS (ElevenLabs, Kokoro local, OpenAI, xAI)",
                 "Persona (SOUL.md)",
                 "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
                 "Features (consciousness, games, ...)",
@@ -59,19 +60,21 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         elif idx == 3:
             _section_image_backends()
         elif idx == 4:
-            _section_persona()
+            _section_tts()
         elif idx == 5:
-            _section_phone_body(on_phone)
+            _section_persona()
         elif idx == 6:
-            _section_features(on_phone)
+            _section_phone_body(on_phone)
         elif idx == 7:
-            _section_health_check()
+            _section_features(on_phone)
         elif idx == 8:
+            _section_health_check()
+        elif idx == 9:
             print()
             run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-        elif idx == 9:
+        elif idx == 10:
             break
-        if idx != 9:
+        if idx != 10:
             pause()
 
     print()
@@ -1354,6 +1357,103 @@ def _section_image_backends() -> None:
               f"{s.image_nsfw_provider_resolved()}")
     else:
         print("  NSFW tier: OFF (explicit image requests will be refused)")
+
+
+def _section_tts() -> None:
+    """Pick the TTS backend used for voice replies / text_to_speech."""
+    current = (read_env_key("OPHELIA_TTS_PROVIDER") or "auto").strip().lower()
+    options = [
+        ("auto", "Auto (first configured: ElevenLabs -> Kokoro -> OpenAI -> xAI)"),
+        ("elevenlabs", "ElevenLabs (cloud — best quality, free tier available)"),
+        ("kokoro", "Kokoro-82M (LOCAL server — offline, natural voices)"),
+        ("openai", "OpenAI TTS (cloud — gpt-4o-mini-tts)"),
+        ("xai", "xAI Grok TTS (cloud — legacy default)"),
+    ]
+    labels = [label for _, label in options]
+    default = next((i for i, (k, _) in enumerate(options) if k == current), 0)
+    pick = radiolist(
+        "Choose TTS backend (voice replies + text_to_speech tool)",
+        labels,
+        selected=default,
+        description=(
+            "All backends work from Termux — cloud ones are just HTTP calls.\n"
+            "  Kokoro runs fully offline via a small local server (see README\n"
+            "  'Better voices' for the Termux install steps)."
+        ),
+    )
+    if pick < 0:
+        return
+    provider = options[pick][0]
+    updates: dict[str, str | None] = {"OPHELIA_TTS_PROVIDER": provider}
+
+    if provider == "elevenlabs":
+        key = prompt_text(
+            "ELEVENLABS_API_KEY (https://elevenlabs.io -> profile -> API keys)",
+            secret=True,
+            default=read_env_key("ELEVENLABS_API_KEY") or "",
+        )
+        if key:
+            updates["ELEVENLABS_API_KEY"] = key
+        voice = prompt_text(
+            "ELEVENLABS_VOICE_ID",
+            default=read_env_key("ELEVENLABS_VOICE_ID") or "21m00Tcm4TlvDq8ikWAM",
+            hint="Voice ID from the ElevenLabs voice library (default = Rachel)",
+        )
+        if voice:
+            updates["ELEVENLABS_VOICE_ID"] = voice
+    elif provider == "kokoro":
+        base = prompt_text(
+            "KOKORO_TTS_URL",
+            default=read_env_key("KOKORO_TTS_URL") or "http://127.0.0.1:8880/v1",
+            hint="Kokoro-FastAPI or `koko openai` server base URL",
+        )
+        updates["KOKORO_TTS_URL"] = base
+        voice = prompt_text(
+            "KOKORO_TTS_VOICE",
+            default=read_env_key("KOKORO_TTS_VOICE")
+            or "af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)",
+            hint="preset or mix: af_heart, af_bella(0.7)+bf_emma(0.3), ...",
+        )
+        if voice:
+            updates["KOKORO_TTS_VOICE"] = voice
+        spd = prompt_text(
+            "KOKORO_TTS_SPEED",
+            default=read_env_key("KOKORO_TTS_SPEED") or "1.0",
+            hint="0.85 thoughtful, 1.0 normal, 1.15 hyped",
+        )
+        if spd:
+            updates["KOKORO_TTS_SPEED"] = spd
+    elif provider == "openai":
+        if not read_env_key("OPENAI_API_KEY"):
+            key = prompt_text(
+                "OPENAI_API_KEY",
+                secret=True,
+                default="",
+            )
+            if key:
+                updates["OPENAI_API_KEY"] = key
+        voice = prompt_text(
+            "OPENAI_TTS_VOICE",
+            default=read_env_key("OPENAI_TTS_VOICE") or "nova",
+            hint="alloy, echo, fable, nova, onyx, shimmer, coral, sage",
+        )
+        if voice:
+            updates["OPENAI_TTS_VOICE"] = voice
+    elif provider == "xai":
+        voice = prompt_text(
+            "XAI_TTS_VOICE",
+            default=read_env_key("XAI_TTS_VOICE") or "eve",
+            hint="eve, ara, rex",
+        )
+        if voice:
+            updates["XAI_TTS_VOICE"] = voice
+
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    print(f"  Active TTS backend: {provider}")
+    if provider == "kokoro":
+        print("  Reminder: Kokoro-FastAPI on PC gives voice mixing + [pause:1s] expressions.")
+        print("  Termux Kokoros gives preset voices only. See README.")
 
 
 def _section_features(on_phone: bool) -> None:

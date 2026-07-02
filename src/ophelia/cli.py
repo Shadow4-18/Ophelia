@@ -643,6 +643,120 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
     return asyncio.run(_run())
 
 
+def cmd_tts_voices(_: argparse.Namespace) -> int:
+    """List Kokoro voices from the configured local server."""
+    import asyncio
+
+    from ophelia.media.voice import kokoro_list_voices, resolve_tts_provider
+
+    settings = Settings()
+    if resolve_tts_provider(settings) != "kokoro" and not settings.kokoro_tts_url:
+        print("Set KOKORO_TTS_URL (and OPHELIA_TTS_PROVIDER=kokoro) first.")
+        return 1
+
+    async def _run() -> int:
+        try:
+            voices = await kokoro_list_voices(settings)
+        except Exception as e:
+            print(f"Could not reach Kokoro server: {e}")
+            return 1
+        if not voices:
+            print("(no voices returned — is Kokoro-FastAPI running?)")
+            return 1
+        print(f"{'id':<24} name")
+        print("-" * 40)
+        for v in voices:
+            if isinstance(v, dict):
+                vid = v.get("id") or v.get("name") or str(v)
+                name = v.get("name") or vid
+                print(f"{vid:<24} {name}")
+            else:
+                print(v)
+        print(f"\n{len(voices)} voices. Mix example: af_bella(0.7)+bf_emma(0.3)")
+        return 0
+
+    return asyncio.run(_run())
+
+
+def cmd_tts_combine(args: argparse.Namespace) -> int:
+    """Blend Kokoro voice packs and save a .pt tensor locally."""
+    import asyncio
+
+    from ophelia.config import OPHELIA_HOME, ensure_dirs
+    from ophelia.media.voice import kokoro_combine_voices
+
+    settings = Settings()
+    ensure_dirs(settings)
+    out = Path(args.output).expanduser()
+    if out.suffix != ".pt":
+        out = out.with_suffix(".pt")
+    if not out.is_absolute():
+        out = OPHELIA_HOME / "voices" / out.name
+
+    async def _run() -> int:
+        try:
+            path = await kokoro_combine_voices(args.expression, out, settings=settings)
+        except Exception as e:
+            print(f"Combine failed: {e}")
+            print("Requires Kokoro-FastAPI with allow_local_voice_saving enabled.")
+            return 1
+        print(f"Saved combined voice: {path}")
+        print("Use inline mix in KOKORO_TTS_VOICE, or load this .pt on the Kokoro server.")
+        return 0
+
+    return asyncio.run(_run())
+
+
+def cmd_tts_speak(args: argparse.Namespace) -> int:
+    """Test TTS synthesis (expressions, speed, voice mix)."""
+    import asyncio
+
+    from ophelia.media.voice import resolve_tts_provider, synthesize
+
+    settings = Settings()
+    ensure_dirs(settings)
+    out = Path(args.output).expanduser() if args.output else settings.data_dir / "tts_test.mp3"
+    voice = args.voice or None
+    speed = args.speed
+
+    async def _run() -> int:
+        provider = resolve_tts_provider(settings)
+        bearer = None
+        if provider == "xai":
+            stack = build_provider_stack(settings)
+            xai = stack.xai_backend()
+            if not xai:
+                print("No xAI credentials for TTS.")
+                return 1
+            bearer = await xai.bearer_fresh()
+        try:
+            path = await synthesize(
+                args.text,
+                out,
+                settings=settings,
+                xai_bearer=bearer,
+                voice=voice,
+                speed=speed,
+            )
+        except Exception as e:
+            print(f"TTS failed ({provider}): {e}")
+            return 1
+        print(f"Provider: {provider}")
+        print(f"Saved: {path}")
+        if args.play:
+            import shutil
+
+            player = shutil.which("termux-media-player") or shutil.which("mpv")
+            if player:
+                proc = await asyncio.create_subprocess_exec(player, str(path))
+                await proc.wait()
+            else:
+                print("(no player found — open the file manually)")
+        return 0
+
+    return asyncio.run(_run())
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """View the universal chat log: every message sent to/from Ophelia, with
     media. Filters by user/channel, direction, media-only, date, and limit."""
@@ -913,6 +1027,32 @@ def main(argv: list[str] | None = None) -> int:
         "--limit", type=int, default=80, help="Max entries (most recent first)"
     )
     p_logs.set_defaults(func=cmd_logs)
+
+    p_tts = sub.add_parser("tts", help="TTS tools (Kokoro voices, mixing, test speak)")
+    tts_sub = p_tts.add_subparsers(dest="tts_cmd", required=True)
+    tts_sub.add_parser("voices", help="List voices from Kokoro-FastAPI server").set_defaults(
+        func=cmd_tts_voices
+    )
+    p_combine = tts_sub.add_parser(
+        "combine", help="Blend voice packs (Kokoro-FastAPI) → ~/.ophelia/voices/*.pt"
+    )
+    p_combine.add_argument(
+        "expression",
+        help='Mix expression, e.g. "af_bella(0.7)+bf_emma(0.3)"',
+    )
+    p_combine.add_argument(
+        "-o", "--output", default="ophelia_mix.pt", help="Output filename"
+    )
+    p_combine.set_defaults(func=cmd_tts_combine)
+    p_speak = tts_sub.add_parser("speak", help="Test TTS with expressions / speed")
+    p_speak.add_argument("text", help='Text to speak (Kokoro: embed [pause:1s] pauses)')
+    p_speak.add_argument("--voice", default=None, help="Voice override / mix")
+    p_speak.add_argument("--speed", type=float, default=None, help="Speech rate")
+    p_speak.add_argument("-o", "--output", default=None, help="Output audio path")
+    p_speak.add_argument(
+        "--play", action="store_true", help="Play via termux-media-player / mpv"
+    )
+    p_speak.set_defaults(func=cmd_tts_speak)
 
     args = parser.parse_args(argv)
     if not args.command:

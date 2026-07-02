@@ -23,7 +23,7 @@ from ophelia.providers.router import (
     XAIBackend,
     build_provider_stack,
 )
-from ophelia.mind.drives import DriveState
+from ophelia.media.tts_context import tts_system_block
 from ophelia.tools.registry import ToolRegistry
 
 log = structlog.get_logger()
@@ -77,6 +77,8 @@ class AgentLoop:
         self.use_tools = use_tools
         self._memory_entries, self._user_entries = self._load_static_memories()
         self._hermes_db = self._hermes_state_path()
+        self.life = None  # LifeContext — set by Orchestrator
+        self.humor = None  # HumorTracker — set by Orchestrator
         # Pending tool-chain to resume on the next turn if the previous turn hit
         # the tool-round cap without getting stuck in a repeat loop.
         # Maps store_channel -> {"messages": [...], "signature": str}
@@ -170,15 +172,33 @@ class AgentLoop:
         drives_block = self.drives.to_context_block()
         body = self.body_status or ""
         skills = skills_context_block()
-        # Self-improvement context: recent lessons + recent inner thoughts.
         self_improve = await self._self_improvement_block()
+        tts_block = tts_system_block(self.settings)
+        life_block = ""
+        humor_block = ""
+        if self.life is not None:
+            await self.life.refresh()
+            life_block = self.life.to_context_block()
+        if self.humor is not None:
+            humor_block = await self.humor.hints_for_prompt()
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
             user_entries=self._user_entries,
             psyche_block=self.psyche.to_context_block(drives_block),
             extra="\n\n".join(
-                x for x in (body, skills, self_improve, honcho_ctx, extra) if x
+                x
+                for x in (
+                    body,
+                    life_block,
+                    skills,
+                    self_improve,
+                    humor_block,
+                    tts_block,
+                    honcho_ctx,
+                    extra,
+                )
+                if x
             ),
         )
 

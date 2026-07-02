@@ -28,7 +28,7 @@ from ophelia.channels.telegram_util import ensure_polling_mode
 from ophelia.media.vision_input import describe_image_file
 from ophelia.config import OPHELIA_HOME, Settings
 from ophelia.core.signals import Signals
-from ophelia.media.voice import synthesize_speech, transcribe_audio
+from ophelia.media.voice import resolve_tts_provider, synthesize, transcribe_audio
 from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
@@ -750,21 +750,24 @@ class TelegramGateway:
         )
         if voice_on and len(reply) < 800 and update.message:
             try:
-                bearer = await self._bearer()
-                if bearer:
-                    mp3 = self._voice_dir / f"out_{update.message.message_id}.mp3"
-                    await synthesize_speech(
-                        reply[:1000],
-                        mp3,
-                        bearer=bearer,
-                        base_url=self.settings.xai_base_url,
-                        voice_id=self.settings.tts_voice_id,
-                    )
-                    with mp3.open("rb") as audio:
+                bearer = None
+                if resolve_tts_provider(self.settings) == "xai":
+                    bearer = await self._bearer()
+                out = self._voice_dir / f"out_{update.message.message_id}.mp3"
+                audio_path = await synthesize(
+                    reply[:1000],
+                    out,
+                    settings=self.settings,
+                    xai_bearer=bearer,
+                )
+                with audio_path.open("rb") as audio:
+                    if audio_path.suffix.lower() in (".ogg", ".mp3"):
                         await update.message.reply_voice(voice=InputFile(audio))
-                    # Voice went out, not text — no message to edit a button onto.
-                    self._last_text_msg = None
-                    return
+                    else:
+                        await update.message.reply_audio(audio=InputFile(audio))
+                # Voice went out, not text — no message to edit a button onto.
+                self._last_text_msg = None
+                return
             except Exception as e:
                 log.warning("telegram.tts_fallback", error=str(e))
         await self._reply_text(update, reply)
@@ -1072,7 +1075,48 @@ class TelegramGateway:
                     hint=hint or None,
                 )
 
-    async def send_proactive_media(self, path) -> None:
+    async def send_proactive_voice(self, text: str) -> None:
+        """Spontaneous voice note to owner (Kokoro / configured TTS)."""
+        if not self._app or not text.strip():
+            return
+        recipients = self._proactive_recipients()
+        if not recipients:
+            return
+        try:
+            bearer = None
+            if resolve_tts_provider(self.settings) == "xai":
+                bearer = await self._bearer()
+            out = self._voice_dir / f"spontaneous_{int(time.time())}.mp3"
+            speed = None
+            if hasattr(self.session.agent, "life") and self.session.agent.life:
+                speed = self.session.agent.life.voice_speed()
+            audio_path = await synthesize(
+                text[:800],
+                out,
+                settings=self.settings,
+                xai_bearer=bearer,
+                speed=speed,
+            )
+        except Exception as e:
+            log.warning("telegram.proactive_voice_tts_failed", error=str(e))
+            await self.send_proactive(text)
+            return
+        for uid in recipients:
+            try:
+                with audio_path.open("rb") as audio:
+                    if audio_path.suffix.lower() in (".ogg", ".mp3"):
+                        await self._app.bot.send_voice(
+                            chat_id=uid, voice=InputFile(audio)
+                        )
+                    else:
+                        await self._app.bot.send_audio(
+                            chat_id=uid, audio=InputFile(audio)
+                        )
+                log.info("telegram.proactive_voice_sent", user=uid)
+            except Exception as e:
+                log.warning("telegram.proactive_voice_failed", user=uid, error=str(e))
+
+    async def send_proactive_media(self, path, *, caption: str = "") -> None:
         """Send a generated media file (image/video/audio) to all recipients."""
         if not self._app:
             return
@@ -1084,16 +1128,23 @@ class TelegramGateway:
         kind = media_kind(p)
         if not kind:
             return
+        cap = (caption or "")[:900]
         recipients = self._proactive_recipients()
         for uid in recipients:
             try:
                 with p.open("rb") as f:
                     if kind == "photo":
-                        await self._app.bot.send_photo(chat_id=uid, photo=InputFile(f))
+                        await self._app.bot.send_photo(
+                            chat_id=uid, photo=InputFile(f), caption=cap or None
+                        )
                     elif kind == "video":
-                        await self._app.bot.send_video(chat_id=uid, video=InputFile(f))
+                        await self._app.bot.send_video(
+                            chat_id=uid, video=InputFile(f), caption=cap or None
+                        )
                     elif kind == "audio":
-                        await self._app.bot.send_audio(chat_id=uid, audio=InputFile(f))
+                        await self._app.bot.send_audio(
+                            chat_id=uid, audio=InputFile(f), caption=cap or None
+                        )
                 log.info("telegram.notify_media_sent", user=uid, kind=kind, path=str(p))
             except Exception as e:
                 log.warning("telegram.notify_media_failed", user=uid, error=str(e))

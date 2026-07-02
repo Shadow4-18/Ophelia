@@ -21,8 +21,9 @@ from ophelia.memory.store import MemoryStore
 from ophelia.mind.drives import DriveState
 from ophelia.mind.goals import GoalStore
 from ophelia.mind.initiative import InitiativeGovernor
-from ophelia.mind.inner_log import InnerMonologue
-from ophelia.mind.psyche import PsycheState
+from ophelia.config import Settings
+from ophelia.mind.life_context import LifeContext
+from ophelia.mind.humor_tracker import HumorTracker
 
 log = structlog.get_logger()
 
@@ -71,8 +72,12 @@ class ConsciousnessLoop:
         user_channel: str | None,
         notify: Callable[[str], Awaitable[None]],
         notify_media: Callable[[list], Awaitable[None]] | None = None,
+        notify_voice: Callable[[str], Awaitable[None]] | None = None,
         action_cooldown_seconds: int = 0,
         idle_nudge_rotate: bool = True,
+        life: LifeContext | None = None,
+        settings: Settings | None = None,
+        humor: HumorTracker | None = None,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -89,6 +94,10 @@ class ConsciousnessLoop:
         self.user_channel = user_channel
         self.notify = notify
         self.notify_media = notify_media
+        self.notify_voice = notify_voice
+        self.life = life
+        self.settings = settings
+        self.humor = humor
         self.action_cooldown = max(0, int(action_cooldown_seconds))
         self.idle_nudge_rotate = bool(idle_nudge_rotate)
         self._nudge_idx = 0
@@ -101,7 +110,10 @@ class ConsciousnessLoop:
 
         while self._running and not self.signals.terminate:
             wait = self.psyche.tick_interval_seconds(self.base_interval)
-            await _sleep(wait)
+            if self.life is not None:
+                await self.life.refresh()
+                wait = int(wait * self.life.consciousness_interval_multiplier())
+            await _sleep(max(15, wait))
 
             if self.signals.terminate:
                 continue
@@ -211,7 +223,34 @@ class ConsciousnessLoop:
                 f"{int(idle_seconds / 60)}m with nothing due. If something genuinely "
                 f"moves you, lean toward {mode}. Otherwise stay silent — that's the "
                 f"correct default."
+                )
+
+        if (
+            self.games
+            and self.settings
+            and not self.games.session_active()
+            and self.drives.boredom >= self.settings.auto_game_boredom
+            and (self.life is None or not self.life.is_owner_at_work())
+        ):
+            game_hint += (
+                "\n\nBOREDOM HIGH — you may open a phone game yourself "
+                "(phone_game_open) and play via explore/act. Self-initiated play is allowed."
             )
+
+        life_block = ""
+        sleep_hint = ""
+        if self.life is not None:
+            life_block = "\n" + self.life.to_context_block()
+            if self.life.is_sleep_mode():
+                sleep_hint = (
+                    "\n\nSLEEP MODE: owner likely asleep — dreamier, slower thoughts; "
+                    "voice should be soft; minimize outreach unless urgent."
+                )
+            elif self.life.is_owner_at_work():
+                sleep_hint = (
+                    "\n\nOWNER AT WORK: stay quiet unless messaged. "
+                    "Silent/reflect preferred over message."
+                )
 
         context_block = ""
         if recent_activity:
@@ -234,6 +273,8 @@ class ConsciousnessLoop:
             ),
             system_extra=(
                 CONSCIOUSNESS_PROMPT
+                + life_block
+                + sleep_hint
                 + "\n"
                 + self.drives.to_context_block()
                 + "\n"
@@ -342,8 +383,9 @@ class ConsciousnessLoop:
             if creative:
                 creative_hint = (
                     " You're feeling creative — go ahead and call generate_image / "
-                    "generate_video / text_to_speech to actually make it. The result "
-                    "will be delivered to the user automatically."
+                    "generate_video / text_to_speech to actually make it. For voice, "
+                    "use expressive Kokoro text: [pause:0.8s] beats, speed 0.85–1.15, "
+                    "write for the ear. The result will be delivered automatically."
                 )
             result = await self.agent.run_turn(
                 channel,
@@ -366,6 +408,11 @@ class ConsciousnessLoop:
                 media_paths = consume()
                 if media_paths:
                     try:
+                        cap = (outward or "look at this")[:200] if (
+                            self.settings and self.settings.proactive_share_enabled
+                        ) else ""
+                        await self.notify_media(media_paths, caption=cap)
+                    except TypeError:
                         await self.notify_media(media_paths)
                     except Exception as e:
                         log.warning("consciousness.media_forward_failed", error=str(e))
@@ -375,6 +422,8 @@ class ConsciousnessLoop:
 
         if action in ("message", "act", "explore") and outward:
             allowed, reason = self.governor.allow_outreach()
+            if self.life and self.life.should_minimize_outreach():
+                allowed, reason = False, "owner_asleep_or_work"
             if not allowed:
                 log.info("consciousness.outreach_blocked", reason=reason)
                 await self.memory.append_message(
@@ -392,7 +441,21 @@ class ConsciousnessLoop:
                     outward,
                     metadata={"type": "spontaneous", "pressure": pressure},
                 )
-            await self.notify(outward)
+            if (
+                self.settings
+                and self.settings.spontaneous_voice_enabled
+                and self.notify_voice
+                and action == "message"
+            ):
+                try:
+                    await self.notify_voice(outward)
+                except Exception as e:
+                    log.warning("consciousness.voice_failed", error=str(e))
+                    await self.notify(outward)
+            else:
+                await self.notify(outward)
+            if self.humor:
+                await self.humor.note_outbound(outward)
             self.governor.record_outreach(action, pressure, outward)
             await self.signals.mark_action()
             log.info(

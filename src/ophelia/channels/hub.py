@@ -88,7 +88,9 @@ class ChannelHub:
                 except Exception as e:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
 
-    async def broadcast_proactive_media(self, paths: list) -> None:
+    async def broadcast_proactive_media(
+        self, paths: list, *, caption: str = ""
+    ) -> None:
         """Forward media artifacts produced during an autonomous turn."""
         if not paths:
             return
@@ -100,9 +102,25 @@ class ChannelHub:
                 continue
             for p in paths:
                 try:
+                    await sender(p, caption=caption)
+                except TypeError:
                     await sender(p)
                 except Exception as e:
                     log.warning("hub.proactive_media_failed", platform=gw.platform, error=str(e))
+
+    async def broadcast_proactive_voice(self, text: str) -> None:
+        """Synthesize and send a spontaneous voice note to the owner."""
+        for gw in self._gateways:
+            if not gw.is_configured():
+                continue
+            sender = getattr(gw, "send_proactive_voice", None)
+            if not callable(sender):
+                continue
+            try:
+                await sender(text)
+                return
+            except Exception as e:
+                log.warning("hub.proactive_voice_failed", platform=gw.platform, error=str(e))
 
     async def prepare(self) -> None:
         """Start gateway APIs (e.g. Telegram bot) before consciousness outreach."""

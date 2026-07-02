@@ -12,7 +12,8 @@ import structlog
 from ophelia.config import Settings
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
-from ophelia.media.voice import synthesize_speech, transcribe_audio
+from ophelia.media.tts_context import tts_turn_extra
+from ophelia.media.voice import resolve_tts_provider, synthesize, transcribe_audio
 from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
@@ -101,7 +102,10 @@ class LocalListenLoop:
             reply = await self.agent.run_turn(
                 "listen:local",
                 text,
-                system_extra="User spoke aloud near the phone (local listen mode). Be concise for TTS.",
+                system_extra=(
+                    "User spoke aloud near the phone (local listen mode). Be concise for TTS.\n"
+                    + tts_turn_extra(self.settings, voice_reply=True)
+                ),
             )
         finally:
             await self.signals.set_agent_thinking(False)
@@ -111,12 +115,12 @@ class LocalListenLoop:
 
         mp3 = self.audio_dir / f"reply_{int(time.time())}.mp3"
         try:
-            await synthesize_speech(
+            bearer = token if resolve_tts_provider(self.settings) == "xai" else None
+            out = await synthesize(
                 reply[:800],
                 mp3,
-                bearer=token,
-                base_url=self.settings.xai_base_url,
-                voice_id=self.settings.tts_voice_id,
+                settings=self.settings,
+                xai_bearer=bearer,
             )
         except Exception as e:
             log.warning("listen.tts_failed", error=str(e))
@@ -124,9 +128,9 @@ class LocalListenLoop:
 
         player = shutil.which("termux-media-player") or shutil.which("mpv")
         if player and "termux-media-player" in player:
-            await asyncio.create_subprocess_exec("termux-media-player", str(mp3))
+            await asyncio.create_subprocess_exec("termux-media-player", str(out))
         elif player:
-            await asyncio.create_subprocess_exec(player, str(mp3))
+            await asyncio.create_subprocess_exec(player, str(out))
         else:
             log.info("listen.reply_text", reply=reply[:200])
 

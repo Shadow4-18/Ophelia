@@ -215,6 +215,35 @@ The inner loop is state-aware, not a fixed pulse:
 - **Rotating idle nudge** (`OPHELIA_TICK_IDLE_NUDGE_ROTATE`, default on) — when nothing's due and she's been idle a while, the suggested mode rotates (reflect → create → explore → social) so ticks aren't identical every time.
 - **Silence is the baseline** — the prompt frames a no-action tick as correct, not something she must justify; drives/initiative pressure still surface real urges.
 
+### Autonomous life (Termux / always-on)
+
+Features Ophelia suggested for Neuro-style presence — wired for a stationary
+home phone:
+
+| Feature | Config | What it does |
+|---------|--------|--------------|
+| **Life context** | `OPHELIA_TIMEZONE`, `OPHELIA_WORK_DAYS`, `OPHELIA_WORK_HOURS` | Authoritative date/time + inferred owner state in every prompt (fixes wrong day/location) |
+| **Sleep mode** | `OPHELIA_SLEEP_HOURS`, `OPHELIA_SLEEP_MODE` | Slower ticks, dreamier dreams, softer voice, blocks outreach |
+| **Wake word** | `OPHELIA_WAKE_WORD=true`, `OPHELIA_WAKE_WORD_NAME=ophelia` | Say her name → full listen → TTS reply (Termux mic) |
+| **Spontaneous voice** | `OPHELIA_SPONTANEOUS_VOICE=true` | Consciousness `message` → Telegram voice note (Kokoro) |
+| **Self-initiated games** | `OPHELIA_AUTO_GAME_BOREDOM=0.85` | High boredom → tick nudges `phone_game_open` |
+| **Screen commentary** | `OPHELIA_AMBIENT_COMMENTARY=true` | Occasional glance + one-line aside (rate-limited) |
+| **Personality alarm** | `OPHELIA_ALARMS=06:30,07:00` | In-character wake message (voice if enabled) |
+| **"Look at this"** | `OPHELIA_PROACTIVE_SHARE=true` | Autonomous media sent with caption |
+| **Humor calibration** | (automatic) | Tracks what landed vs flopped; hints in prompt |
+| **Dream / sleep cycle** | `OPHELIA_DREAM=true` | Faster consolidation when owner asleep |
+
+Example `.env` for warehouse shift (Thu–Fri–Wed–Tue nights):
+
+```env
+OPHELIA_TIMEZONE=America/New_York
+OPHELIA_WORK_DAYS=Thu,Wed,Tue,Fri
+OPHELIA_WORK_HOURS=18-06
+OPHELIA_SLEEP_HOURS=1-7
+OPHELIA_WAKE_WORD=true
+OPHELIA_SPONTANEOUS_VOICE=true
+```
+
 ### Telegram chat commands (remote control)
 
 Ophelia registers its own `/`-command menu with BotFather on startup, so any
@@ -354,13 +383,115 @@ Each line shows timestamp, direction (`<-` to her / `->` from her), channel,
 owner/guest, the message text, and the path to any attached media. Disable with
 `OPHELIA_CHAT_LOG=false`.
 
+## Voice / TTS backends
+
+Voice replies (`/voice on`), the local listen loop, and the `text_to_speech`
+tool all go through one configurable backend (`OPHELIA_TTS_PROVIDER`):
+
+| Backend | Quality | Cost | Works in Termux |
+|---------|---------|------|-----------------|
+| `elevenlabs` | Best-in-class | Free tier (~10k chars/mo), then paid | Yes — plain HTTPS |
+| `kokoro` | Very natural (Kokoro-82M) | Free, fully offline | Yes — local server on the phone |
+| `openai` | Good (`gpt-4o-mini-tts`) | Cheap API | Yes — plain HTTPS |
+| `xai` | OK (Grok voices: eve/ara/rex) | Included with xAI | Yes — plain HTTPS (legacy default) |
+
+`auto` (the default) picks the first configured of ElevenLabs → Kokoro →
+OpenAI → xAI. Configure via `ophelia setup` → "Voice / TTS", or in `.env`:
+
+```env
+OPHELIA_TTS_PROVIDER=auto
+ELEVENLABS_API_KEY=...            # elevenlabs
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+KOKORO_TTS_URL=http://127.0.0.1:8880/v1   # kokoro
+KOKORO_TTS_VOICE=af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)
+KOKORO_TTS_SPEED=1.0
+OPENAI_TTS_VOICE=nova             # openai (uses OPENAI_API_KEY)
+XAI_TTS_VOICE=eve                 # xai
+```
+
+Ophelia is taught to speak expressively when Kokoro is active: she embeds
+`[pause:0.8s]` beats in voice replies, varies `speed` via `text_to_speech`, and
+can mix voices for a unique sound. Use `/voice on` in Telegram so her text
+replies are spoken with full expression.
+
+### Kokoro expression & voice mixing (Neuro-style speech)
+
+**Requires [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)** on your PC
+(or LAN). The lighter Termux **Kokoros** server supports preset voices only —
+no mixing or inline pauses.
+
+| Feature | How | Example |
+|---------|-----|---------|
+| Voice mix | `KOKORO_TTS_VOICE` or `text_to_speech` `voice_id` | `af_bella(0.6)+bf_emma(0.4)` |
+| Speed | `KOKORO_TTS_SPEED` or tool `speed` param | `0.85` thoughtful, `1.15` hyped |
+| Pauses | embed in spoken text | `Well... [pause:0.8s] maybe.` |
+| Pronunciation | embed in text (English) | `[Ophelia](/oʊˈfiːliə/)` |
+
+CLI helpers:
+
+```bash
+ophelia tts voices                              # list server voices
+ophelia tts combine "af_bella(2)+af_heart(1)"   # save blended .pt locally
+ophelia tts speak "Hey. [pause:0.6s] You there?" --speed 1.05 --play
+```
+
+When `/voice on`, she writes voice replies for the ear — pauses, pacing, no
+markdown. The `text_to_speech` tool works mid-turn for spontaneous asides
+(streamer-style reactions).
+
+**Fine-tuning** (custom speaker from your own recordings) is a separate offline
+GPU workflow — train with a Kokoro recipe, export a voice pack, then use it
+on your Kokoro server. Ophelia picks it up automatically once the server
+exposes the voice name.
+
+### Kokoro fully offline on the phone (Termux, S21 Ultra)
+
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) is an 82M-parameter
+neural TTS that sounds dramatically better than robo-TTS and runs fine on a
+Snapdragon/Exynos flagship CPU. Ophelia talks to it through a small local
+OpenAI-compatible server. Two ways to get one:
+
+**On the phone (Termux, no cloud at all)** — build the Rust
+[Kokoros](https://github.com/lucasjinreal/Kokoros) server (there is also a
+Termux-tuned fork, [DevGitPit/Kokoros](https://github.com/DevGitPit/Kokoros)):
+
+```bash
+pkg install rust git binutils
+git clone https://github.com/lucasjinreal/Kokoros && cd Kokoros
+# model + voices (~350 MB, one-time)
+mkdir -p checkpoints data
+curl -L "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model.onnx" -o checkpoints/kokoro-v1.0.onnx
+curl -L "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" -o data/voices-v1.0.bin
+cargo build --release
+./target/release/koko openai --port 8880   # OpenAI-compatible TTS server
+```
+
+Then in Ophelia's `.env` on the phone:
+
+```env
+OPHELIA_TTS_PROVIDER=kokoro
+KOKORO_TTS_URL=http://127.0.0.1:8880/v1
+KOKORO_TTS_VOICE=af_heart
+```
+
+Run the server in its own tmux window next to `ophelia run`.
+
+**On the PC (phone connects over LAN/Tailscale)** — run
+[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
+(`docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest`) and point
+`KOKORO_TTS_URL` at the PC's address, e.g. `http://192.168.1.50:8880/v1`.
+Zero battery cost on the phone, still no third-party cloud.
+
+Voices: `af_heart`, `af_sky`, `af_bella`, `bf_emma` (British), `am_adam`,
+and ~50 more across 8 languages.
+
 ## New tools
 
 | Tool | Notes |
 |------|-------|
 | `web_search` / `fetch_url` | Pluggable backends — DuckDuckGo (free), Tavily, Serper, Brave (see Web search section) |
 | `generate_image` / `generate_video` | xAI / OpenAI / Ollama / Pollinations / A1111 / ComfyUI / fal / Replicate / Civitai / ModelsLab — saved to artifacts, auto-sent to chat (image supports an `nsfw` flag) |
-| `text_to_speech` | xAI TTS — saved mp3, auto-sent to chat |
+| `text_to_speech` | Expressive multi-backend TTS — Kokoro pauses/speed/voice mix, auto-sent to chat |
 | `send_file` | Explicitly send any saved file (audio/video/image/doc) to the chat mid-turn |
 | `save_skill` | Learn procedures → `~/.ophelia/skills/` |
 | MCP bridge | `~/.ophelia/mcp.json` + `pip install mcp` |

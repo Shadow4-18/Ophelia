@@ -17,7 +17,7 @@ from ophelia.android.vision import ScreenVision
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
 from ophelia.memory.store import MemoryStore
-from ophelia.mind.drives import DriveState
+from ophelia.media.tts_context import tts_turn_extra
 
 log = structlog.get_logger()
 
@@ -154,7 +154,13 @@ class ChannelSession:
             logged_media_reply = _logged_media
 
         try:
-            out = await self.agent.run_turn(channel, text, is_owner=is_owner)
+            voice_on = self.voice_enabled(channel, settings.voice_reply_default)
+            turn_extra = tts_turn_extra(settings, voice_reply=voice_on)
+            if is_owner and self.agent.humor:
+                await self.agent.humor.score_inbound_reply(text)
+            out = await self.agent.run_turn(
+                channel, text, is_owner=is_owner, system_extra=turn_extra
+            )
             # Only the owner's messages shape her drives/will. Guests don't.
             if is_owner:
                 self.drives.on_user_message()

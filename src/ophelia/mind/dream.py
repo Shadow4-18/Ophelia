@@ -63,7 +63,10 @@ class DreamLoop:
         self._running = True
         log.info("dream.started", interval_hours=self.interval / 3600)
         while self._running and not self.signals.terminate:
-            await asyncio.sleep(self.interval)
+            interval = self.interval
+            if self.agent.life and self.agent.life.is_sleep_mode():
+                interval = min(interval, 3600.0)
+            await asyncio.sleep(interval)
             if self.signals.terminate or self.signals.autonomy_paused:
                 continue
             if self.signals.user_talking or self.signals.agent_thinking:
@@ -92,8 +95,14 @@ class DreamLoop:
         model = self.agent._model("curator")
         gate = get_model_gate()
         provider = self.agent.stack.name("curator")  # type: ignore[attr-defined]
+        dream_prompt = DREAM_PROMPT
+        if self.agent.life and self.agent.life.is_sleep_mode():
+            dream_prompt += (
+                "\n\nOwner likely asleep — deep sleep consolidation. "
+                "More abstract, dreamlike. Optional soft whisper only if meaningful."
+            )
         messages = [
-            {"role": "system", "content": DREAM_PROMPT},
+            {"role": "system", "content": dream_prompt},
             {"role": "user", "content": f"Recent experience:\n{transcript}\n\nRecent inner thoughts:\n{inner_tail or '(none)'}"},
         ]
         from ophelia.providers.fallback import call_with_fallback

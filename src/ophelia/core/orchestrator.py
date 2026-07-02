@@ -15,15 +15,20 @@ from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.core.agent_loop import AgentLoop
 from ophelia.core.signals import Signals
 from ophelia.media.listen_loop import LocalListenLoop
+from ophelia.media.wake_listen import WakeWordListenLoop
 from ophelia.memory.curator import MemoryCurator
 from ophelia.memory.honcho_client import HonchoClient, load_honcho_config
 from ophelia.memory.store import MemoryStore
+from ophelia.mind.alarms import AlarmLoop
+from ophelia.mind.ambient_commentary import AmbientCommentaryLoop
 from ophelia.mind.consciousness import ConsciousnessLoop
 from ophelia.mind.dream import DreamLoop
 from ophelia.mind.drives import DriveState
 from ophelia.mind.goals import GoalStore
+from ophelia.mind.humor_tracker import HumorTracker
 from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.mind.inner_log import InnerMonologue
+from ophelia.mind.life_context import LifeContext
 from ophelia.mind.psyche import PsycheState
 from ophelia.providers.errors import api_error_detail
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
@@ -140,6 +145,13 @@ class Orchestrator:
         self.consciousness: ConsciousnessLoop | None = None
         self.dream: DreamLoop | None = None
         self.listen: LocalListenLoop | None = None
+        self.wake_listen: WakeWordListenLoop | None = None
+        self.life = LifeContext(settings, self.signals)
+        self.humor = HumorTracker(self.memory)
+        self.agent.life = self.life
+        self.agent.humor = self.humor
+        self.alarms: AlarmLoop | None = None
+        self.ambient: AmbientCommentaryLoop | None = None
 
     def _ensure_goals_file(self) -> None:
         dest = OPHELIA_HOME / "goals.yaml"
@@ -363,6 +375,14 @@ class Orchestrator:
     async def _notify_spontaneous(self, text: str) -> None:
         await self.hub.broadcast_proactive(text)
 
+    async def _notify_spontaneous_voice(self, text: str) -> None:
+        await self.hub.broadcast_proactive_voice(text)
+
+    async def _notify_spontaneous_media(
+        self, paths: list, *, caption: str = ""
+    ) -> None:
+        await self.hub.broadcast_proactive_media(paths, caption=caption)
+
     async def _notify_inner_mirror(self, text: str) -> None:
         await self.hub.broadcast_proactive(text)
 
@@ -442,9 +462,13 @@ class Orchestrator:
                 initiative_threshold=self.settings.initiative_threshold,
                 user_channel=self.settings.primary_user_channel(),
                 notify=self._notify_spontaneous,
-                notify_media=self.hub.broadcast_proactive_media,
+                notify_media=self._notify_spontaneous_media,
+                notify_voice=self._notify_spontaneous_voice,
                 action_cooldown_seconds=self.settings.tick_action_cooldown_seconds,
                 idle_nudge_rotate=self.settings.tick_idle_nudge_rotate,
+                life=self.life,
+                settings=self.settings,
+                humor=self.humor,
             )
             tasks.append(asyncio.create_task(self.consciousness.run()))
 
@@ -459,9 +483,36 @@ class Orchestrator:
             )
             tasks.append(asyncio.create_task(self.dream.run()))
 
-        self.listen = LocalListenLoop(self.settings, self.agent, self.signals)
-        if self.listen.available():
-            tasks.append(asyncio.create_task(self.listen.run()))
+        self.wake_listen = WakeWordListenLoop(self.settings, self.agent, self.signals)
+        if self.wake_listen.available():
+            tasks.append(asyncio.create_task(self.wake_listen.run()))
+        else:
+            self.listen = LocalListenLoop(self.settings, self.agent, self.signals)
+            if self.listen.available():
+                tasks.append(asyncio.create_task(self.listen.run()))
+
+        if self.settings.alarms.strip():
+            self.alarms = AlarmLoop(
+                self.settings,
+                self.agent,
+                self.signals,
+                self.life,
+                notify_text=self._notify_spontaneous,
+                notify_voice=self._notify_spontaneous_voice,
+            )
+            tasks.append(asyncio.create_task(self.alarms.run()))
+
+        if self.vision and self.settings.ambient_commentary_enabled:
+            self.ambient = AmbientCommentaryLoop(
+                self.settings,
+                self.agent,
+                self.signals,
+                self.life,
+                self.governor,
+                self.vision,
+                notify=self._notify_spontaneous,
+            )
+            tasks.append(asyncio.create_task(self.ambient.run()))
 
         if self.settings.greet_on_start and self.hub.configured_names():
             tasks.append(asyncio.create_task(self._greet_on_start()))
@@ -472,7 +523,9 @@ class Orchestrator:
             channels=self.hub.configured_names(),
             consciousness=self.settings.consciousness_on(),
             dream=self.settings.dream_enabled,
-            listen=self.listen.available(),
+            listen=self.wake_listen.available()
+            if self.wake_listen
+            else bool(self.listen and self.listen.available()),
             curator=bool(self.curator),
             inner=bool(self.inner),
             games=bool(self.games),
@@ -497,6 +550,12 @@ class Orchestrator:
                 self.dream.stop()
             if self.listen:
                 self.listen.stop()
+            if self.wake_listen:
+                self.wake_listen.stop()
+            if self.alarms:
+                self.alarms.stop()
+            if self.ambient:
+                self.ambient.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

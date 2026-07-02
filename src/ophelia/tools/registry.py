@@ -218,14 +218,35 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "text_to_speech",
-            "description": "Convert text to speech audio; returns path to saved file.",
+            "description": (
+                "Speak aloud — synthesizes expressive audio and auto-sends to chat. "
+                "With Kokoro: embed [pause:0.8s] for beats, use voice mixes like "
+                "af_bella(0.6)+bf_emma(0.4), and set speed 0.85–1.2 for mood."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string"},
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "Speakable text. Kokoro: use [pause:1s] pauses and "
+                            "[word](/ipa/) pronunciation. Write for the ear."
+                        ),
+                    },
                     "voice_id": {
                         "type": "string",
-                        "description": "Built-in voice, e.g. eve, ara, rex",
+                        "description": (
+                            "Optional voice override. Kokoro: preset or mix "
+                            "(af_heart, af_bella(0.7)+bf_emma(0.3)). "
+                            "xAI: eve/ara/rex. OpenAI: nova/alloy/..."
+                        ),
+                    },
+                    "speed": {
+                        "type": "number",
+                        "description": (
+                            "Speech rate (Kokoro/OpenAI). 0.85 = soft/thoughtful, "
+                            "1.0 = normal, 1.15 = excited. Omit for default."
+                        ),
                     },
                 },
                 "required": ["text"],
@@ -770,23 +791,43 @@ class ToolRegistry:
         except Exception as e:
             return f"sqlite_exec error: {e}"
 
-    async def _text_to_speech(self, text: str, voice_id: str = "eve") -> str:
-        import httpx
+    async def _text_to_speech(
+        self, text: str, voice_id: str = "", speed: float | None = None
+    ) -> str:
+        from ophelia.media.voice import resolve_tts_provider, synthesize
 
-        xai = self._xai()
-        token = xai.bearer()
-        if not token:
-            return "No xAI credentials for TTS."
+        provider = resolve_tts_provider(self.settings)
+        bearer = None
+        if provider == "xai":
+            xai = self._xai()
+            bearer = xai.bearer()
+            if not bearer:
+                return "No xAI credentials for TTS."
+
+        settings = self.settings
+        voice_override = voice_id or None
+        if voice_id:
+            settings = settings.model_copy(
+                update={
+                    "tts_voice_id": voice_id,
+                    "elevenlabs_voice_id": voice_id,
+                    "openai_tts_voice": voice_id,
+                    "kokoro_tts_voice": voice_id,
+                }
+            )
 
         out = self.artifacts_dir / f"tts_{abs(hash(text)) % 10**8}.mp3"
-        async with httpx.AsyncClient(timeout=60.0) as http:
-            r = await http.post(
-                f"{xai.settings.xai_base_url.rstrip('/')}/tts",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"text": text, "voice_id": voice_id, "language": "en"},
+        try:
+            out = await synthesize(
+                text,
+                out,
+                settings=settings,
+                xai_bearer=bearer,
+                voice=voice_override,
+                speed=speed,
             )
-            r.raise_for_status()
-            out.write_bytes(r.content)
+        except Exception as e:
+            return f"TTS failed ({provider}): {e}"
         result = f"TTS saved to {out}"
         self._record_artifacts_from_text(result)
         return result
