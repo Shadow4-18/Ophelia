@@ -109,7 +109,13 @@ class ChannelHub:
                     log.warning("hub.proactive_media_failed", platform=gw.platform, error=str(e))
 
     async def broadcast_proactive_voice(self, text: str) -> None:
-        """Synthesize and send a spontaneous voice note to the owner."""
+        """Synthesize and send a spontaneous voice note to the owner.
+
+        Tier C #11: send to ALL configured gateways (Telegram + Discord),
+        not just the first one that succeeds — true parity means Discord
+        users get voice notes too, even when Telegram is also configured.
+        """
+        sent_any = False
         for gw in self._gateways:
             if not gw.is_configured():
                 continue
@@ -118,9 +124,13 @@ class ChannelHub:
                 continue
             try:
                 await sender(text)
-                return
+                sent_any = True
             except Exception as e:
                 log.warning("hub.proactive_voice_failed", platform=gw.platform, error=str(e))
+        if not sent_any:
+            # No gateway could send voice — fall back to text so the message
+            # isn't lost entirely.
+            await self.broadcast_proactive(text)
 
     async def prepare(self) -> None:
         """Start gateway APIs (e.g. Telegram bot) before consciousness outreach."""

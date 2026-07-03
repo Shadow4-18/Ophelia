@@ -79,10 +79,19 @@ class AgentLoop:
         self._hermes_db = self._hermes_state_path()
         self.life = None  # LifeContext — set by Orchestrator
         self.humor = None  # HumorTracker — set by Orchestrator
+        self.director = None  # Director — set by Orchestrator (Tier A #1)
+        self.voice_mind = None  # VoiceMind — set by Orchestrator (Tier A #4)
         # Pending tool-chain to resume on the next turn if the previous turn hit
         # the tool-round cap without getting stuck in a repeat loop.
         # Maps store_channel -> {"messages": [...], "signature": str}
         self._pending_resume: dict[str, dict[str, Any]] = {}
+        # Tier C #14 follow-up: per-channel count of consecutive autonomous
+        # continuations. Capped at MAX_CONTINUATIONS to prevent a stuck task
+        # from monopolizing every consciousness tick forever. Reset whenever a
+        # fresh (non-continuation) turn completes on the channel.
+        self._continuation_count: dict[str, int] = {}
+
+    MAX_CONTINUATIONS = 6
 
     def _hermes_state_path(self) -> Path | None:
         for p in (
@@ -374,6 +383,112 @@ class AgentLoop:
             role="consciousness",
         )
 
+    def pending_resume_for(self, channel: str) -> dict[str, Any] | None:
+        """Tier C #14: peek at the stashed tool-round resume for a channel.
+
+        Returns the pending resume dict if one exists (and isn't stuck), else
+        None. Used by the consciousness loop to decide whether to fire a
+        continuation turn instead of a fresh tick, so long autonomous game /
+        image sessions pick up where they left off rather than dying at the
+        tool-round cap.
+
+        Follow-up cap: returns None once the channel has hit MAX_CONTINUATIONS
+        consecutive continuations, so a stuck task can't monopolize every
+        tick. The counter resets on the next fresh turn.
+        """
+        if not self.settings.tool_loop_resume:
+            return None
+        if self._continuation_count.get(channel, 0) >= self.MAX_CONTINUATIONS:
+            return None
+        pending = self._pending_resume.get(channel)
+        if not pending or pending.get("stuck"):
+            return None
+        return pending
+
+    async def run_autonomous_continuation(
+        self,
+        channel: str,
+        *,
+        system_extra: str = "",
+        is_owner: bool = False,
+    ) -> str | None:
+        """Tier C #14: resume an unfinished autonomous tool chain.
+
+        If a previous autonomous turn hit the tool-round cap and stashed a
+        resume, this picks it up by injecting a continuation prompt and the
+        stashed tool tail. Returns the assistant text, or None if there was
+        nothing to resume (or it was stuck).
+
+        This is the autonomous-side equivalent of how `run_turn` consumes the
+        resume on user turns — it just uses a self-authored continuation
+        prompt instead of waiting for the owner to message.
+
+        Follow-up cap (MAX_CONTINUATIONS=6): once a channel has fired that
+        many consecutive continuations, we stop resuming, clear the chain,
+        and emit a soft "I'll come back to this" fallback so the consciousness
+        loop can move on to other things instead of spinning on one stuck task.
+        """
+        if not self.settings.tool_loop_resume:
+            return None
+        pending = self._pending_resume.get(channel)
+        if not pending or pending.get("stuck"):
+            return None
+
+        # Cap check: too many consecutive continuations on this channel →
+        # give up gracefully rather than looping forever on a stuck task.
+        count = self._continuation_count.get(channel, 0)
+        if count >= self.MAX_CONTINUATIONS:
+            log.warning(
+                "autonomous_continuation.capped",
+                channel=channel,
+                count=count,
+                note="hit MAX_CONTINUATIONS; clearing chain and moving on",
+            )
+            self._pending_resume.pop(channel, None)
+            self._continuation_count[channel] = 0
+            fallback = (
+                "I've been chipping at this for a while and keep hitting my step "
+                "limit — I'll set it down for now and come back to it fresh later."
+            )
+            await self._store(channel, "assistant", fallback, is_owner=is_owner)
+            return fallback
+
+        # Pop it now so we can't loop forever if this turn also hits the cap.
+        self._pending_resume.pop(channel, None)
+        self._continuation_count[channel] = count + 1
+        rounds = pending.get("rounds", 0)
+        cont_prompt = (
+            "[Autonomous continuation] You were mid-way through a multi-step task "
+            f"(used {rounds} tool rounds last time). Pick up exactly where you left off "
+            "and finish it — don't restart from scratch. The tool results from your "
+            "previous rounds are included below."
+        )
+        await self.memory.append_message(
+            channel, "user", cont_prompt, metadata={"type": "autonomous_continuation"}
+        )
+        messages = await self._build_messages(
+            channel, cont_prompt, system_extra=system_extra, current_is_tick=True
+        )
+        # Inject the stashed assistant/tool turns so the model continues.
+        resumed_tail = [
+            m for m in pending.get("messages", [])
+            if m.get("role") in ("assistant", "tool")
+        ]
+        if resumed_tail:
+            # Insert before the new continuation user message so the model sees
+            # its own prior tool chain, then the nudge to continue.
+            user_msg = messages[-1] if messages and messages[-1].get("role") == "user" else None
+            if user_msg:
+                messages = messages[:-1] + resumed_tail + [user_msg]
+            else:
+                messages = messages + resumed_tail
+        return await self._complete(
+            messages,
+            store_channel=channel,
+            role="consciousness",
+            is_owner=is_owner,
+        )
+
     async def search_past(self, query: str) -> str:
         if not self._hermes_db:
             return "No past session history found yet."
@@ -402,6 +517,9 @@ class AgentLoop:
         # if one exists for this channel and it wasn't stuck in a repeat loop.
         if self.settings.tool_loop_resume and store_channel in self._pending_resume:
             pending = self._pending_resume.pop(store_channel)
+            # A user turn consuming the resume breaks the autonomous chain —
+            # reset the continuation counter (Tier C #14 follow-up).
+            self._continuation_count.pop(store_channel, None)
             if not pending.get("stuck"):
                 # Append the unfinished tool chain so the model continues from
                 # where it left off. Only assistant/tool turns are carried over
@@ -450,6 +568,7 @@ class AgentLoop:
                 )
                 # Drop any pending resume context — this turn can't continue.
                 self._pending_resume.pop(store_channel, None)
+                self._continuation_count.pop(store_channel, None)
                 raise RuntimeError(
                     f"LLM call failed for {role}/{model} on {provider}: {detail}"
                 ) from e
@@ -534,8 +653,11 @@ class AgentLoop:
 
             text = (msg.content or "").strip() or "(no response)"
             await self._store(store_channel, "assistant", text, is_owner=is_owner)
-            # Turn finished cleanly — drop any stale resume context.
+            # Turn finished cleanly — drop any stale resume context and reset
+            # the continuation counter (Tier C #14 follow-up: a fresh, finished
+            # turn means we're not mid-chain anymore).
             self._pending_resume.pop(store_channel, None)
+            self._continuation_count.pop(store_channel, None)
             log.info(
                 "tool_loop.done",
                 channel=store_channel,

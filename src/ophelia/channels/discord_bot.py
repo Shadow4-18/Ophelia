@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import structlog
@@ -13,6 +14,7 @@ from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
+from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
 
@@ -343,8 +345,12 @@ class DiscordGateway:
             except Exception as e:
                 log.warning("discord.notify_failed", user=uid, error=str(e))
 
-    async def send_proactive_media(self, path) -> None:
-        """Send a generated media file (image/video/audio/doc) to all recipients."""
+    async def send_proactive_media(self, path, *, caption: str = "") -> None:
+        """Send a generated media file (image/video/audio/doc) to all recipients.
+
+        Tier C #11: Discord parity — captioned media like Telegram. Discord
+        attaches the file with the caption as the message content.
+        """
         if not self._bot:
             return
         import discord
@@ -355,10 +361,79 @@ class DiscordGateway:
         allowed = self.settings.allowed_discord_users()
         if not allowed:
             return
+        cap = (caption or "")[:2000] or None
         for uid in allowed:
             try:
                 user = await self._bot.fetch_user(uid)
-                await user.send(file=discord.File(str(p)))
+                await user.send(content=cap, file=discord.File(str(p)))
                 log.info("discord.notify_media_sent", user=uid, path=str(p))
             except Exception as e:
                 log.warning("discord.notify_media_failed", user=uid, error=str(e))
+
+    async def send_proactive_voice(self, text: str) -> None:
+        """Tier C #11: Discord parity — spontaneous voice notes.
+
+        Synthesizes the text via the configured TTS backend (Kokoro / ElevenLabs
+        / OpenAI / xAI) and DMs the audio file to each recipient. Mirrors
+        TelegramGateway.send_proactive_voice so spontaneous consciousness
+        messages reach Discord users as voice, not just text.
+        """
+        if not self._bot or not text.strip():
+            return
+        from ophelia.media.voice import resolve_tts_provider, synthesize
+        from ophelia.mind.mood_behavior import mood_knobs
+
+        allowed = self.settings.allowed_discord_users()
+        if not allowed:
+            return
+
+        # Voice mind rewrite (Tier A #4) + mood-derived speed, same as Telegram.
+        spoken = text
+        voice_mind = getattr(self.session.agent, "voice_mind", None)
+        if voice_mind is not None and voice_mind.enabled:
+            try:
+                spoken = await voice_mind.rewrite_for_speech(
+                    text[:800],
+                    psyche=self.session.agent.psyche,
+                    agent=self.session.agent,
+                )
+            except Exception as e:
+                log.debug("discord.voice_mind_failed", error=str(e))
+
+        bearer = None
+        if resolve_tts_provider(self.settings) == "xai":
+            xai = build_provider_stack(self.settings).xai_backend()
+            if xai:
+                try:
+                    bearer = await xai.bearer_fresh()
+                except Exception as e:
+                    log.warning("discord.voice_auth_failed", error=str(e))
+                    await self.send_proactive(text)
+                    return
+        out = self.settings.data_dir / "discord_media" / f"spontaneous_{int(time.time())}.mp3"
+        speed = None
+        if hasattr(self.session.agent, "life") and self.session.agent.life:
+            psyche = getattr(self.session.agent, "psyche", None)
+            speed = self.session.agent.life.voice_speed(psyche=psyche)
+        try:
+            audio_path = await synthesize(
+                spoken[:1000],
+                out,
+                settings=self.settings,
+                xai_bearer=bearer,
+                speed=speed,
+            )
+        except Exception as e:
+            log.warning("discord.proactive_voice_tts_failed", error=str(e))
+            await self.send_proactive(text)
+            return
+
+        import discord
+
+        for uid in allowed:
+            try:
+                user = await self._bot.fetch_user(uid)
+                await user.send(file=discord.File(str(audio_path)))
+                log.info("discord.notify_voice_sent", user=uid, path=str(audio_path))
+            except Exception as e:
+                log.warning("discord.notify_voice_failed", user=uid, error=str(e))

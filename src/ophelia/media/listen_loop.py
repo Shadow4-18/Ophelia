@@ -76,22 +76,32 @@ class LocalListenLoop:
         if not wav.is_file() or wav.stat().st_size < 500:
             return
 
-        xai = build_provider_stack(self.settings).xai_backend()
-        if not xai:
-            return
-        try:
-            token = await xai.bearer_fresh()
-        except Exception as e:
-            log.warning("listen.auth", error=str(e))
-            return
+        # Tier A #2: prefer local whisper.cpp STT, fall back to xAI cloud.
+        from ophelia.media.stt_local import local_stt_configured, transcribe_audio_local
 
-        try:
-            text = await transcribe_audio(
-                wav, bearer=token, base_url=self.settings.xai_base_url
-            )
-        except Exception as e:
-            log.warning("listen.stt_failed", error=str(e))
-            return
+        text: str | None = None
+        token: str | None = None
+        if local_stt_configured(self.settings):
+            try:
+                text = await transcribe_audio_local(wav, settings=self.settings)
+            except Exception as e:
+                log.debug("listen.local_stt_error", error=str(e))
+        if text is None:
+            xai = build_provider_stack(self.settings).xai_backend()
+            if not xai:
+                return
+            try:
+                token = await xai.bearer_fresh()
+            except Exception as e:
+                log.warning("listen.auth", error=str(e))
+                return
+            try:
+                text = await transcribe_audio(
+                    wav, bearer=token, base_url=self.settings.xai_base_url
+                )
+            except Exception as e:
+                log.warning("listen.stt_failed", error=str(e))
+                return
 
         if not text or len(text) < 2:
             return
@@ -112,15 +122,32 @@ class LocalListenLoop:
 
         if not reply.strip():
             return
+        # Mood → behavior (Tier A #5): cap burst + mood-derived TTS speed.
+        from ophelia.mind.mood_behavior import mood_knobs
 
+        knobs = mood_knobs(getattr(self.agent, "psyche", None))
+        spoken = reply[:knobs.burst_max_chars]
+        # Tier A #4: voice mind rewrites for speech (pauses, breath, mood).
+        voice_mind = getattr(self.agent, "voice_mind", None)
+        if voice_mind is not None and voice_mind.enabled:
+            try:
+                spoken = await voice_mind.rewrite_for_speech(
+                    spoken, psyche=self.agent.psyche, agent=self.agent
+                )
+            except Exception as e:
+                log.debug("listen.voice_mind_failed", error=str(e))
         mp3 = self.audio_dir / f"reply_{int(time.time())}.mp3"
         try:
             bearer = token if resolve_tts_provider(self.settings) == "xai" else None
+            speed = None
+            if hasattr(self.agent, "life") and self.agent.life:
+                speed = self.agent.life.voice_speed(psyche=self.agent.psyche)
             out = await synthesize(
-                reply[:800],
+                spoken,
                 mp3,
                 settings=self.settings,
                 xai_bearer=bearer,
+                speed=speed,
             )
         except Exception as e:
             log.warning("listen.tts_failed", error=str(e))

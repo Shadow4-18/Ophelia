@@ -22,6 +22,31 @@ CURATOR_PROMPT = """Extract 0-3 durable facts worth remembering months from now.
 Skip ephemeral chit-chat. Output one fact per line, no bullets, no JSON.
 If nothing worth keeping, output exactly: NONE"""
 
+RECONCILE_PROMPT = """You are Ophelia's memory curator. Reconcile stored facts against AUTHORITATIVE context.
+
+Stored facts may be stale or wrong — old schedules, wrong timezone, outdated owner details, facts that
+contradict what the authoritative context block says is true NOW. Your job is to flag contradictions
+and produce corrected versions.
+
+AUTHORITATIVE CONTEXT (trust this over stored facts):
+{auth_block}
+
+STORED FACTS:
+{facts_block}
+
+For each stored fact, decide:
+- "keep"     — fact is correct and not contradicted by the authoritative context.
+- "correct"  — fact is wrong/stale; output a corrected version.
+- "remove"   — fact is obsolete or directly contradicted and not worth correcting.
+- "skip"     — fact is subjective/opinion and can't be verified against context.
+
+Output ONLY valid JSON, a list of objects:
+[
+  {{"action": "keep" | "correct" | "remove" | "skip", "original": "<original fact>", "corrected": "<only if action=correct>"}}
+]
+
+If all facts are fine, output: []"""
+
 
 class MemoryCurator:
     def __init__(self, settings: Settings, memory: MemoryStore) -> None:
@@ -29,6 +54,10 @@ class MemoryCurator:
         self.memory = memory
         self.mem_file = OPHELIA_HOME / "memories" / "MEMORY.md"
         self._hermes_db = self._find_state_db()
+        # Tier C #13: optional LifeContext for the reconciliation pass. When
+        # set, the curator can check stored facts against the authoritative
+        # context block (time, schedule, owner state) and correct stale ones.
+        self.life = None
 
     def _find_state_db(self) -> Path | None:
         for p in (
@@ -147,9 +176,153 @@ class MemoryCurator:
         await self.memory.set_fact("curator:last_run", str(time.time()))
         return count
 
+    async def reconcile_against_context(self) -> int:
+        """Tier C #13: reconcile stored MEMORY.md facts against the authoritative
+        LifeContext block. Returns the number of facts corrected/removed.
+
+        Stale facts (wrong timezone, old work schedule, outdated owner details)
+        silently leak into prompts even after LifeContext fixes the *current*
+        context. This pass catches them. Throttle to once per day via the
+        `curator:last_reconcile` fact.
+        """
+        if self.life is None:
+            return 0
+        # Throttle: at most once per 24h.
+        last = await self.memory.get_fact("curator:last_reconcile")
+        if last:
+            try:
+                if time.time() - float(last) < 86400:
+                    return 0
+            except (TypeError, ValueError):
+                pass
+
+        entries = self._existing_entries()
+        if not entries:
+            return 0
+
+        auth_block = self.life.to_context_block()
+        facts_block = "\n".join(f"- {e}" for e in sorted(entries))
+        prompt = RECONCILE_PROMPT.format(auth_block=auth_block, facts_block=facts_block)
+
+        stack = build_provider_stack(self.settings)
+        backend = stack.backend("curator")
+        model = stack.model("curator")
+        if isinstance(backend, XAIBackend):
+            client = await backend.async_client_fresh()
+        else:
+            client = backend.async_client()
+
+        try:
+            gate = get_model_gate()
+            from ophelia.providers.fallback import call_with_fallback
+
+            async def _make_call(cl, mdl):
+                return await cl.chat.completions.create(
+                    model=mdl,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1200,
+                )
+
+            resp = await call_with_fallback(
+                self.settings,
+                stack,
+                role="curator",
+                primary_provider=stack.name("curator"),
+                primary_model=model,
+                primary_client=client,
+                make_call=_make_call,
+                gate=gate,
+                log_tag="curator.reconcile_fallback",
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            log.warning("curator.reconcile_llm_failed", error=api_error_detail(e))
+            return 0
+
+        new_entries, changed = self._apply_reconcile_actions(raw, entries)
+
+        if changed:
+            self._rewrite_memory_file(new_entries)
+        await self.memory.set_fact("curator:last_reconcile", str(time.time()))
+        log.info("curator.reconcile_done", changed=changed, total=len(entries))
+        return changed
+
+    @staticmethod
+    def _apply_reconcile_actions(
+        raw: str, entries: set[str]
+    ) -> tuple[set[str], int]:
+        """Tier C #13 follow-up: parse the curator's reconcile JSON and apply
+        keep/correct/remove/skip actions to the entry set.
+
+        Extracted as a pure static method so it's testable without an LLM.
+        Returns (new_entries, changed_count). Robust to the common LLM failure
+        modes: prose wrapping the JSON, malformed JSON, empty output, and
+        actions referencing facts that aren't in the stored set.
+        """
+        import json
+        import re
+
+        match = re.search(r"\[[\s\S]*\]", raw)
+        if not match:
+            log.info("curator.reconcile_no_json", raw=raw[:200])
+            return entries, 0
+        try:
+            actions = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return entries, 0
+        if not isinstance(actions, list):
+            return entries, 0
+
+        changed = 0
+        new_entries = set(entries)
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "").lower()
+            original = str(item.get("original") or "").strip()
+            if not original or original not in new_entries:
+                continue
+            if action == "remove":
+                new_entries.discard(original)
+                changed += 1
+                log.info("curator.reconcile_removed", fact=original[:80])
+            elif action == "correct":
+                corrected = str(item.get("corrected") or "").strip()
+                if corrected and corrected != original:
+                    new_entries.discard(original)
+                    new_entries.add(corrected)
+                    changed += 1
+                    log.info(
+                        "curator.reconcile_corrected",
+                        old=original[:80],
+                        new=corrected[:80],
+                    )
+
+        return new_entries, changed
+
+    def _rewrite_memory_file(self, entries: set[str]) -> None:
+        """Overwrite MEMORY.md with the reconciled entry set, preserving order."""
+        self.mem_file.parent.mkdir(parents=True, exist_ok=True)
+        # Preserve original order where possible; append new facts at the end.
+        original_order: list[str] = []
+        if self.mem_file.is_file():
+            original_order = parse_hermes_memory_file(
+                self.mem_file.read_text(encoding="utf-8")
+            )
+        ordered = [e for e in original_order if e in entries]
+        seen = set(ordered)
+        for e in sorted(entries):
+            if e not in seen:
+                ordered.append(e)
+                seen.add(e)
+        self.mem_file.write_text(
+            "\n§\n".join(ordered), encoding="utf-8"
+        )
+
     async def run_cycle(self) -> int:
         n = await self.ingest_pending_notes()
         n += await self.curate_from_recent_chats()
+        n += await self.reconcile_against_context()
         return n
 
     def reload_agent_memories(self, agent) -> None:

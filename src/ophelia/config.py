@@ -378,12 +378,33 @@ class Settings(BaseSettings):
         description="Speech rate for Kokoro (0.85 thoughtful, 1.0 normal, 1.15 hyped)",
     )
 
+    # Tier A #4: voice mind — speech-first TTS prep layer.
+    # inline = rewrite before TTS (better, +300-800ms latency).
+    # post   = send raw reply fast, refine on next turn (default).
+    # off    = disabled; raw text goes to TTS.
+    voice_mind_mode: str = Field(
+        default="post",
+        alias="OPHELIA_VOICE_MIND_MODE",
+        description="inline | post | off — how the voice mind rewrites text for speech",
+    )
+
     # Initiative / will (lower = more spontaneous)
     initiative_threshold: float = Field(default=0.55, alias="OPHELIA_INITIATIVE_THRESHOLD")
     greet_on_start: bool = Field(
         default=True,
         alias="OPHELIA_GREET_ON_START",
         description="Send a proactive hello to the user when Ophelia comes online",
+    )
+    # Tier A #1: director — fast decision layer over the ensemble. Decides
+    # whether to speak / react / defer / skip before the heavy chat call, and
+    # sets urgency + pacing knobs. Off by default until you've tuned it.
+    director_enabled: bool = Field(
+        default=False,
+        alias="OPHELIA_DIRECTOR",
+        description=(
+            "Enable the director mind — decides whether/when/how to respond "
+            "before the chat LLM runs. Logs decisions to data/director_log.jsonl."
+        ),
     )
     max_spontaneous_per_hour: int = Field(default=4, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
     quiet_hours: str = Field(
@@ -432,10 +453,77 @@ class Settings(BaseSettings):
     )
     sleep_mode_enabled: bool = Field(default=True, alias="OPHELIA_SLEEP_MODE")
 
+    # Tier B #7: owner presence signals (BT / router / last-seen). Sharpen
+    # "is he home?" beyond schedule + silence. Best-effort: missing binaries
+    # or failed scans degrade to "unknown" and schedule-based inference runs.
+    owner_bt_devices: str = Field(
+        default="",
+        alias="OPHELIA_OWNER_BT_DEVICES",
+        description=(
+            "Comma-separated BT MACs or device names to watch for "
+            "(termux-bt-scan). e.g. '00:11:22:33:44:55,My-AirPods'"
+        ),
+    )
+    owner_router_api_url: str = Field(
+        default="",
+        alias="OPHELIA_OWNER_ROUTER_API_URL",
+        description="Router device-list endpoint (HTTP GET) for presence polling",
+    )
+    owner_router_api_header: str = Field(
+        default="",
+        alias="OPHELIA_OWNER_ROUTER_API_HEADER",
+        description="Optional header for router API e.g. 'Authorization: Bearer ...'",
+    )
+
     # Wake word (Termux mic — say her name to talk)
     wake_word_enabled: bool = Field(default=False, alias="OPHELIA_WAKE_WORD")
     wake_word: str = Field(default="ophelia", alias="OPHELIA_WAKE_WORD_NAME")
     wake_word_rms_threshold: int = Field(default=200, alias="OPHELIA_WAKE_RMS")
+
+    # Tier A #2: local STT provider. auto = cloud (xAI) for backward compat;
+    # local = whisper.cpp server / whisper-cli on-device. Falls back to cloud
+    # if the local server/CLI is unreachable so a missing server never breaks
+    # the listen loop.
+    stt_provider: str = Field(
+        default="auto",
+        alias="OPHELIA_STT_PROVIDER",
+        description="auto (cloud xAI) | local (whisper.cpp on-device)",
+    )
+    whisper_server_url: str = Field(
+        default="",
+        alias="WHISPER_SERVER_URL",
+        description="OpenAI-compatible whisper.cpp server URL e.g. http://127.0.0.1:8080/v1",
+    )
+    whisper_model: str = Field(
+        default="",
+        alias="WHISPER_MODEL",
+        description="Model name for the whisper.cpp server (e.g. tiny.en, base.en)",
+    )
+
+    # Tier A #3: real wake-word engine. auto = STT polling (legacy); openwakeword
+    # or porcupine = dedicated keyword-spotting engine on the mic stream.
+    wake_engine: str = Field(
+        default="auto",
+        alias="OPHELIA_WAKE_ENGINE",
+        description="auto (STT polling) | openwakeword | porcupine",
+    )
+    wake_engine_sensitivity: float = Field(
+        default=0.5,
+        alias="OPHELIA_WAKE_ENGINE_SENSITIVITY",
+        ge=0.0,
+        le=1.0,
+        description="Wake-engine keyword sensitivity (0 = strict, 1 = permissive)",
+    )
+    porcupine_access_key: str = Field(
+        default="",
+        alias="PORCUPINE_ACCESS_KEY",
+        description="Picovoice access key for Porcupine wake-word engine",
+    )
+    porcupine_keyword_path: str = Field(
+        default="",
+        alias="PORCUPINE_KEYWORD_PATH",
+        description="Path to a custom .ppn keyword file for Porcupine",
+    )
 
     # Autonomous life (Neuro-style presence)
     spontaneous_voice_enabled: bool = Field(

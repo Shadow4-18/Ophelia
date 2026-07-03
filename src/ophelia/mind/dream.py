@@ -168,6 +168,15 @@ class DreamLoop:
                 "consciousness", "assistant", f"[dream] {dream}",
                 metadata={"type": "dream"},
             )
+            # Tier B #10: record for morning continuity so she can reference
+            # the dream on the next sleep->wake transition instead of it
+            # disappearing into the memory stream.
+            try:
+                from ophelia.mind.morning import DreamContinuity
+
+                await DreamContinuity(self.memory).record_dream(dream)
+            except Exception as e:
+                log.debug("dream.morning_record_failed", error=str(e))
 
         # Apply mood shift nudge to baseline if present.
         if mood_shift and mood_shift.lower() not in ("none", "n/a", ""):

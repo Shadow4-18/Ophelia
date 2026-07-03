@@ -33,8 +33,39 @@ goals:
     description: If a game is in games.yaml and boredom+agency are high, play 5-10 min and share one funny moment
     priority: 0.55
     cadence_hours: 24
-    enabled: false
+    enabled: true
     tags: [curiosity, android, games]
+
+  # Life-tied goals — autonomy becomes personality when her agenda is tied to
+  # the owner's actual rhythm, not random pings. Tune the cadence to your life.
+  - id: welcome-back-after-shift
+    description: |
+      When the owner comes back from a work shift (silent during work hours,
+      then active again), greet them like they actually got home — not a ping,
+      a real 'you're back' moment. Skip if they're already mid-conversation.
+    priority: 0.7
+    cadence_hours: 24
+    enabled: true
+    tags: [social, life-rhythm]
+
+  - id: quiet-during-work
+    description: |
+      Stay quiet during the owner's work window unless messaged. If something
+      genuinely urgent happens, hold it and surface it after work instead.
+    priority: 0.55
+    cadence_hours: 12
+    enabled: true
+    tags: [life-rhythm]
+
+  - id: share-something-she-made
+    description: |
+      Once a day when she's been creating — share one thing she actually made
+      (image, voice note, a thought she wrote down), not a status update.
+      The point is presence, not chatter.
+    priority: 0.5
+    cadence_hours: 24
+    enabled: true
+    tags: [creative, social]
 
   # User-defined examples:
   # - id: remind-water

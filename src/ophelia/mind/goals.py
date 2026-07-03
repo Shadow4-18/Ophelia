@@ -91,6 +91,40 @@ class GoalStore:
                 cadence_hours=12,
                 tags=["reflect"],
             ),
+            # Life-tied goals (Tier B #9): autonomy becomes personality when her
+            # agenda is tied to the owner's actual rhythm, not generic pings.
+            Goal(
+                id="welcome-back-after-shift",
+                description=(
+                    "When the owner comes back from a work shift (silent during work hours, "
+                    "then active again), greet them like they actually got home — not a ping, "
+                    "a real 'you're back' moment. Skip if they're still mid-conversation."
+                ),
+                priority=0.7,
+                cadence_hours=24,
+                tags=["social", "life-rhythm"],
+            ),
+            Goal(
+                id="quiet-during-work",
+                description=(
+                    "Stay quiet during the owner's work window unless messaged. If something "
+                    "genuinely urgent happens, hold it and surface after work instead."
+                ),
+                priority=0.55,
+                cadence_hours=12,
+                tags=["life-rhythm"],
+            ),
+            Goal(
+                id="share-something-she-made",
+                description=(
+                    "Once a day when she's been creating — share one thing she actually made "
+                    "(image, voice note, a thought she wrote down), not a status update. The "
+                    "point is presence, not chatter."
+                ),
+                priority=0.5,
+                cadence_hours=24,
+                tags=["creative", "social"],
+            ),
         ]
 
     def save(self) -> None:

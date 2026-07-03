@@ -8,6 +8,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -24,6 +25,9 @@ from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.config import Settings
 from ophelia.mind.life_context import LifeContext
 from ophelia.mind.humor_tracker import HumorTracker
+
+if TYPE_CHECKING:
+    from ophelia.mind.director import Director
 
 log = structlog.get_logger()
 
@@ -78,6 +82,7 @@ class ConsciousnessLoop:
         life: LifeContext | None = None,
         settings: Settings | None = None,
         humor: HumorTracker | None = None,
+        director: "Director | None" = None,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -98,11 +103,16 @@ class ConsciousnessLoop:
         self.life = life
         self.settings = settings
         self.humor = humor
+        self.director = director
         self.action_cooldown = max(0, int(action_cooldown_seconds))
         self.idle_nudge_rotate = bool(idle_nudge_rotate)
         self._nudge_idx = 0
         self._running = False
         self._pause_logged = False
+        # Tier B #10: track sleep state across ticks so we can detect the
+        # sleep -> wake transition and surface a dream reference on wake.
+        self._was_sleep_mode: bool | None = None
+        self._pending_dream_ref: str | None = None
 
     async def run(self) -> None:
         self._running = True
@@ -127,6 +137,23 @@ class ConsciousnessLoop:
                 continue
             if get_model_gate().is_busy():
                 continue
+
+            # Tier B #10: detect sleep -> wake transition and pull a fresh dream
+            # to reference softly on the next tick. We don't message here —
+            # the tick itself decides whether to surface it as outward.
+            if self.life is not None:
+                sleeping = self.life.is_sleep_mode()
+                if self._was_sleep_mode is True and not sleeping:
+                    try:
+                        from ophelia.mind.morning import DreamContinuity
+
+                        ref = await DreamContinuity(self.memory).pending_morning_reference()
+                        if ref:
+                            self._pending_dream_ref = ref
+                            log.info("dream.morning_pending", preview=ref[:60])
+                    except Exception as e:
+                        log.debug("dream.morning_check_failed", error=str(e))
+                self._was_sleep_mode = sleeping
 
             idle = time.time() - self.signals.last_user_message_at
             if idle < 30:
@@ -156,7 +183,16 @@ class ConsciousnessLoop:
     async def _tick(self, idle_seconds: float) -> None:
         await self.memory.save_psyche(self.psyche)
         pressure = self.drives.initiative_pressure()
-        must_consider_acting = pressure >= self.initiative_threshold
+        # Mood → behavior (Tier A #5): negative valence raises the bar to reach
+        # out, positive lowers it. Same psyche drives TTS speed and bursts, so
+        # she stays one person across voice / pacing / willingness to speak.
+        from ophelia.mind.mood_behavior import mood_knobs, mood_system_hint
+
+        knobs = mood_knobs(self.psyche)
+        effective_threshold = max(
+            0.0, self.initiative_threshold + knobs.outreach_threshold_delta
+        )
+        must_consider_acting = pressure >= effective_threshold
 
         due_goal = self.goals.pick_for_tick()
         goals_block = self.goals.to_context_block()
@@ -167,10 +203,44 @@ class ConsciousnessLoop:
                 f"strongly consider explore/act/message for this."
             )
 
+        # Tier A #1: director decides whether this tick produces an action at
+        # all, and at what urgency. When enabled, it replaces the simple
+        # pressure-threshold heuristic with a richer speak/react/defer/skip
+        # decision and provides pacing that composes with the mood knobs.
+        director_decision = None
+        if self.director is not None and self.director.available():
+            trigger = "goal_due" if due_goal else ("spontaneous_urge" if must_consider_acting else "tick")
+            try:
+                director_decision = await self.director.decide(
+                    trigger=trigger,
+                    context_summary=(
+                        f"idle {int(idle_seconds)}s, "
+                        f"pressure {pressure:.2f}, "
+                        f"goal={due_goal.id if due_goal else 'none'}"
+                    ),
+                    owner_active=False,
+                )
+            except Exception as e:
+                log.debug("director.decide_error", error=str(e))
+            if director_decision is not None and director_decision.action == "defer":
+                # Director says silence is correct this tick. Still let drives
+                # and psyche relax, but skip the heavy consciousness LLM call.
+                self.drives.tick_idle(idle_seconds, interval=60)
+                self.psyche.relax(60)
+                await self.memory.save_drives(self.drives)
+                await self.memory.save_psyche(self.psyche)
+                log.info(
+                    "consciousness.director_defer",
+                    reason=director_decision.reason[:80],
+                )
+                return
+
         hint = ""
         if must_consider_acting:
             hint = (
-                f"\n\nINITIATIVE: pressure={pressure:.2f} threshold={self.initiative_threshold}. "
+                f"\n\nINITIATIVE: pressure={pressure:.2f} "
+                f"threshold={effective_threshold:.2f} (base {self.initiative_threshold:.2f} "
+                f"+ mood {knobs.outreach_threshold_delta:+.2f}). "
                 f"Idle {int(idle_seconds)}s. Authentic action beats polite silence."
             )
 
@@ -264,6 +334,33 @@ class ConsciousnessLoop:
         if idle_nudge:
             context_block += idle_nudge
 
+        # Tier A #1: director urgency adjusts burst cap and adds a pace hint.
+        # Composes with the mood-derived burst cap so both signals shape her.
+        if director_decision is not None:
+            burst_max = director_decision.urgency_burst_cap(knobs.burst_max_chars)
+            if director_decision.pace_hint:
+                context_block += (
+                    f"\n\nDIRECTOR PACE: {director_decision.pace_hint} "
+                    f"(urgency={director_decision.urgency})"
+                )
+        else:
+            burst_max = knobs.burst_max_chars
+
+        # Tier B #10: surface a dream on the first wake tick after sleep. Soft
+        # nudge — she decides whether to weave it into a morning message or
+        # let it stay as private atmosphere. Cleared after one tick either way.
+        if self._pending_dream_ref:
+            context_block += (
+                "\n\nMORNING — you just woke. Last night you dreamt: "
+                f"\"{self._pending_dream_ref}\". You don't have to mention it, "
+                "but if it feels right, a soft nod to it (\"had the weirdest dream\") "
+                "closes the sleep loop. Otherwise let it color your mood and move on."
+            )
+            dream_to_clear = self._pending_dream_ref
+            self._pending_dream_ref = None
+        else:
+            dream_to_clear = None
+
         raw = await self.agent.run_consciousness_tick(
             channel="consciousness",
             user_text=(
@@ -283,10 +380,21 @@ class ConsciousnessLoop:
                 + hint
                 + game_hint
                 + context_block
+                + ("\n" + mood_system_hint(self.psyche) if mood_system_hint(self.psyche) else "")
             ),
             mirror_channel=self.user_channel,
             allow_tools=True,
         )
+
+        # Tier B #10: regardless of whether she chose to mention it, the dream
+        # reference was surfaced this wake — mark it consumed so we don't loop.
+        if dream_to_clear:
+            try:
+                from ophelia.mind.morning import DreamContinuity
+
+                await DreamContinuity(self.memory).mark_surfaced()
+            except Exception as e:
+                log.debug("dream.mark_surfaced_failed", error=str(e))
 
         tick = _parse_tick_json(raw)
         if not tick:
@@ -366,6 +474,26 @@ class ConsciousnessLoop:
                 or thought
                 or "follow curiosity"
             ).strip()
+
+            # Tier C #14: if the previous autonomous turn on this channel hit
+            # the tool-round cap and stashed a resume, pick it up instead of
+            # starting a fresh act/explore. This keeps long game / image
+            # sessions from dying mid-chain.
+            cont_channel = self.user_channel or "consciousness"
+            if self.agent.pending_resume_for(cont_channel):
+                log.info(
+                    "consciousness.autonomous_resume",
+                    channel=cont_channel,
+                    note="picking up unfinished tool chain",
+                )
+                try:
+                    await self.agent.run_autonomous_continuation(cont_channel)
+                except Exception as e:
+                    log.warning("consciousness.autonomous_resume_failed", error=str(e))
+                # After a continuation, don't also fire a fresh act this tick.
+                # The continuation is itself a full tool-capable turn.
+                return
+
             prefix = ""
             if vision_context:
                 prefix = f"[You just saw the screen]\n{vision_context[:2500]}\n\n"
@@ -433,6 +561,10 @@ class ConsciousnessLoop:
                     metadata={"type": "blocked"},
                 )
                 return
+
+            # Mood → behavior (Tier A #5) + director urgency (Tier A #1): cap
+            # burst length on outward outreach using the resolved burst_max.
+            outward = outward[:burst_max]
 
             if self.user_channel:
                 await self.memory.append_message(

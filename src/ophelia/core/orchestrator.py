@@ -9,6 +9,7 @@ import structlog
 
 from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore
+from ophelia.android.harden import HealthCheckLoop
 from ophelia.android.vision import ScreenVision
 from ophelia.channels.hub import ChannelHub
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
@@ -22,6 +23,7 @@ from ophelia.memory.store import MemoryStore
 from ophelia.mind.alarms import AlarmLoop
 from ophelia.mind.ambient_commentary import AmbientCommentaryLoop
 from ophelia.mind.consciousness import ConsciousnessLoop
+from ophelia.mind.director import Director
 from ophelia.mind.dream import DreamLoop
 from ophelia.mind.drives import DriveState
 from ophelia.mind.goals import GoalStore
@@ -29,7 +31,9 @@ from ophelia.mind.humor_tracker import HumorTracker
 from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.mind.inner_log import InnerMonologue
 from ophelia.mind.life_context import LifeContext
+from ophelia.mind.presence import PresenceSignals
 from ophelia.mind.psyche import PsycheState
+from ophelia.mind.schedule_learner import ScheduleLearner
 from ophelia.providers.errors import api_error_detail
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.registry import ToolRegistry
@@ -89,7 +93,6 @@ class Orchestrator:
         )
         self.governor = InitiativeGovernor.from_settings(settings)
         self.curator = MemoryCurator(settings, self.memory) if settings.curator_enabled else None
-
         artifacts = settings.data_dir / "artifacts"
         self.psyche = PsycheState()
         self.drives = DriveState()
@@ -147,9 +150,32 @@ class Orchestrator:
         self.listen: LocalListenLoop | None = None
         self.wake_listen: WakeWordListenLoop | None = None
         self.life = LifeContext(settings, self.signals)
+        # Tier B #6: learn owner schedule from observed Telegram activity.
+        self.schedule_learner = ScheduleLearner(self.memory, settings)
+        self.life.schedule_learner = self.schedule_learner
+        # Tier B #7: BT / router / last-seen presence signals.
+        self.presence = PresenceSignals(settings)
+        self.life.presence_signals = self.presence
+        # Tier C #13: curator reconciliation needs the authoritative context.
+        if self.curator:
+            self.curator.life = self.life
+        # Tier A #4: voice mind — speech-first rewrite before TTS.
+        from ophelia.mind.voice_mind import VoiceMind
+
+        self.voice_mind = VoiceMind(settings)
+        self.agent.voice_mind = self.voice_mind
+        # Tier A #1: director — fast decision layer over the ensemble.
+        self.director = Director(
+            settings,
+            agent=self.agent,
+            psyche=self.psyche,
+            drives=self.drives,
+        )
+        self.agent.director = self.director
         self.humor = HumorTracker(self.memory)
         self.agent.life = self.life
         self.agent.humor = self.humor
+        self.humor.bind_agent(self.agent)
         self.alarms: AlarmLoop | None = None
         self.ambient: AmbientCommentaryLoop | None = None
 
@@ -422,6 +448,12 @@ class Orchestrator:
             asyncio.create_task(self._pause_poll_loop()),
         ]
 
+        # Tier C #12: Android kill-switch health check. Runs every 10min on
+        # Termux and re-applies the wake-lock / boot script if they vanish.
+        # No-op off Termux.
+        self.health_check = HealthCheckLoop(self.settings, self.signals)
+        tasks.append(asyncio.create_task(self.health_check.run()))
+
         if self.curator:
             tasks.append(asyncio.create_task(self._curator_loop()))
             try:
@@ -469,6 +501,7 @@ class Orchestrator:
                 life=self.life,
                 settings=self.settings,
                 humor=self.humor,
+                director=self.director,
             )
             tasks.append(asyncio.create_task(self.consciousness.run()))
 
@@ -556,6 +589,8 @@ class Orchestrator:
                 self.alarms.stop()
             if self.ambient:
                 self.ambient.stop()
+            if self.health_check:
+                self.health_check.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

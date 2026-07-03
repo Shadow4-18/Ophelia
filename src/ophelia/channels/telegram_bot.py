@@ -619,6 +619,26 @@ class TelegramGateway:
         )
         await self._maybe_attach_continue(update, context, channel)
 
+    async def on_sticker(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Tier B #8: a sticker is a humor/affection signal. Feed the humor
+        tracker so a sticker reacting to a joke counts as positive feedback.
+        We don't generate a full reply to a sticker unless one is pending —
+        avoids her yapping at every sticker the owner sends."""
+        if not update.message or not update.message.sticker:
+            return
+        user = update.effective_user
+        if not self.settings.is_owner_channel(f"telegram:{user.id}"):
+            return
+        sticker = update.message.sticker
+        emoji = sticker.emoji or ""
+        file_id = sticker.file_id or ""
+        sig = emoji or f"[sticker:{file_id[:8]}]"
+        try:
+            if self.session.agent.humor:
+                await self.session.agent.humor.note_sticker_reaction(sig)
+        except Exception as e:
+            log.debug("telegram.sticker_humor_failed", error=str(e))
+
     async def on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.voice:
             return
@@ -942,6 +962,11 @@ class TelegramGateway:
         app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
         app.add_handler(MessageHandler(filters.Document.IMAGE, self.on_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+        # Tier B #8: stickers are a strong humor signal — a sticker reacting
+        # to a joke counts as positive feedback even when the owner doesn't
+        # type "lol". Emoji-only text is already scored by HumorTracker via
+        # the normal on_text path.
+        app.add_handler(MessageHandler(filters.Sticker.ALL, self.on_sticker))
         self._app = app
         return app
 
@@ -1082,6 +1107,17 @@ class TelegramGateway:
         recipients = self._proactive_recipients()
         if not recipients:
             return
+        # Tier A #4: voice mind rewrites for speech first (pauses, breath,
+        # mood-matched pacing). Falls through to raw text if disabled/fails.
+        spoken = text
+        voice_mind = getattr(self.session.agent, "voice_mind", None)
+        if voice_mind is not None and voice_mind.enabled:
+            try:
+                spoken = await voice_mind.rewrite_for_speech(
+                    text[:800], psyche=self.session.agent.psyche, agent=self.session.agent
+                )
+            except Exception as e:
+                log.debug("telegram.voice_mind_failed", error=str(e))
         try:
             bearer = None
             if resolve_tts_provider(self.settings) == "xai":
@@ -1089,9 +1125,10 @@ class TelegramGateway:
             out = self._voice_dir / f"spontaneous_{int(time.time())}.mp3"
             speed = None
             if hasattr(self.session.agent, "life") and self.session.agent.life:
-                speed = self.session.agent.life.voice_speed()
+                psyche = getattr(self.session.agent, "psyche", None)
+                speed = self.session.agent.life.voice_speed(psyche=psyche)
             audio_path = await synthesize(
-                text[:800],
+                spoken[:1000],
                 out,
                 settings=self.settings,
                 xai_bearer=bearer,

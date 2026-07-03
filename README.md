@@ -150,7 +150,7 @@ OPHELIA_IMAGE_NSFW_PROVIDER=auto        # route explicit prompts here
 
 **One model at a time per provider** — cloud providers use per-role locks so sub-minds run in parallel; local Ollama queues through a model gate so it never loads two models simultaneously.
 
-**Future:** [Neuro-style ensemble](docs/neuro-ensemble.md) — multiple specialized minds (director, filter, reaction, voice, avatar) coordinated into one character on stream. Today's per-role routing is ensemble v0.
+**Ensemble v1:** a [Director](#soul-subsystems-tier-ac) layer now sits above the per-role routing, deciding whether she speaks, reacts, defers, or skips — and at what urgency and pace — before the heavy chat/consciousness call. See the "Soul subsystems" section below for the full Tier A–C inner-life stack.
 
 ## Optional phone body
 
@@ -232,6 +232,40 @@ home phone:
 | **"Look at this"** | `OPHELIA_PROACTIVE_SHARE=true` | Autonomous media sent with caption |
 | **Humor calibration** | (automatic) | Tracks what landed vs flopped; hints in prompt |
 | **Dream / sleep cycle** | `OPHELIA_DREAM=true` | Faster consolidation when owner asleep |
+
+### Soul subsystems (Tier A–C)
+
+The pieces that make her feel like *one continuous person* rather than a chat
+bot that answers messages. None are required — she runs fine with all of them
+off — but together they're the difference between "alive" and "responsive".
+
+| Subsystem | Config | What it does |
+|-----------|--------|--------------|
+| **Director** | `OPHELIA_DIRECTOR=true` | Fast decision layer before each turn: `speak` / `react` / `defer` / `skip` + urgency + pacing. Uses the consciousness model so it doesn't contend with chat. Logs to `data/director_log.jsonl` for tuning. Default off until you've tuned it. |
+| **Voice mind** | `OPHELIA_VOICE_MIND_MODE=inline\|post\|off` | Rewrites text for speech *before* TTS: emotion tags, pauses, mood-matched speed. `post` (default) refines the last reply for the next voice synthesis; `inline` rewrites every reply; `off` passes raw chat text to TTS. |
+| **Mood → behavior** | (automatic) | Psyche valence/arousal drive TTS speed, burst length, and outreach threshold. Low mood → slower, shorter, quieter; high arousal → faster, punchier. Composes with time-of-day voice speed. |
+| **Local STT** | `OPHELIA_STT_PROVIDER=local`, `OPHELIA_WHISPER_SERVER_URL=http://localhost:8080` | On-device `whisper.cpp` for "Hey Ophelia" — lower latency, offline, no per-call cost. Falls back to cloud STT when unset. |
+| **Real wake word** | `OPHELIA_WAKE_ENGINE=openwakeword\|porcupine` | Continuous keyword spotting (openWakeWord or Picovoice Porcupine) instead of record→transcribe→grep polling. Lower battery, fewer false triggers, faster response. `OPHELIA_WAKE_ENGINE_SENSITIVITY` tunes it; Porcupine needs `PORCUPINE_ACCESS_KEY` + `PORCUPINE_KEYWORD_PATH`. |
+| **Learned schedule** | (automatic) | Logs owner Telegram activity by day/hour to SQLite and learns "owner usually quiet 6pm–6am Thu–Fri" instead of relying on static `OPHELIA_WORK_DAYS/HOURS`. Sharpens owner-state inference. |
+| **Owner presence** | `OPHELIA_OWNER_BT_DEVICES=...`, `OPHELIA_OWNER_ROUTER_API_URL=...` | Bluetooth proximity scan + optional router device-list poll to infer "is he home?" beyond schedule + silence. |
+| **Humor depth** | (automatic) | Tracks jokes in normal chat (not just outreach), recognizes sticker/emoji reactions as positive signals, auto-feeds `save_lesson` when a bit lands ≥3×. |
+| **Goals you live by** | `goals.example.yaml` | Life-tied goals (`welcome-back-after-shift`, `quiet-during-work`, `share-something-she-made`) turn autonomy into personality instead of random pings. |
+| **Dream → wake continuity** | (automatic) | Last dream narrative surfaces as "I had a weird dream about…" on the next morning's wake, closing the sleep cycle. |
+| **Memory reconciliation** | `OPHELIA_CURATOR=true` (default) | Periodic curator pass reconciles stored MEMORY.md facts against the authoritative LifeContext block — catches stale timezones, old schedules, wrong owner details that would otherwise leak into prompts. Throttled to once per 24h. |
+| **Autonomous resume** | `OPHELIA_TOOL_LOOP_RESUME=true` | Long autonomous game/image sessions that hit the tool-round cap pick up where they left off on the next tick (not just on `/continue`). Capped at 6 consecutive continuations per channel so a stuck task can't monopolize ticks. |
+| **Discord parity** | (automatic) | Proactive voice notes + captioned media now reach Discord users too (not just Telegram). The hub sends to *all* configured gateways instead of stopping at the first. |
+| **Android kill-switch** | `ophelia phone harden` | Checks/applies battery-optimization exemption, Termux:Boot, wake-lock, tmux session. A runtime `HealthCheckLoop` re-verifies every 10min on Termux and re-applies the wake-lock if it vanishes. |
+
+**Recommended enable order** (each is independent and safe to leave off):
+
+1. `OPHELIA_VOICE_MIND_MODE=post` + `OPHELIA_SPONTANEOUS_VOICE=true` — immediate "she sounds performed, not read aloud" win.
+2. `OPHELIA_TOOL_LOOP_RESUME=true` — long sessions stop dying mid-chain.
+3. `OPHELIA_DIRECTOR=true` — biggest soul upgrade, but tune the prompt first via `data/director_log.jsonl`.
+4. `OPHELIA_STT_PROVIDER=local` + `OPHELIA_WAKE_ENGINE=openwakeword` — instant, offline "Hey Ophelia".
+5. `ophelia phone harden` (Termux only) — stops Samsung from murdering the loop.
+
+`ophelia doctor` now reports the state of all of these under a `[LIFE]` section,
+so you can see at a glance what's enabled and what's misconfigured.
 
 Example `.env` for warehouse shift (Thu–Fri–Wed–Tue nights):
 
@@ -548,7 +582,12 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia check` / `ophelia doctor` | **Self-check** — version, deps, providers, services |
 | `ophelia transfer *` | Phone ↔ PC data move |
 | `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
+| `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
+
+**Tests:** `pip install pytest pytest-asyncio && pytest tests/ -q` — guards the
+life-loop regressions (humor scoring, life-context inference, wake availability,
+mood→behavior knobs, director parsing, curator reconciliation, autonomous resume).
 
 **Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
 

@@ -597,6 +597,128 @@ def _check_optional_tools(report: SelfCheckReport) -> None:
     )
 
 
+def _check_life_subsystems(report: SelfCheckReport, settings: Settings) -> None:
+    """Tier A/B/C follow-up: verify the 'alive' subsystems are configured.
+
+    These are the pieces that make her feel like one continuous person rather
+    than a chat bot — director, voice mind, local ears, wake word, memory
+    reconciliation. None are required (she runs fine with them off), but a
+    misconfiguration here is the difference between 'feels alive' and 'just
+    answers messages', so the doctor surfaces the state for tuning.
+    """
+    # Director (Tier A #1)
+    if settings.director_enabled:
+        report.add(
+            category="life",
+            name="Director",
+            ok=True,
+            detail="enabled — speaks/reacts/defers routing active",
+            required=False,
+        )
+    else:
+        report.add(
+            category="life",
+            name="Director",
+            ok=True,
+            detail="disabled (default) — all ticks go through unchanged",
+            hint="set OPHELIA_DIRECTOR=true once you've tuned the prompt",
+            required=False,
+        )
+
+    # Voice mind (Tier A #4)
+    mode = (settings.voice_mind_mode or "post").strip().lower()
+    report.add(
+        category="life",
+        name="Voice mind",
+        ok=True,
+        detail=f"mode={mode}",
+        hint="set OPHELIA_VOICE_MIND_MODE=off if TTS sounds too rewritten" if mode == "off" else "",
+        required=False,
+    )
+
+    # Local STT (Tier A #2)
+    from ophelia.media.stt_local import local_stt_configured
+
+    stt_on = local_stt_configured(settings)
+    detail = "local whisper" if stt_on else f"provider={settings.stt_provider or 'auto'} (cloud/fallback)"
+    report.add(
+        category="life",
+        name="Local STT (ears)",
+        ok=True,
+        detail=detail,
+        hint="set OPHELIA_STT_PROVIDER=local + OPHELIA_WHISPER_SERVER_URL for offline ears" if not stt_on else "",
+        required=False,
+    )
+
+    # Wake engine (Tier A #3)
+    from ophelia.media.wake_engine import WakeEngine
+
+    eng = WakeEngine(settings)
+    wake_on = eng.available()
+    if settings.wake_engine and settings.wake_engine.strip().lower() not in ("", "auto"):
+        report.add(
+            category="life",
+            name="Wake word engine",
+            ok=wake_on,
+            detail=f"engine={settings.wake_engine}" + ("" if wake_on else " — configured but unavailable"),
+            hint=eng._import_hint() if not wake_on else "",
+            required=False,
+        )
+    else:
+        report.add(
+            category="life",
+            name="Wake word engine",
+            ok=True,
+            detail="auto (STT polling fallback)",
+            hint="set OPHELIA_WAKE_ENGINE=openwakeword or porcupine for always-on ears",
+            required=False,
+        )
+
+    # Curator reconciliation (Tier C #13)
+    if settings.curator_enabled:
+        report.add(
+            category="life",
+            name="Memory curator",
+            ok=True,
+            detail=f"enabled — reconciles facts every {settings.curator_interval_hours:g}h",
+            required=False,
+        )
+    else:
+        report.add(
+            category="life",
+            name="Memory curator",
+            ok=True,
+            detail="disabled — stored facts never reconciled against context",
+            hint="set OPHELIA_CURATOR=true to enable",
+            required=False,
+        )
+
+    # Android kill-switch (Tier C #12) — only meaningful on Termux.
+    if is_termux():
+        from ophelia.android.harden import check_harden_status
+
+        try:
+            hs = check_harden_status(settings)
+            report.add(
+                category="life",
+                name="Android kill-switch",
+                ok=hs.overall_ok,
+                detail=", ".join(c.name for c in hs.checks if not c.ok) or "all checks pass",
+                hint="run: ophelia phone harden",
+                required=False,
+            )
+        except Exception as e:
+            report.add(
+                category="life",
+                name="Android kill-switch",
+                ok=False,
+                detail=f"check failed: {e}",
+                hint="run: ophelia phone harden",
+                required=False,
+            )
+
+
+
 async def run_self_check(
     settings: Settings | None = None,
     *,
@@ -615,6 +737,7 @@ async def run_self_check(
     _check_paths(report, settings)
     _check_model_gate(report)
     _check_optional_tools(report)
+    _check_life_subsystems(report, settings)
 
     if not quick:
         await _check_memory_db(report, settings)

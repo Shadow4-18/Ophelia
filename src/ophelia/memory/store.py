@@ -7,6 +7,17 @@ from pathlib import Path
 import aiosqlite
 
 
+async def _safe_add_column(db: aiosqlite.Connection, table: str, column: str, decl: str) -> None:
+    """Add a column if it doesn't already exist. Idempotent migration helper."""
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    for row in rows:
+        # row schema: (cid, name, type, notnull, dflt_value, pk)
+        if len(row) >= 2 and row[1] == column:
+            return
+    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -95,7 +106,28 @@ class MemoryStore:
                     user_reply TEXT,
                     score REAL NOT NULL DEFAULT 0,
                     latency_s REAL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'outreach',
+                    tags TEXT
+                )
+                """
+            )
+            # Tier B #8: extend existing humor_events with kind/tags columns
+            # for tracking jokes in normal chat, sticker/reaction signals, and
+            # bit callbacks — not just outreach reactions. Idempotent.
+            await _safe_add_column(db, "humor_events", "kind", "TEXT NOT NULL DEFAULT 'outreach'")
+            await _safe_add_column(db, "humor_events", "tags", "TEXT")
+            # Tier B #6: learned owner schedule from observed Telegram activity.
+            # (dow, hour) -> count, last_seen. Lets LifeContext sharpen "is he
+            # home / awake / at work" beyond the static .env schedule.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS owner_activity (
+                    dow INTEGER NOT NULL,
+                    hour INTEGER NOT NULL,
+                    count INTEGER NOT NULL DEFAULT 0,
+                    last_seen REAL,
+                    PRIMARY KEY (dow, hour)
                 )
                 """
             )
@@ -271,6 +303,21 @@ class MemoryStore:
             cursor = await db.execute("SELECT value FROM facts WHERE key = ?", (key,))
             row = await cursor.fetchone()
         return row[0] if row else None
+
+    async def get_fact_with_ts(self, key: str) -> tuple[str | None, float | None]:
+        """Return (value, updated_at_epoch) for a fact, or (None, None) if absent."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT value, updated_at FROM facts WHERE key = ?", (key,)
+            )
+            row = await cursor.fetchone()
+        if not row:
+            return None, None
+        try:
+            ts = float(row[1]) if row[1] is not None else None
+        except (TypeError, ValueError):
+            ts = None
+        return row[0], ts
 
     async def save_psyche(self, psyche: object) -> None:
         from ophelia.mind.psyche import PsycheState
@@ -463,6 +510,87 @@ class MemoryStore:
                 "outbound": row["outbound"],
                 "user_reply": row["user_reply"],
                 "score": row["score"],
+            }
+            for row in rows
+        ]
+
+    async def record_humor_event(
+        self,
+        *,
+        outbound: str,
+        user_reply: str | None = None,
+        score: float = 0.0,
+        latency_s: float | None = None,
+        kind: str = "outreach",
+        tags: list[str] | None = None,
+    ) -> None:
+        """Tier B #8: general humor event with a kind tag.
+
+        Kinds:
+          - outreach    — spontaneous outreach she sent (existing behavior)
+          - chat-joke   — a joke/quip she made in normal chat reply
+          - sticker     — owner reacted with a sticker/emoji to something she said
+          - callback    — a 'bit' from a prior conversation was referenced again
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO humor_events
+                    (outbound, user_reply, score, latency_s, created_at, kind, tags)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    outbound[:500],
+                    (user_reply or "")[:400] or None,
+                    float(score),
+                    latency_s,
+                    time.time(),
+                    kind,
+                    json.dumps(tags or []),
+                ),
+            )
+            await db.commit()
+
+    async def humor_top_bits(self, *, kind: str | None = None, limit: int = 6) -> list[dict]:
+        """Bits that landed repeatedly — grouped by outbound text, average score.
+
+        Used to auto-feed save_lesson when a pattern reliably lands, and to
+        surface 'callbacks' in the prompt.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if kind:
+                cursor = await db.execute(
+                    """
+                    SELECT outbound, AVG(score) AS avg_score, COUNT(*) AS n
+                    FROM humor_events
+                    WHERE kind = ? AND score IS NOT NULL
+                    GROUP BY outbound
+                    HAVING n >= 2
+                    ORDER BY avg_score DESC
+                    LIMIT ?
+                    """,
+                    (kind, limit),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT outbound, AVG(score) AS avg_score, COUNT(*) AS n
+                    FROM humor_events
+                    WHERE score IS NOT NULL
+                    GROUP BY outbound
+                    HAVING n >= 2
+                    ORDER BY avg_score DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "outbound": row["outbound"],
+                "avg_score": float(row["avg_score"] or 0.0),
+                "count": int(row["n"]),
             }
             for row in rows
         ]

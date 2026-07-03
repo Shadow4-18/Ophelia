@@ -543,6 +543,27 @@ def cmd_menu(_: argparse.Namespace) -> int:
     return run_launcher()
 
 
+def cmd_phone_harden(_: argparse.Namespace) -> int:
+    """Tier C #12: check and apply the Android kill-switch.
+
+    Runs the checklist (battery optimization, Termux:Boot, wake-lock, tmux
+    session) and applies what's auto-fixable. Manual UI steps are printed
+    as hints. Use this on Termux after install and after any phone reboot.
+    """
+    from ophelia.android.harden import apply_harden, check_harden_status
+
+    settings = Settings()
+    print("Checking Android kill-switch status...")
+    before = check_harden_status(settings)
+    print(before.to_text())
+    if not before.overall_ok:
+        print("\nApplying auto-fixable items...")
+        after = apply_harden(settings)
+        print("\nAfter applying fixes:")
+        print(after.to_text())
+    return 0 if before.overall_ok else 0  # always 0 — hints are the point
+
+
 def cmd_phone_calibrate(_: argparse.Namespace) -> int:
     """Diagnose + calibrate touch input: reports native display size vs
     screenshot pixel size, saves a grid-annotated screenshot, and taps the four
@@ -1002,12 +1023,16 @@ def main(argv: list[str] | None = None) -> int:
     p_down.add_argument("--no-import", action="store_true")
     p_down.set_defaults(func=cmd_transfer_cloud_download)
 
-    phone = sub.add_parser("phone", help="Phone body tools (touch calibration)")
+    phone = sub.add_parser("phone", help="Phone body tools (touch calibration, kill-switch)")
     phone_sub = phone.add_subparsers(dest="phone_cmd", required=True)
     phone_sub.add_parser(
         "calibrate",
         help="Diagnose + calibrate touch: native size, screenshot scale, grid save, tap corners.",
     ).set_defaults(func=cmd_phone_calibrate)
+    phone_sub.add_parser(
+        "harden",
+        help="Tier C #12: check/apply Android kill-switch (battery opt, boot, wake-lock, tmux).",
+    ).set_defaults(func=cmd_phone_harden)
 
     p_logs = sub.add_parser(
         "logs", help="View the universal chat log (messages + media sent to/from her)"

@@ -93,6 +93,31 @@ class ChannelSession:
         if media_reply is not None:
             self.agent.tools.set_media_sender(media_reply)
 
+        # Tier B #6: log owner activity so the schedule learner can infer
+        # quiet/active windows from observed patterns, not just .env schedule.
+        if is_owner and getattr(self.agent, "life", None) is not None:
+            learner = getattr(self.agent.life, "schedule_learner", None)
+            if learner is not None:
+                try:
+                    await learner.record_owner_activity()
+                except Exception as e:
+                    log.debug("schedule_learner.record_failed", error=str(e))
+
+        # Tier A #1: director decides urgency + pacing for this reply. The
+        # owner is active by definition here, so the director won't defer —
+        # it just shapes HOW she responds, not whether.
+        director_decision = None
+        director = getattr(self.agent, "director", None)
+        if director is not None and director.available():
+            try:
+                director_decision = await director.decide(
+                    trigger="user_message",
+                    context_summary=text[:300],
+                    owner_active=True,
+                )
+            except Exception as e:
+                log.debug("director.chat_decide_error", error=str(e))
+
         # Log the inbound message (text + any referenced photo path) — universal,
         # for owner oversight. The "[User sent a photo — saved <path>]" prompt
         # text carries the inbound media filename; we capture it explicitly too.
@@ -156,6 +181,13 @@ class ChannelSession:
         try:
             voice_on = self.voice_enabled(channel, settings.voice_reply_default)
             turn_extra = tts_turn_extra(settings, voice_reply=voice_on)
+            # Tier A #1: director pace hint composes with the TTS turn extra.
+            if director_decision is not None and director_decision.pace_hint:
+                turn_extra = (
+                    (turn_extra + "\n" if turn_extra else "")
+                    + f"# Director pacing (urgency={director_decision.urgency})\n"
+                    + director_decision.pace_hint
+                )
             if is_owner and self.agent.humor:
                 await self.agent.humor.score_inbound_reply(text)
             out = await self.agent.run_turn(
@@ -170,6 +202,14 @@ class ChannelSession:
                 if i:
                     await asyncio.sleep(1.2)
                 await _logged_reply(chunk)
+            # Tier B #8: track jokes/quips in her normal chat replies (owner
+            # only) so her humor can be calibrated from everyday conversation,
+            # not just spontaneous outreach.
+            if is_owner and self.agent.humor:
+                try:
+                    await self.agent.humor.note_chat_reply(out)
+                except Exception as e:
+                    log.debug("humor.note_chat_reply_failed", error=str(e))
         except Exception as e:
             log.exception("channel.chat_error", channel=channel)
             await _logged_reply(f"Error: {e}")
