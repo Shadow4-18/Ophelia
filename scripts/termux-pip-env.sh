@@ -41,20 +41,34 @@ termux_python_minor() {
     "$1" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
 }
 
-# TUR may ship python3.12 / python3.11 / python3.10 — NOT python3.13 (main python is already 3.13+).
+# TUR mirrors differ: some ship python3.11 binaries, others only python-is-python3.11 meta-packages.
 termux_tur_python_bins() {
-    printf '%s\n' python3.12 python3.11 python3.10
+    printf '%s\n' python3.12 python3.11 python3.10 python python3
 }
 
 termux_install_tur_python() {
     echo "Trying to install an older Python from TUR (for pydantic-core wheels)..."
     pkg install -y tur-repo 2>/dev/null || true
+    pkg update -y 2>/dev/null || true
 
-    local pkg
-    for pkg in python3.12 python3.11 python3.10; do
+    # Meta-packages: switch default `python` to 3.11 / 3.10 (seen on many TUR mirrors).
+    local meta
+    for meta in python-is-python3.11 python-is-python3.10; do
+        echo "  -> pkg install $meta ..."
+        if pkg install -y "$meta" 2>/dev/null; then
+            if python --version 2>&1 | grep -qE '3\.(10|11)\.'; then
+                echo "  Default python is now: $(python --version 2>&1)"
+                return 0
+            fi
+        fi
+    done
+
+    # Standalone versioned interpreters (other mirrors).
+    local pkg bin
+    for pkg in python3.11 python3.10 python3.12; do
         echo "  -> pkg install $pkg ..."
         if pkg install -y "$pkg" 2>/dev/null; then
-            local bin="${pkg}"
+            bin="${pkg}"
             if command -v "$bin" &>/dev/null; then
                 echo "  Installed $bin ($("$bin" --version 2>&1))"
                 return 0
@@ -62,44 +76,48 @@ termux_install_tur_python() {
         fi
     done
 
-    echo "  No TUR python3.12/3.11/3.10 package found on this mirror."
-    echo "  Search manually: pkg search python | grep python3"
+    echo "  No compatible TUR Python found."
+    echo "  Run: pkg search python | grep -E 'python-is-python|python3\\.'"
     return 1
 }
 
 termux_ensure_compatible_python() {
     local minor
     minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
-    if [[ "$minor" != "3.14" && "$minor" != "3.15" ]]; then
+    # Need older Python when default is 3.13+ (no pydantic-core wheels for 3.14 yet; 3.13 often lacks wheels too).
+    if [[ "$minor" == "3.10" ]] || [[ "$minor" == "3.11" ]] || [[ "$minor" == "3.12" ]]; then
         return 0
     fi
 
     local bin
-    while IFS= read -r bin; do
+    for bin in python3.11 python3.10 python3.12; do
         if command -v "$bin" &>/dev/null; then
             return 0
         fi
-    done < <(termux_tur_python_bins)
+    done
 
     termux_install_tur_python || true
 }
 
-# Prefer a TUR side-by-side Python when default is 3.14+ (no pydantic wheels yet).
+# Prefer a Python version with pydantic-core wheels (3.10–3.12).
 termux_resolve_python() {
     local py="python"
     local minor
     minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
 
-    if [[ "$minor" == "3.14" ]] || [[ "$minor" == "3.15" ]]; then
-        local candidate
-        for candidate in python3.12 python3.11 python3.10; do
-            if command -v "$candidate" &>/dev/null; then
-                echo "Using $candidate (default python is $minor)" >&2
-                py="$candidate"
-                break
-            fi
-        done
+    if [[ "$minor" == "3.10" ]] || [[ "$minor" == "3.11" ]] || [[ "$minor" == "3.12" ]]; then
+        echo "$py"
+        return 0
     fi
+
+    local candidate
+    for candidate in python3.11 python3.10 python3.12; do
+        if command -v "$candidate" &>/dev/null; then
+            echo "Using $candidate (default python is $minor)" >&2
+            echo "$candidate"
+            return 0
+        fi
+    done
 
     echo "$py"
 }
@@ -174,9 +192,9 @@ ERROR: Could not install pydantic-core for Python 3.${minor}.
 If you are on Python 3.14+, install an older Python from TUR first:
 
   pkg install tur-repo
-  pkg install python3.12    # or: python3.11 / python3.10
-  pkg search python | grep python3
-  PYTHON=python3.12 bash scripts/termux-repair.sh
+  pkg install python-is-python3.11    # or python-is-python3.10
+  pkg search python | grep -E 'python-is-python|python3\.'
+  bash scripts/termux-repair.sh
 
 Wheels: https://github.com/Eutalix/android-pydantic-core/releases (Python 3.9–3.13 only)
 EOF

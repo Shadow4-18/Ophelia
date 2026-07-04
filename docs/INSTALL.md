@@ -391,24 +391,26 @@ python -m ophelia run
 
 **Why:** Termux's default `python` may be **3.14**, but prebuilt Android `pydantic-core` wheels only exist for **Python 3.9–3.13**. There is **no `python3.13` package** in TUR (3.13 is already the main interpreter on many mirrors).
 
-**Fix:** install an **older side-by-side Python from TUR**, then repair with that:
+**Fix:** your mirror has **`python-is-python3.11`** (not `python3.13`). Install that to switch default Python to 3.11:
 
 ```bash
 pkg install tur-repo
-pkg search python | grep python3    # see what's available on your mirror
-pkg install python3.12              # or python3.11 / python3.10 if 3.12 missing
+pkg update
+pkg install python-is-python3.11
+python --version    # should show 3.11.x
 
 cd ~/Ophelia
 git pull
-PYTHON=python3.12 bash scripts/termux-repair.sh
+bash scripts/termux-repair.sh
 ```
 
-Then run Ophelia with:
+If `python-is-python3.11` is unavailable, try `python-is-python3.10`.
+
+Then run Ophelia:
 
 ```bash
-python3.12 -m ophelia run
-# optional alias in ~/.bashrc:
-# alias ophelia='python3.12 -m ophelia'
+python -m ophelia run
+# or: bash scripts/ophelia run
 ```
 
 If no TUR Python is available, the repair script will try compiling `pydantic-core` on 3.14 (slow). Ensure rust is fixed first:
