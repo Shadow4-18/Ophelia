@@ -4,6 +4,7 @@
 # Symptoms:
 #   ophelia: bad interpreter: .../python3.13: No such file or directory
 #   pip install . fails: duplicate app.css in wheel / jiter / ANDROID_API_LEVEL
+#   pydantic-core: crate 'std' required to be available in rlib format
 #
 # Run from the Ophelia repo root:
 #   cd ~/Ophelia && git pull && bash scripts/termux-repair.sh
@@ -15,10 +16,13 @@ cd "$ROOT"
 # shellcheck source=termux-pip-env.sh
 source "$ROOT/scripts/termux-pip-env.sh"
 
+termux_fix_rust_path
+export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
+
 echo ""
 echo "=== Ophelia Termux repair ==="
 echo ""
-echo "Python: $(command -v python) ($(python --version 2>&1))"
+echo "Python: $(command -v "$TERMUX_PYTHON") ($("$TERMUX_PYTHON" --version 2>&1))"
 echo "ANDROID_API_LEVEL=${ANDROID_API_LEVEL}"
 echo ""
 
@@ -49,31 +53,35 @@ echo "[2/4] Native wheels (pydantic-core)..."
 termux_preinstall_native_wheels
 
 echo "[3/4] Reinstall Ophelia (editable, Termux constraints)..."
-python -m pip install -U setuptools wheel
+"$TERMUX_PYTHON" -m pip install -U setuptools wheel
 termux_pip_install -e "$ROOT" -c "$ROOT/scripts/termux-constraints.txt"
 
 echo "[4/4] Verify CLI..."
 if ! command -v ophelia >/dev/null 2>&1; then
-    echo "ERROR: ophelia not on PATH after reinstall."
-    echo "Try: export PATH=\"\$PREFIX/bin:\$HOME/.local/bin:\$PATH\""
-    exit 1
+  echo "WARNING: ophelia not on PATH — use: $TERMUX_PYTHON -m ophelia"
+else
+  ophelia_cli="$(command -v ophelia)"
+  ophelia_shebang="$(head -n1 "$ophelia_cli")"
+  echo "  ophelia -> $ophelia_cli"
+  echo "  shebang -> $ophelia_shebang"
+  if ! ophelia --help >/dev/null 2>&1; then
+    echo "WARNING: ophelia wrapper broken — use: $TERMUX_PYTHON -m ophelia"
+  fi
 fi
 
-ophelia_cli="$(command -v ophelia)"
-ophelia_shebang="$(head -n1 "$ophelia_cli")"
-echo "  ophelia -> $ophelia_cli"
-echo "  shebang -> $ophelia_shebang"
-
-if ! ophelia --help >/dev/null 2>&1; then
-    echo "ERROR: ophelia wrapper still broken. Run manually:"
-    echo "  python -m ophelia --help"
+if ! "$TERMUX_PYTHON" -m ophelia --help >/dev/null 2>&1; then
+    echo "ERROR: Ophelia package not importable."
     exit 1
 fi
 
 echo ""
 echo "Repair complete. Next:"
-echo "  ophelia check"
-echo "  ophelia run"
+echo "  $TERMUX_PYTHON -m ophelia check"
+echo "  $TERMUX_PYTHON -m ophelia run"
+if [[ "$TERMUX_PYTHON" != "python" ]]; then
+  echo ""
+  echo "Tip: alias ophelia='$TERMUX_PYTHON -m ophelia' in ~/.bashrc"
+fi
 echo ""
 echo "Kokoro TTS is a separate local server — Ophelia does not pip-install it."
-echo "See README.md (Kokoro fully offline on the phone) or use OPHELIA_TTS_PROVIDER=edge temporarily."
+echo "  bash scripts/termux-kokoro-setup.sh"

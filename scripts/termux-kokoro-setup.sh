@@ -9,22 +9,17 @@
 #   bash scripts/termux-kokoro-setup.sh run    # start server on :8880
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=termux-pip-env.sh
+source "$ROOT/scripts/termux-pip-env.sh"
+
 KOKOROS_DIR="${KOKOROS_DIR:-$HOME/Kokoros}"
 KOKOROS_REPO="${KOKOROS_REPO:-https://github.com/lucasjinreal/Kokoros}"
 PORT="${KOKORO_PORT:-8880}"
 
-termux_fix_rust() {
-    echo "=== Termux Rust toolchain ==="
+termux_fix_rust_path
 
-    # rustup breaks Termux's patched rustc (core/std rlib not found).
-    if [[ -d "$HOME/.cargo/bin" ]] && [[ ":${PATH}:" == *":$HOME/.cargo/bin:"* ]]; then
-        echo "WARNING: ~/.cargo/bin is on PATH (rustup). Removing from this session."
-        export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$HOME/.cargo/bin" | paste -sd: -)"
-    fi
-    if [[ -f "$HOME/.cargo/env" ]] && grep -q 'cargo/bin' "$HOME/.cargo/env" 2>/dev/null; then
-        echo "TIP: comment out the PATH line in ~/.cargo/env if rustc fails after pkg upgrade."
-    fi
-
+termux_prepare_kokoros_build() {
     arch="$(uname -m)"
     std_pkg=""
     case "$arch" in
@@ -35,9 +30,14 @@ termux_fix_rust() {
         *)       echo "Unknown arch: $arch"; exit 1 ;;
     esac
 
+    echo "=== Termux Rust toolchain ==="
     pkg update -y
-    pkg install -y rust "$std_pkg" binutils clang git curl
+    pkg install -y rust "$std_pkg" binutils clang git curl libopus pkg-config
     echo "rustc: $(command -v rustc) ($(rustc --version 2>&1))"
+
+    # audiopus_sys build.rs returns () on aarch64-linux-android unless linking mode is set.
+    export OPUS_STATIC=1
+    export LIBOPUS_STATIC=1
 }
 
 termux_build_kokoros() {
@@ -62,6 +62,7 @@ termux_build_kokoros() {
             -o data/voices-v1.0.bin
     fi
 
+    echo "Building with OPUS_STATIC=1 (fixes audiopus_sys on Termux)..."
     cargo build --release
     echo ""
     echo "Built: $KOKOROS_DIR/target/release/koko"
@@ -80,11 +81,11 @@ termux_run_kokoros() {
 
 case "${1:-build}" in
     run|start)
-        termux_fix_rust
+        termux_prepare_kokoros_build
         termux_run_kokoros
         ;;
     build|"")
-        termux_fix_rust
+        termux_prepare_kokoros_build
         termux_build_kokoros
         echo ""
         echo "=== Next steps ==="

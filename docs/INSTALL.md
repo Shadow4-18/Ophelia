@@ -360,6 +360,28 @@ python -m ophelia check
 python -m ophelia run
 ```
 
+### Python 3.14 + `pydantic-core` / `crate 'std' required in rlib format` (Termux)
+
+**Why:** Termux's default `python` may be **3.14**, but prebuilt Android `pydantic-core` wheels only exist for **Python 3.9–3.13**. Pip then tries to compile from source, which fails with Rust `rlib` errors.
+
+**Fix:** install Python 3.13 from TUR and use it for Ophelia:
+
+```bash
+pkg install tur-repo
+pkg install python3.13
+cd ~/Ophelia
+git pull
+PYTHON=python3.13 bash scripts/termux-repair.sh
+```
+
+Then run Ophelia with:
+
+```bash
+python3.13 -m ophelia run
+# optional alias in ~/.bashrc:
+# alias ophelia='python3.13 -m ophelia'
+```
+
 ### `duplicate ... ophelia/ui/static/app.css` during `pip install`
 
 **Why:** An older wheel build config included the UI static files twice. Fixed in current `main` — `git pull` then reinstall.
@@ -404,10 +426,10 @@ KOKORO_TTS_URL=http://127.0.0.1:8880/v1
 KOKORO_TTS_VOICE=af_heart
 ```
 
-**Quick voice fallback** while Kokoro is down — use Microsoft Edge TTS (cloud, no local server):
+**Quick voice fallback** while Kokoro is down — use xAI TTS (if you have OAuth configured):
 
 ```env
-OPHELIA_TTS_PROVIDER=edge
+OPHELIA_TTS_PROVIDER=xai
 ```
 
 **Verify Kokoro server:**
@@ -424,19 +446,30 @@ ophelia tts speak "test" --play
 
 - **`rustup` hijacked PATH** — `~/.cargo/bin` must not come before Termux's `rustc`
 - **Missing std library** — need `rust-std-aarch64-linux-android` (or your arch) alongside `rust`
+- **Python 3.14** — see section above; use Python 3.13 for Ophelia
 
 **Fix:** do not pip-install Kokoro. Fix Rust, then build Kokoros:
 
 ```bash
-# Remove rustup from PATH for this session (if you ever ran rustup-init)
 export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$HOME/.cargo/bin" | paste -sd: -)"
-
-pkg install -y rust rust-std-aarch64-linux-android binutils clang
+pkg install -y rust rust-std-aarch64-linux-android binutils clang libopus
 cd ~/Ophelia
 bash scripts/termux-kokoro-setup.sh
 ```
 
 If you previously ran `rustup-init`, edit `~/.cargo/env` and remove the line that prepends `~/.cargo/bin` to PATH.
+
+### `audiopus_sys` / `expected bool, found ()` (Kokoros cargo build)
+
+**Why:** Kokoros depends on `audiopus_sys`, whose `build.rs` does not pick a linking mode on `aarch64-linux-android` unless told explicitly.
+
+**Fix:** the setup script sets `OPUS_STATIC=1` and installs `libopus`. Re-run:
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-kokoro-setup.sh
+```
 
 ### Ollama not reachable
 

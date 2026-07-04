@@ -8,9 +8,13 @@ cd "$ROOT"
 # shellcheck source=termux-pip-env.sh
 source "$ROOT/scripts/termux-pip-env.sh"
 
+termux_fix_rust_path
+export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
+
 echo ""
 echo "=== Ophelia Project — Termux install ==="
 echo ""
+echo "Python: $(command -v "$TERMUX_PYTHON") ($("$TERMUX_PYTHON" --version 2>&1))"
 echo "ANDROID_API_LEVEL=${ANDROID_API_LEVEL}"
 echo ""
 
@@ -27,15 +31,15 @@ termux_preinstall_native_wheels
 
 echo "[3/5] Ophelia + dependencies..."
 # Termux manages pip via pkg; do not self-upgrade pip.
-python -m pip install -U setuptools wheel
+"$TERMUX_PYTHON" -m pip install -U setuptools wheel
 termux_pip_install -e "$ROOT" -c "$ROOT/scripts/termux-constraints.txt"
 
 echo "[4/5] Auto-setup (~/.ophelia)..."
-ophelia setup --do
+"$TERMUX_PYTHON" -m ophelia setup --do
 
 echo "[5/5] Step-by-step guide..."
-ophelia setup
+"$TERMUX_PYTHON" -m ophelia setup
 
 echo ""
-echo "Verify: ophelia check"
-echo "When ready: termux-wake-lock && tmux new -s ophelia && ophelia run"
+echo "Verify: $TERMUX_PYTHON -m ophelia check"
+echo "When ready: termux-wake-lock && tmux new -s ophelia && $TERMUX_PYTHON -m ophelia run"
