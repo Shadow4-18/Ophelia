@@ -17,6 +17,7 @@ cd "$ROOT"
 source "$ROOT/scripts/termux-pip-env.sh"
 
 termux_fix_rust_path
+termux_ensure_python313
 export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
 
 echo ""
@@ -57,9 +58,12 @@ echo "[3/4] Reinstall Ophelia (editable, Termux constraints)..."
 termux_pip_install -e "$ROOT" -c "$ROOT/scripts/termux-constraints.txt"
 
 echo "[4/4] Verify CLI..."
+termux_install_ophelia_wrapper "$TERMUX_PYTHON"
+
 if ! command -v ophelia >/dev/null 2>&1; then
-  echo "WARNING: ophelia not on PATH — use: $TERMUX_PYTHON -m ophelia"
-else
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+if command -v ophelia >/dev/null 2>&1; then
   ophelia_cli="$(command -v ophelia)"
   ophelia_shebang="$(head -n1 "$ophelia_cli")"
   echo "  ophelia -> $ophelia_cli"
@@ -76,12 +80,9 @@ fi
 
 echo ""
 echo "Repair complete. Next:"
-echo "  $TERMUX_PYTHON -m ophelia check"
-echo "  $TERMUX_PYTHON -m ophelia run"
-if [[ "$TERMUX_PYTHON" != "python" ]]; then
-  echo ""
-  echo "Tip: alias ophelia='$TERMUX_PYTHON -m ophelia' in ~/.bashrc"
-fi
+echo "  ophelia check          # or: $TERMUX_PYTHON -m ophelia check"
+echo "  ophelia run"
+echo "  bash scripts/ophelia run   # fallback if PATH not updated yet"
 echo ""
 echo "Kokoro TTS is a separate local server — Ophelia does not pip-install it."
 echo "  bash scripts/termux-kokoro-setup.sh"

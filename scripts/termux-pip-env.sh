@@ -78,6 +78,35 @@ termux_pip_install() {
         "$@"
 }
 
+termux_ensure_python313() {
+    local minor
+    minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
+    if [[ "$minor" != "3.14" && "$minor" != "3.15" ]]; then
+        return 0
+    fi
+    if command -v python3.13 &>/dev/null; then
+        return 0
+    fi
+    echo "Python 3.14 detected — installing Python 3.13 from TUR (required for pydantic-core)..."
+    pkg install -y tur-repo
+    pkg install -y python3.13
+}
+
+termux_install_ophelia_wrapper() {
+    local py="$1"
+    local bindir="${HOME}/.local/bin"
+    mkdir -p "$bindir"
+    cat >"$bindir/ophelia" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+exec $py -m ophelia "\$@"
+EOF
+    chmod +x "$bindir/ophelia"
+    echo "  Installed wrapper: $bindir/ophelia -> $py -m ophelia"
+    if [[ ":${PATH}:" != *":$bindir:"* ]]; then
+        echo "  Add to ~/.bashrc:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+}
+
 termux_preinstall_native_wheels() {
     local py="${TERMUX_PYTHON:-python}"
     local minor

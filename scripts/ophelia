@@ -1,0 +1,27 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Run Ophelia without relying on a pip-generated `ophelia` console script.
+# Use when `ophelia: command not found` after a failed install or Python upgrade.
+#
+#   bash scripts/ophelia run
+#   bash scripts/ophelia check
+#   bash scripts/ophelia --help
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=termux-pip-env.sh
+source "$ROOT/scripts/termux-pip-env.sh"
+
+termux_fix_rust_path 2>/dev/null || true
+
+if [[ -n "${PYTHON:-}" ]]; then
+    PY="$PYTHON"
+elif command -v python3.13 &>/dev/null; then
+    PY="python3.13"
+elif command -v python3.12 &>/dev/null; then
+    PY="python3.12"
+else
+    PY="$(termux_resolve_python 2>/dev/null || echo python)"
+fi
+
+cd "$ROOT"
+exec "$PY" -m ophelia "$@"

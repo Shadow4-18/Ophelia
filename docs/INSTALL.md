@@ -333,11 +333,38 @@ ophelia setup                  # human checklist with [OK] / [  ]
 
 ### `ophelia: command not found`
 
+The `ophelia` command is **not part of the git repo** — pip creates it at install time in `$PREFIX/bin` or `~/.local/bin`. If install failed (Python upgrade, pydantic-core, etc.), the command disappears. **Your project files in `~/Ophelia` are still there.**
+
+**Quick run without reinstalling** (from the repo):
+
+```bash
+cd ~/Ophelia
+bash scripts/ophelia --help
+bash scripts/ophelia run
+```
+
+**Full fix (Termux, Python 3.14):**
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-repair.sh
+```
+
+This installs Python 3.13 from TUR if needed, reinstalls Ophelia, and recreates `~/.local/bin/ophelia`.
+
+If `ophelia` still not found after repair:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+# add permanently:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+```
+
+**PC:**
+
 ```bash
 pip install -e .
-# Termux (must cap openai — see jiter error below):
-cd ~/Ophelia
-python -m pip install --no-cache-dir -e . -c scripts/termux-constraints.txt
 ```
 
 ### `bad interpreter` / `python3.13: No such file or directory` (Termux)
