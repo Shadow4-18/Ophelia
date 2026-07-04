@@ -389,24 +389,34 @@ python -m ophelia run
 
 ### Python 3.14 + `pydantic-core` / `crate 'std' required in rlib format` (Termux)
 
-**Why:** Termux's default `python` may be **3.14**, but prebuilt Android `pydantic-core` wheels only exist for **Python 3.9–3.13**. Pip then tries to compile from source, which fails with Rust `rlib` errors.
+**Why:** Termux's default `python` may be **3.14**, but prebuilt Android `pydantic-core` wheels only exist for **Python 3.9–3.13**. There is **no `python3.13` package** in TUR (3.13 is already the main interpreter on many mirrors).
 
-**Fix:** install Python 3.13 from TUR and use it for Ophelia:
+**Fix:** install an **older side-by-side Python from TUR**, then repair with that:
 
 ```bash
 pkg install tur-repo
-pkg install python3.13
+pkg search python | grep python3    # see what's available on your mirror
+pkg install python3.12              # or python3.11 / python3.10 if 3.12 missing
+
 cd ~/Ophelia
 git pull
-PYTHON=python3.13 bash scripts/termux-repair.sh
+PYTHON=python3.12 bash scripts/termux-repair.sh
 ```
 
 Then run Ophelia with:
 
 ```bash
-python3.13 -m ophelia run
+python3.12 -m ophelia run
 # optional alias in ~/.bashrc:
-# alias ophelia='python3.13 -m ophelia'
+# alias ophelia='python3.12 -m ophelia'
+```
+
+If no TUR Python is available, the repair script will try compiling `pydantic-core` on 3.14 (slow). Ensure rust is fixed first:
+
+```bash
+export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$HOME/.cargo/bin" | paste -sd: -)"
+export ANDROID_API_LEVEL=24
+pkg install -y rust rust-std-aarch64-linux-android
 ```
 
 ### `duplicate ... ophelia/ui/static/app.css` during `pip install`

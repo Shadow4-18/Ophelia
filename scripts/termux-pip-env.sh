@@ -4,8 +4,10 @@
 
 TERMUX_PIP_EXTRA_INDEX="${TERMUX_PIP_EXTRA_INDEX:-https://termux-user-repository.github.io/pypi/}"
 TERMUX_PYDANTIC_FALLBACK_INDEX="${TERMUX_PYDANTIC_FALLBACK_INDEX:-https://eutalix.github.io/android-pydantic-core/}"
+TERMUX_PYDANTIC_INSTALLER="${TERMUX_PYDANTIC_INSTALLER:-https://raw.githubusercontent.com/Eutalix/android-pydantic-core/main/install_pydantic_core.sh}"
 
-export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-$(getprop ro.build.version.sdk 2>/dev/null || echo 28)}"
+# Maturin on Termux expects API 24 for cross-target builds (not the device SDK).
+export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
 
 # rustup breaks Termux's patched rustc (core/std rlib not found).
 termux_fix_rust_path() {
@@ -28,44 +30,75 @@ termux_fix_rust_path() {
     if [[ -n "$std_pkg" ]]; then
         pkg install -y rust "$std_pkg" binutils clang 2>/dev/null || true
     fi
+
+    if [[ -x "${PREFIX:-/data/data/com.termux/files/usr}/bin/rustc" ]]; then
+        export RUSTC="${PREFIX}/bin/rustc"
+        export CARGO="${PREFIX}/bin/cargo"
+    fi
 }
 
 termux_python_minor() {
     "$1" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
 }
 
-# Termux main repo may ship Python 3.14 before Android pydantic-core wheels exist.
-# Prefer 3.11–3.13 from TUR when the default interpreter is too new.
+# TUR may ship python3.12 / python3.11 / python3.10 — NOT python3.13 (main python is already 3.13+).
+termux_tur_python_bins() {
+    printf '%s\n' python3.12 python3.11 python3.10
+}
+
+termux_install_tur_python() {
+    echo "Trying to install an older Python from TUR (for pydantic-core wheels)..."
+    pkg install -y tur-repo 2>/dev/null || true
+
+    local pkg
+    for pkg in python3.12 python3.11 python3.10; do
+        echo "  -> pkg install $pkg ..."
+        if pkg install -y "$pkg" 2>/dev/null; then
+            local bin="${pkg}"
+            if command -v "$bin" &>/dev/null; then
+                echo "  Installed $bin ($("$bin" --version 2>&1))"
+                return 0
+            fi
+        fi
+    done
+
+    echo "  No TUR python3.12/3.11/3.10 package found on this mirror."
+    echo "  Search manually: pkg search python | grep python3"
+    return 1
+}
+
+termux_ensure_compatible_python() {
+    local minor
+    minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
+    if [[ "$minor" != "3.14" && "$minor" != "3.15" ]]; then
+        return 0
+    fi
+
+    local bin
+    while IFS= read -r bin; do
+        if command -v "$bin" &>/dev/null; then
+            return 0
+        fi
+    done < <(termux_tur_python_bins)
+
+    termux_install_tur_python || true
+}
+
+# Prefer a TUR side-by-side Python when default is 3.14+ (no pydantic wheels yet).
 termux_resolve_python() {
     local py="python"
     local minor
     minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
 
     if [[ "$minor" == "3.14" ]] || [[ "$minor" == "3.15" ]]; then
-        for candidate in python3.13 python3.12 python3.11; do
+        local candidate
+        for candidate in python3.12 python3.11 python3.10; do
             if command -v "$candidate" &>/dev/null; then
-                echo "Using $candidate (Termux default python is $minor — no pydantic-core wheels yet)" >&2
+                echo "Using $candidate (default python is $minor)" >&2
                 py="$candidate"
                 break
             fi
         done
-    fi
-
-    if [[ "$py" == "python" ]] && { [[ "$minor" == "3.14" ]] || [[ "$minor" == "3.15" ]]; }; then
-        cat >&2 <<'EOF'
-ERROR: Termux Python 3.14+ cannot install pydantic-core yet (no Android wheels; source builds fail).
-
-Install Python 3.13 from TUR, then re-run this script:
-
-  pkg install tur-repo
-  pkg install python3.13
-  python3.13 -m pip install -U pip setuptools wheel
-  cd ~/Ophelia
-  PYTHON=python3.13 bash scripts/termux-repair.sh
-
-Or temporarily use: python3.13 -m ophelia run
-EOF
-        return 1
     fi
 
     echo "$py"
@@ -76,20 +109,6 @@ termux_pip_install() {
     "$py" -m pip install --no-cache-dir --prefer-binary \
         --extra-index-url "$TERMUX_PIP_EXTRA_INDEX" \
         "$@"
-}
-
-termux_ensure_python313() {
-    local minor
-    minor="$(termux_python_minor python 2>/dev/null || echo 0.0)"
-    if [[ "$minor" != "3.14" && "$minor" != "3.15" ]]; then
-        return 0
-    fi
-    if command -v python3.13 &>/dev/null; then
-        return 0
-    fi
-    echo "Python 3.14 detected — installing Python 3.13 from TUR (required for pydantic-core)..."
-    pkg install -y tur-repo
-    pkg install -y python3.13
 }
 
 termux_install_ophelia_wrapper() {
@@ -112,27 +131,54 @@ termux_preinstall_native_wheels() {
     local minor
     minor="$("$py" -c 'import sys; print(sys.version_info.minor)')"
 
-    echo "  -> pydantic-core for Python 3.${minor} (prebuilt wheels only)..."
+    echo "  -> pydantic-core for Python 3.${minor} (prebuilt wheels first)..."
 
-    # Never compile pydantic-core on Termux — it fails with rlib / maturin errors.
     if "$py" -m pip install --no-cache-dir --prefer-binary --only-binary=:all: \
         --extra-index-url "$TERMUX_PIP_EXTRA_INDEX" \
         "pydantic-core" "pydantic>=2.10"; then
         return 0
     fi
 
-    echo "  -> TUR had no wheel; trying android-pydantic-core index..."
+    echo "  -> TUR index had no wheel; trying android-pydantic-core..."
     if "$py" -m pip install --no-cache-dir --prefer-binary --only-binary=:all: \
         --extra-index-url "$TERMUX_PYDANTIC_FALLBACK_INDEX" \
         "pydantic-core" "pydantic>=2.10"; then
         return 0
     fi
 
-    cat >&2 <<EOF
-ERROR: No prebuilt pydantic-core wheel for Python 3.${minor} on this device.
+    echo "  -> Trying Eutalix auto-installer script..."
+    local _pydantic_installer="/tmp/ophelia-install-pydantic-core.sh"
+    if curl -fsSL "$TERMUX_PYDANTIC_INSTALLER" -o "$_pydantic_installer"; then
+        chmod +x "$_pydantic_installer"
+        # Installer uses python3/pip from PATH — prefer our chosen interpreter.
+        local _pydir
+        _pydir="$(dirname "$(command -v "$py")")"
+        if PATH="$_pydir:$PATH" bash "$_pydantic_installer"; then
+            "$py" -m pip install --no-cache-dir "pydantic>=2.10" && return 0
+        fi
+    fi
 
-If you are on Python 3.14+, install Python 3.13 from TUR (see termux_resolve_python error above).
-Otherwise check: https://github.com/Eutalix/android-pydantic-core/releases
+    # Python 3.14+: no Android wheels yet — compile from source with Termux rustc.
+    if [[ "$minor" -ge 14 ]]; then
+        echo "  -> No wheel for 3.${minor}; compiling pydantic-core (slow, ~10 min)..."
+        termux_fix_rust_path
+        "$py" -m pip install -U setuptools wheel maturin 2>/dev/null || true
+        if "$py" -m pip install --no-cache-dir "pydantic-core" "pydantic>=2.10"; then
+            return 0
+        fi
+    fi
+
+    cat >&2 <<EOF
+ERROR: Could not install pydantic-core for Python 3.${minor}.
+
+If you are on Python 3.14+, install an older Python from TUR first:
+
+  pkg install tur-repo
+  pkg install python3.12    # or: python3.11 / python3.10
+  pkg search python | grep python3
+  PYTHON=python3.12 bash scripts/termux-repair.sh
+
+Wheels: https://github.com/Eutalix/android-pydantic-core/releases (Python 3.9–3.13 only)
 EOF
     return 1
 }

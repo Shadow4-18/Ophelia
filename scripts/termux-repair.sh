@@ -17,7 +17,7 @@ cd "$ROOT"
 source "$ROOT/scripts/termux-pip-env.sh"
 
 termux_fix_rust_path
-termux_ensure_python313
+termux_ensure_compatible_python
 export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
 
 echo ""

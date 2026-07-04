@@ -15,12 +15,8 @@ termux_fix_rust_path 2>/dev/null || true
 
 if [[ -n "${PYTHON:-}" ]]; then
     PY="$PYTHON"
-elif command -v python3.13 &>/dev/null; then
-    PY="python3.13"
-elif command -v python3.12 &>/dev/null; then
-    PY="python3.12"
 else
-    PY="$(termux_resolve_python 2>/dev/null || echo python)"
+    PY="$(termux_ensure_compatible_python 2>/dev/null; termux_resolve_python 2>/dev/null || echo python)"
 fi
 
 cd "$ROOT"
