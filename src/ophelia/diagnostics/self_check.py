@@ -606,6 +606,23 @@ def _check_life_subsystems(report: SelfCheckReport, settings: Settings) -> None:
     misconfiguration here is the difference between 'feels alive' and 'just
     answers messages', so the doctor surfaces the state for tuning.
     """
+    # IANA tz database — required for LifeContext on Termux/minimal installs.
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo("UTC")
+        tz_ok, tz_detail = True, "tzdata available"
+    except Exception:
+        tz_ok, tz_detail = False, "missing — LifeContext/chat will fail without it"
+    report.add(
+        category="life",
+        name="Timezone data (tzdata)",
+        ok=tz_ok,
+        detail=tz_detail,
+        hint="pip install tzdata  (included in pip install -e .)",
+        required=False,
+    )
+
     # Director (Tier A #1)
     if settings.director_enabled:
         report.add(

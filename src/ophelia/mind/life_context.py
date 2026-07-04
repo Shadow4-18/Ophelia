@@ -12,13 +12,13 @@ import re
 import shutil
 import struct
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime, tzinfo
 
 import structlog
 
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
+from ophelia.timeutil import resolve_timezone
 
 log = structlog.get_logger()
 
@@ -46,12 +46,8 @@ class LifeContext:
         # Tier B #7: optional presence signals (BT / router / last-seen).
         self.presence_signals = None
 
-    def tz(self) -> ZoneInfo:
-        raw = (self.settings.timezone or "UTC").strip()
-        try:
-            return ZoneInfo(raw)
-        except ZoneInfoNotFoundError:
-            return ZoneInfo("UTC")
+    def tz(self) -> tzinfo:
+        return resolve_timezone(self.settings.timezone)
 
     def now(self) -> datetime:
         return datetime.now(tz=self.tz())

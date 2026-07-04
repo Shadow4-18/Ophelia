@@ -69,13 +69,9 @@ class ScheduleLearner:
         self._cached = None
 
     def _tz(self):
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from ophelia.timeutil import resolve_timezone
 
-        raw = (self.settings.timezone or "UTC").strip()
-        try:
-            return ZoneInfo(raw)
-        except ZoneInfoNotFoundError:
-            return ZoneInfo("UTC")
+        return resolve_timezone(self.settings.timezone)
 
     async def _load_counts(self) -> dict[int, dict[int, int]]:
         """Return {dow: {hour: count}}. Cached for 5 minutes."""

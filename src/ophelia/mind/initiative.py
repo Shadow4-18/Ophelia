@@ -7,9 +7,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ophelia.config import OPHELIA_HOME
+from ophelia.timeutil import resolve_timezone
 
 
 @dataclass
@@ -30,11 +30,7 @@ class InitiativeGovernor:
         )
 
     def _local_hour(self) -> int:
-        try:
-            tz = ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError:
-            tz = ZoneInfo("UTC")
-        return datetime.now(tz=tz).hour
+        return datetime.now(tz=resolve_timezone(self.timezone)).hour
 
     def _in_quiet_hours(self) -> bool:
         raw = self.quiet_hours.strip()
