@@ -386,7 +386,17 @@ pip install -e .
 
 Do **not** ask Ophelia to `pip install kokoro` — that downloads ~300MB of model weights, often times out, and does not start the server.
 
-**Termux (offline on phone):** build and run [Kokoros](https://github.com/lucasjinreal/Kokoros) (see README). Then in `~/.ophelia/.env`:
+**Termux (offline on phone)** — use the setup script (builds Kokoros with `cargo`, not pip):
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-kokoro-setup.sh        # one-time build + model download
+tmux new -s kokoro
+bash scripts/termux-kokoro-setup.sh run    # keep this running
+```
+
+Then in `~/.ophelia/.env`:
 
 ```env
 OPHELIA_TTS_PROVIDER=kokoro
@@ -407,6 +417,26 @@ curl -s http://127.0.0.1:8880/v1/audio/voices | head
 ophelia tts voices
 ophelia tts speak "test" --play
 ```
+
+### `crate 'core' required to be available in rlib format` (Termux / Kokoro pip install)
+
+**Why:** `pip install kokoro` (or related packages) tries to **compile Rust wheels** on Termux. After `pkg upgrade`, this often fails because:
+
+- **`rustup` hijacked PATH** — `~/.cargo/bin` must not come before Termux's `rustc`
+- **Missing std library** — need `rust-std-aarch64-linux-android` (or your arch) alongside `rust`
+
+**Fix:** do not pip-install Kokoro. Fix Rust, then build Kokoros:
+
+```bash
+# Remove rustup from PATH for this session (if you ever ran rustup-init)
+export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "$HOME/.cargo/bin" | paste -sd: -)"
+
+pkg install -y rust rust-std-aarch64-linux-android binutils clang
+cd ~/Ophelia
+bash scripts/termux-kokoro-setup.sh
+```
+
+If you previously ran `rustup-init`, edit `~/.cargo/env` and remove the line that prepends `~/.cargo/bin` to PATH.
 
 ### Ollama not reachable
 
