@@ -340,6 +340,74 @@ cd ~/Ophelia
 python -m pip install --no-cache-dir -e . -c scripts/termux-constraints.txt
 ```
 
+### `bad interpreter` / `python3.13: No such file or directory` (Termux)
+
+**Why:** Termux upgraded Python (e.g. 3.13 → 3.14). The `ophelia` wrapper pip wrote earlier still points at the **old** interpreter path in its shebang line.
+
+**Fix:** re-run the Termux repair script (removes stale wrappers, reinstalls with the current Python):
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-repair.sh
+```
+
+Until that finishes, you can still run Ophelia directly:
+
+```bash
+cd ~/Ophelia
+python -m ophelia check
+python -m ophelia run
+```
+
+### `duplicate ... ophelia/ui/static/app.css` during `pip install`
+
+**Why:** An older wheel build config included the UI static files twice. Fixed in current `main` — `git pull` then reinstall.
+
+**Fix (Termux):**
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-repair.sh
+```
+
+**Fix (PC):**
+
+```bash
+cd ~/Ophelia
+git pull
+pip install -e .
+```
+
+### Kokoro TTS not working / "connection refused" on port 8880
+
+**Why:** Kokoro is **not** a Python package Ophelia installs. It is a **separate local server** (Kokoros on Termux, or Kokoro-FastAPI on PC) that exposes an OpenAI-compatible API on `http://127.0.0.1:8880/v1`.
+
+Do **not** ask Ophelia to `pip install kokoro` — that downloads ~300MB of model weights, often times out, and does not start the server.
+
+**Termux (offline on phone):** build and run [Kokoros](https://github.com/lucasjinreal/Kokoros) (see README). Then in `~/.ophelia/.env`:
+
+```env
+OPHELIA_TTS_PROVIDER=kokoro
+KOKORO_TTS_URL=http://127.0.0.1:8880/v1
+KOKORO_TTS_VOICE=af_heart
+```
+
+**Quick voice fallback** while Kokoro is down — use Microsoft Edge TTS (cloud, no local server):
+
+```env
+OPHELIA_TTS_PROVIDER=edge
+```
+
+**Verify Kokoro server:**
+
+```bash
+curl -s http://127.0.0.1:8880/v1/audio/voices | head
+ophelia tts voices
+ophelia tts speak "test" --play
+```
+
 ### Ollama not reachable
 
 ```bash
