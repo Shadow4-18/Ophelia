@@ -611,12 +611,36 @@ proot-distro login ubuntu
 
 Inside Ubuntu, follow the script output (`cargo build --release` — **not** `install.sh` XNNPACK; that feature no longer exists).
 
-**proot: `audiopus_sys` / CMake / `could not find Opus`**
+**proot: final link — `audio_object_*`, `sonic*`, or `OrtGetApiBase`**
+
+Three common causes when `cargo build --release` fails at the **final link** inside proot:
+
+1. **Termux env leaked into proot** — `ORT_SKIP_DOWNLOAD` or `ORT_LIB_LOCATION` pointing at Android ONNX
+2. **Termux `.cargo/config.toml` patches** — `espeak-rs-sys` / `audiopus_sys` Android patches from `termux-kokoro-setup.sh`
+3. **Missing link flags** — espeak needs `-l sonic -l pcaudio` on the final `koko` link
+
+**Fix (recommended):**
 
 ```bash
-apt install -y libopus-dev pkg-config
-cargo clean -p audiopus_sys
-cargo build --release
+cd ~/Ophelia && git pull
+cd ~/Kokoros
+bash ~/Ophelia/scripts/kokoro-proot-build.sh
+```
+
+The script unsets bad ONNX vars, removes Termux Cargo patches, sets espeak link flags, and re-fetches ONNX for `aarch64-unknown-linux-gnu`.
+
+Or manually:
+
+```bash
+# Remove Termux Android patches if present
+mv ~/Kokoros/.cargo/config.toml ~/Kokoros/.cargo/config.toml.termux.bak 2>/dev/null || true
+
+unset ORT_SKIP_DOWNLOAD ORT_LIB_LOCATION ORT_PREFER_DYNAMIC_LINK CARGO_NET_OFFLINE
+export ORT_CACHE_DIR=$HOME/.cache/ort
+export RUSTFLAGS="-L /usr/lib/aarch64-linux-gnu -l espeak-ng -l sonic -l pcaudio"
+# If using DevGitPit fork: set ort default-features = true in kokoros/Cargo.toml
+cargo clean -p ort-sys espeak-rs-sys audiopus_sys
+cargo build --release   # NOT --offline
 ```
 
 **Alternatives while Kokoro is down:**

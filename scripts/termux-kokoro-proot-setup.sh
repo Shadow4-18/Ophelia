@@ -55,13 +55,14 @@ termux_print_instructions() {
        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
        -o data/voices-v1.0.bin
 
-     # Do NOT use DevGitPit install.sh option "XNNPACK" — that feature was removed.
-     # Plain CPU build works in proot Ubuntu:
-     cargo build --release
+     # Build (fixes DevGitPit ort + espeak link flags automatically):
+     bash ~/Ophelia/scripts/kokoro-proot-build.sh
 
-     # If espeak link fails on Linux, retry with:
+     # Or manually:
+     #   unset ORT_SKIP_DOWNLOAD ORT_LIB_LOCATION
+     #   export ORT_CACHE_DIR=$HOME/.cache/ort
      #   export RUSTFLAGS="-L /usr/lib/aarch64-linux-gnu -l espeak-ng -l sonic -l pcaudio"
-     #   cargo build --release
+     #   cargo clean -p ort-sys && cargo build --release
 
 3. Run server (keep this tmux session open):
      tmux new -s kokoro
