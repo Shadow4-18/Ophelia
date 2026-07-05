@@ -40,6 +40,24 @@ termux_prepare_kokoros_build() {
     export LIBOPUS_STATIC=1
 }
 
+termux_prepare_ort_cache() {
+    echo "=== ort-sys ONNX cache (Termux/Android has no XDG default) ==="
+    export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+    export ORT_CACHE_DIR="${ORT_CACHE_DIR:-$HOME/.cache/ort}"
+    mkdir -p "$ORT_CACHE_DIR"
+    echo "  ORT_CACHE_DIR=$ORT_CACHE_DIR"
+}
+
+termux_cargo_build_release() {
+    termux_prepare_ort_cache
+    local -a env_args=()
+    if [[ "${TERMUX_KOKORO_UNSET_LD:-}" == "1" ]]; then
+        echo "  (unset LD_LIBRARY_PATH for build — avoids broken cmake/jsoncpp)"
+        env_args+=(-u LD_LIBRARY_PATH)
+    fi
+    env "${env_args[@]}" cargo build --release
+}
+
 termux_prepare_cmake() {
     echo "=== cmake / jsoncpp (espeak-ng build needs working cmake) ==="
     pkg install -y cmake jsoncpp
@@ -164,7 +182,7 @@ termux_build_kokoros() {
     fi
 
     echo "Building Kokoros (release)..."
-    cargo build --release
+    termux_cargo_build_release
     echo ""
     echo "Built: $KOKOROS_DIR/target/release/koko"
 }
@@ -187,6 +205,7 @@ case "${1:-build}" in
         ;;
     build|"")
         termux_prepare_kokoros_build
+        termux_prepare_cmake
         termux_build_kokoros
         echo ""
         echo "=== Next steps ==="

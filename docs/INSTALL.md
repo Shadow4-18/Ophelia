@@ -518,10 +518,37 @@ Resume a failed build (audiopus patch is cached):
 
 ```bash
 cd ~/Kokoros
+export ORT_CACHE_DIR=$HOME/.cache/ort
+mkdir -p "$ORT_CACHE_DIR"
 unset LD_LIBRARY_PATH
 cargo build --release
 ```
 
+### `ort-sys` / `could not determine cache directory` (Kokoros ONNX build)
+
+**Why:** `ort-sys` (ONNX Runtime) does not know where to cache downloaded prebuilt binaries on Android/Termux. It panics at `build/main.rs` with `could not determine cache directory` even though prebuilt `aarch64-linux-android` binaries exist.
+
+**Fix:** set a cache path before building:
+
+```bash
+export ORT_CACHE_DIR=$HOME/.cache/ort
+mkdir -p "$ORT_CACHE_DIR"
+cd ~/Ophelia
+git pull
+bash scripts/termux-kokoro-setup.sh
+```
+
+Or resume manually:
+
+```bash
+export ORT_CACHE_DIR=$HOME/.cache/ort
+mkdir -p "$ORT_CACHE_DIR"
+cd ~/Kokoros
+unset LD_LIBRARY_PATH
+cargo build --release
+```
+
+The setup script sets `ORT_CACHE_DIR` automatically on future runs.
 
 **Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 
