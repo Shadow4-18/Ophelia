@@ -609,7 +609,15 @@ bash scripts/termux-kokoro-proot-setup.sh
 proot-distro login ubuntu
 ```
 
-Inside Ubuntu, follow the script output (`DevGitPit/Kokoros` + `./install.sh`, XNNPACK, port 8880).
+Inside Ubuntu, follow the script output (`cargo build --release` — **not** `install.sh` XNNPACK; that feature no longer exists).
+
+**proot: `audiopus_sys` / CMake / `could not find Opus`**
+
+```bash
+apt install -y libopus-dev pkg-config
+cargo clean -p audiopus_sys
+cargo build --release
+```
 
 **Alternatives while Kokoro is down:**
 

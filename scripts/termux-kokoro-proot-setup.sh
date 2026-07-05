@@ -37,7 +37,7 @@ termux_print_instructions() {
 2. Inside Ubuntu:
      apt update && apt upgrade -y
      apt install -y git build-essential cmake curl clang \
-         libssl-dev pkg-config \
+         libssl-dev pkg-config libopus-dev \
          espeak-ng libespeak-ng-dev libsonic-dev libpcaudio-dev
 
      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
