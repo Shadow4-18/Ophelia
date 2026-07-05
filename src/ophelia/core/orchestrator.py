@@ -54,6 +54,8 @@ class Orchestrator:
         self.stack = build_provider_stack(settings)
         self._ollama_proc: asyncio.subprocess.Process | None = None
         self._ollama_log = None
+        self._kokoro_proc: asyncio.subprocess.Process | None = None
+        self._kokoro_log = None
         self.memory = MemoryStore(settings.memory_db)
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
@@ -352,6 +354,69 @@ class Orchestrator:
             hint=f"ollama may still be starting — see {log_path}",
         )
 
+    async def _ensure_kokoro_running(self) -> None:
+        """Start `koko openai` if Kokoro TTS is configured and the server is down.
+
+        On Termux, Kokoros often runs inside proot Ubuntu. When autostart is
+        enabled we spawn it ourselves (detached) when:
+          - autostart is enabled (auto-on under Termux, off elsewhere), AND
+          - Kokoro is the active TTS provider, AND
+          - the server is not already reachable, AND
+          - we can resolve a koko binary or autostart command.
+        """
+        from ophelia.media.kokoro_server import (
+            describe_kokoro_autostart_hint,
+            kokoro_reachable,
+            kokoro_wanted,
+            resolve_kokoro_autostart,
+        )
+
+        s = self.settings
+        if not s.kokoro_autostart_enabled():
+            return
+        if not kokoro_wanted(s):
+            return
+        if await kokoro_reachable(s):
+            return
+
+        resolved = resolve_kokoro_autostart(s)
+        if not resolved:
+            log.warning(
+                "kokoro.autostart_skip",
+                reason="no koko binary found",
+                hint=describe_kokoro_autostart_hint(s),
+            )
+            return
+
+        argv, cwd, mode = resolved
+        log.info("kokoro.autostart", reason="not reachable, kokoro wanted", mode=mode)
+        log_path = OPHELIA_HOME / "kokoro.log"
+        env = dict(os.environ)
+        try:
+            self._kokoro_log = open(log_path, "ab")
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=self._kokoro_log,
+                stderr=self._kokoro_log,
+                env=env,
+                cwd=cwd,
+                start_new_session=True,
+            )
+        except Exception as e:
+            log.warning("kokoro.autostart_failed", error=str(e))
+            return
+        self._kokoro_proc = proc
+
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            if await kokoro_reachable(s):
+                log.info("kokoro.autostart_up", pid=proc.pid, mode=mode)
+                return
+        log.warning(
+            "kokoro.autostart_timeout",
+            hint=f"kokoro may still be starting — see {log_path}",
+        )
+
     async def _validate_models_at_startup(self) -> None:
         """Ping each chat-style role's model once. Warn loudly on failure.
 
@@ -431,6 +496,7 @@ class Orchestrator:
         # its provider. A bad model name (e.g. a typo) would otherwise fail
         # every single turn with a cryptic 400. Warn loudly here instead.
         await self._ensure_ollama_running()
+        await self._ensure_kokoro_running()
         await self._validate_models_at_startup()
 
         # Preload the Ollama vision model (if it's the vision provider) so the

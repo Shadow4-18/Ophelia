@@ -508,7 +508,14 @@ KOKORO_TTS_URL=http://127.0.0.1:8880/v1
 KOKORO_TTS_VOICE=af_heart
 ```
 
-Run the server in its own tmux window next to `ophelia run`.
+Run the server in its own tmux window next to `ophelia run`, **or** let Ophelia
+auto-start it on Termux (see below).
+
+**Kokoro auto-starts** — on Termux, when `OPHELIA_TTS_PROVIDER=kokoro` and
+`KOKORO_TTS_URL` is set, `ophelia run` spawns `koko openai` if the server is
+down. It auto-detects a proot Ubuntu build at
+`$PREFIX/var/lib/proot-distro/.../ubuntu/root/Kokoros/target/release/koko`.
+Disable with `OPHELIA_KOKORO_AUTOSTART=false`. Logs: `~/.ophelia/kokoro.log`.
 
 **On the PC (phone connects over LAN/Tailscale)** — run
 [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)

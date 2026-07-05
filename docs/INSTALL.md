@@ -489,6 +489,11 @@ ophelia tts voices
 ophelia tts speak "test" --play
 ```
 
+**Auto-start with Ophelia (Termux):** you do not need a separate tmux window for
+`koko` on the phone. When `OPHELIA_TTS_PROVIDER=kokoro`, `ophelia run` spawns
+the server if it is down (proot Ubuntu build is auto-detected). Disable with
+`OPHELIA_KOKORO_AUTOSTART=false`. Logs: `~/.ophelia/kokoro.log`.
+
 ### `crate 'core' required to be available in rlib format` (Termux / Kokoro pip install)
 
 **Why:** `pip install kokoro` (or related packages) tries to **compile Rust wheels** on Termux. After `pkg upgrade`, this often fails because:

@@ -377,6 +377,33 @@ class Settings(BaseSettings):
         le=2.0,
         description="Speech rate for Kokoro (0.85 thoughtful, 1.0 normal, 1.15 hyped)",
     )
+    # Auto-start the local Kokoro server (`koko openai`) when configured and down.
+    # None = auto (on under Termux, off elsewhere); True/False to force.
+    kokoro_autostart: bool | None = Field(
+        default=None,
+        alias="OPHELIA_KOKORO_AUTOSTART",
+        description="Auto-start koko openai if down (auto = on under Termux)",
+    )
+    kokoro_listen_port: int | None = Field(
+        default=None,
+        alias="KOKORO_LISTEN_PORT",
+        description="Port for koko openai (default: parsed from KOKORO_TTS_URL or 8880)",
+    )
+    kokoro_koko_bin: str | None = Field(
+        default=None,
+        alias="KOKORO_KOKO_BIN",
+        description="Path to koko binary for autostart",
+    )
+    kokoro_koko_cwd: str | None = Field(
+        default=None,
+        alias="KOKORO_KOKO_CWD",
+        description="Working directory for koko (checkpoints/ and data/)",
+    )
+    kokoro_autostart_cmd: str | None = Field(
+        default=None,
+        alias="KOKORO_AUTOSTART_CMD",
+        description="Shell command to start Kokoro when autostart is enabled",
+    )
 
     # Tier A #4: voice mind — speech-first TTS prep layer.
     # inline = rewrite before TTS (better, +300-800ms latency).
@@ -641,6 +668,14 @@ class Settings(BaseSettings):
         """Effective ollama autostart decision: explicit override, else auto (Termux)."""
         if self.ollama_autostart is not None:
             return self.ollama_autostart
+        from ophelia.platform import is_termux
+
+        return is_termux()
+
+    def kokoro_autostart_enabled(self) -> bool:
+        """Effective Kokoro autostart decision: explicit override, else auto (Termux)."""
+        if self.kokoro_autostart is not None:
+            return self.kokoro_autostart
         from ophelia.platform import is_termux
 
         return is_termux()
