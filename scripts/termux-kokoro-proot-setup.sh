@@ -49,8 +49,11 @@ termux_print_instructions() {
      ./install.sh
      # Choose XNNPACK (option 1). Thread count: 5 for SD 7+ Gen 3, else 4.
 
-3. Run server (still inside proot Ubuntu):
+3. Run server (keep this tmux session open):
+     tmux new -s kokoro
      ./target/release/koko openai --port 8880
+
+   S21 / Snapdragon 8xx: use thread count 4 or 5 when install.sh asks.
 
 4. Ophelia on Termux (outside proot) — in ~/.ophelia/.env:
      OPHELIA_TTS_PROVIDER=kokoro

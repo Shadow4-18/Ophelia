@@ -81,9 +81,42 @@ termux_prepare_ort_link() {
     if [[ -f "$ort_dir/libonnxruntime.a" ]]; then
         echo "=== ort-sys static ONNX prebuild ==="
         echo "  static prebuild at $ort_dir"
-        echo "  (ort-sys links libc++_shared itself — no global RUSTFLAGS)"
-        echo "  NOTE: if link still fails with __fprintf_chk / std::__cxx11, use proot:"
-        echo "        bash scripts/termux-kokoro-proot-setup.sh"
+        if [[ "${KOKORO_TERMUX_FORCE_NATIVE:-}" != "1" ]]; then
+            echo ""
+            echo "ERROR: Native Termux cannot link static ONNX Runtime on Android." >&2
+            echo "  (fails with __fprintf_chk / std::__cxx11 — glibc vs bionic mismatch)" >&2
+            echo "" >&2
+            echo "  Use proot Ubuntu instead (recommended):" >&2
+            echo "    bash scripts/termux-kokoro-proot-setup.sh" >&2
+            echo "" >&2
+            echo "  Or set KOKORO_TERMUX_FORCE_NATIVE=1 to retry anyway (usually wastes ~10 min)." >&2
+            exit 1
+        fi
+        echo "  KOKORO_TERMUX_FORCE_NATIVE=1 — attempting static link (likely to fail)"
+    fi
+}
+
+termux_check_native_ort_viable() {
+    termux_prepare_ort_cache
+    local target arch ort_root ort_dir
+    arch="$(uname -m)"
+    case "$arch" in
+        aarch64) target="aarch64-linux-android" ;;
+        *) return 0 ;;
+    esac
+    ort_root="$ORT_CACHE_DIR/dfbin/$target"
+    [[ -d "$ort_root" ]] || return 0
+    ort_dir="$(find "$ort_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    [[ -n "$ort_dir" ]] || return 0
+    shopt -s nullglob
+    local so_files=("$ort_dir"/libonnxruntime*.so)
+    shopt -u nullglob
+    if ((${#so_files[@]})); then
+        return 0
+    fi
+    if [[ -f "$ort_dir/libonnxruntime.a" ]] && [[ "${KOKORO_TERMUX_FORCE_NATIVE:-}" != "1" ]]; then
+        termux_prepare_ort_link
+        exit 1
     fi
 }
 
@@ -314,6 +347,7 @@ termux_build_kokoros() {
     fi
 
     echo "Building Kokoros (release)..."
+    termux_check_native_ort_viable
     termux_cargo_build_release
     echo ""
     echo "Built: $KOKOROS_DIR/target/release/koko"

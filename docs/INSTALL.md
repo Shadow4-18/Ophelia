@@ -447,15 +447,25 @@ pip install -e .
 
 Do **not** ask Ophelia to `pip install kokoro` — that downloads ~300MB of model weights, often times out, and does not start the server.
 
-**Termux (offline on phone)** — use the setup script (builds Kokoros with `cargo`, not pip):
+**Termux (offline on phone)** — native Android builds usually **fail at the ONNX link step** (`__fprintf_chk` / `std::__cxx11`). Use **proot Ubuntu** (recommended):
 
 ```bash
 cd ~/Ophelia
 git pull
-bash scripts/termux-kokoro-setup.sh        # one-time build + model download
-tmux new -s kokoro
-bash scripts/termux-kokoro-setup.sh run    # keep this running
+bash scripts/termux-kokoro-proot-setup.sh
+proot-distro login ubuntu
+# follow printed steps — DevGitPit/Kokoros install.sh, XNNPACK, port 8880
 ```
+
+Ophelia stays on native Termux; Kokoros runs inside proot on `127.0.0.1:8880`.
+
+**Native Termux build** (experimental — often fails after ~10 min compile):
+
+```bash
+bash scripts/termux-kokoro-setup.sh
+```
+
+If you already hit the ONNX linker error, do **not** retry native — switch to proot above.
 
 Then in `~/.ophelia/.env`:
 
