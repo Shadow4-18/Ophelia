@@ -540,6 +540,8 @@ class ConsciousnessLoop:
                             self.settings and self.settings.proactive_share_enabled
                         ) else ""
                         await self.notify_media(media_paths, caption=cap)
+                        for p in media_paths:
+                            tools._mark_artifact_delivered(p)
                     except TypeError:
                         await self.notify_media(media_paths)
                     except Exception as e:
@@ -565,6 +567,7 @@ class ConsciousnessLoop:
             # Mood → behavior (Tier A #5) + director urgency (Tier A #1): cap
             # burst length on outward outreach using the resolved burst_max.
             outward = outward[:burst_max]
+            outreach_tools = getattr(self.agent, "tools", None)
 
             if self.user_channel:
                 await self.memory.append_message(
@@ -578,6 +581,7 @@ class ConsciousnessLoop:
                 and self.settings.spontaneous_voice_enabled
                 and self.notify_voice
                 and action == "message"
+                and not (outreach_tools and outreach_tools.audio_delivered_this_turn())
             ):
                 try:
                     await self.notify_voice(outward)

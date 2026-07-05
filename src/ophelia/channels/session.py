@@ -87,6 +87,7 @@ class ChannelSession:
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
+        self.agent.tools.begin_turn_artifacts()
         # Let send_message tool push follow-ups mid-turn through this channel.
         self.agent.tools.set_message_sender(reply)
         self.agent.tools.set_owner(is_owner)

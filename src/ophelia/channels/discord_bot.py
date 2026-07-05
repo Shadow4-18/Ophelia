@@ -281,21 +281,29 @@ class DiscordGateway:
 
     async def _send_discord_media(self, message, text: str) -> None:
         """Send media artifacts detected in a reply blob (Image/Video/TTS saved to ...)."""
+        tools = getattr(self.session.agent, "tools", None)
         for path in artifact_paths_in_text(text):
+            if tools is not None and tools.is_artifact_delivered(path):
+                continue
             await self._send_discord_file(message, path, "")
 
     async def _send_discord_file(self, message, path: Path, caption: str) -> bool:
         """Send a file to the originating Discord channel as an attachment."""
         import discord
 
+        tools = getattr(self.session.agent, "tools", None)
         try:
             p = Path(path).expanduser()
             if not p.is_file():
                 return False
+            if tools is not None and tools.is_artifact_delivered(p):
+                return True
             await message.channel.send(
                 content=caption[:2000] if caption else None,
                 file=discord.File(str(p)),
             )
+            if tools is not None:
+                tools._mark_artifact_delivered(p)
             log.info("discord.send_file", path=str(p))
             return True
         except Exception as e:

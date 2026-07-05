@@ -220,6 +220,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "text_to_speech",
             "description": (
                 "Speak aloud — synthesizes expressive audio and auto-sends to chat. "
+                "Do NOT call send_file afterward; delivery is automatic. "
                 "With Kokoro: embed [pause:0.8s] for beats, use voice mixes like "
                 "af_bella(0.6)+bf_emma(0.4), and set speed 0.85–1.2 for mood."
             ),
@@ -258,11 +259,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "send_file",
             "description": (
-                "Send a saved file to the user RIGHT NOW — audio, video, image, or any "
-                "document you've saved to disk. Use this to deliver generated audio (TTS), "
-                "video clips, screenshots, transcripts, or any file. The file is sent as a "
-                "downloadable attachment/media in the chat. You CAN send audio and video — "
-                "do not claim you can't."
+                "Send a saved file to the user RIGHT NOW — video, image, or documents. "
+                "Do NOT use this for TTS/audio from text_to_speech (already sent). "
+                "Use for screenshots, video clips, or files not yet delivered."
             ),
             "parameters": {
                 "type": "object",
@@ -632,6 +631,7 @@ class ToolRegistry:
         self._media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self._pending_artifacts: list[Path] = []
+        self._delivered_artifacts: set[Path] = set()
         self._is_owner: bool = True
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
@@ -678,6 +678,58 @@ class ToolRegistry:
     def clear_media_sender(self) -> None:
         self._media_sender = None
 
+    def begin_turn_artifacts(self) -> None:
+        """Reset per-turn delivery tracking (pending should already be empty)."""
+        self._delivered_artifacts.clear()
+
+    def is_artifact_delivered(self, path: Path) -> bool:
+        try:
+            return path.expanduser().resolve() in self._delivered_artifacts
+        except (OSError, ValueError):
+            return False
+
+    def audio_delivered_this_turn(self) -> bool:
+        from ophelia.channels.media_reply import media_kind
+
+        return any(media_kind(p) == "audio" for p in self._delivered_artifacts)
+
+    def _mark_artifact_delivered(self, path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, ValueError):
+            return
+        self._delivered_artifacts.add(resolved)
+        self._pending_artifacts = [
+            p for p in self._pending_artifacts if p.expanduser().resolve() != resolved
+        ]
+
+    def _queue_artifact(self, path: Path) -> None:
+        if self.is_artifact_delivered(path):
+            return
+        try:
+            resolved = path.expanduser().resolve()
+        except (OSError, ValueError):
+            self._pending_artifacts.append(path)
+            return
+        if any(p.expanduser().resolve() == resolved for p in self._pending_artifacts):
+            return
+        self._pending_artifacts.append(path)
+
+    async def _deliver_artifact(self, path: Path, caption: str = "") -> bool:
+        if self.is_artifact_delivered(path):
+            return True
+        sender = self._media_sender or self.proactive_media_sender
+        if sender is None:
+            return False
+        try:
+            ok = await sender(path, caption)
+        except Exception as e:
+            log.warning("artifact.deliver_failed", path=str(path), error=str(e))
+            ok = False
+        if ok:
+            self._mark_artifact_delivered(path)
+        return ok
+
     def set_owner(self, is_owner: bool) -> None:
         """Mark whether the current turn is from the owner (full powers) or a
         sandboxed guest (identity-shaping / private / costly tools disabled)."""
@@ -687,14 +739,15 @@ class ToolRegistry:
         self._is_owner = True
 
     def consume_pending_artifacts(self) -> list[Path]:
-        out = list(self._pending_artifacts)
+        out = [
+            p for p in self._pending_artifacts if not self.is_artifact_delivered(p)
+        ]
         self._pending_artifacts.clear()
         return out
 
     def _record_artifacts_from_text(self, text: str) -> None:
         for p in artifact_paths_in_text(text):
-            if p not in self._pending_artifacts:
-                self._pending_artifacts.append(p)
+            self._queue_artifact(p)
 
     async def _send_message(self, text: str) -> str:
         from ophelia.channels.message_split import split_messages
@@ -828,7 +881,12 @@ class ToolRegistry:
             )
         except Exception as e:
             return f"TTS failed ({provider}): {e}"
+        delivered = await self._deliver_artifact(out)
+        if not delivered:
+            self._queue_artifact(out)
         result = f"TTS saved to {out}"
+        if delivered:
+            result += " (sent to the user — do not call send_file for this audio)"
         self._record_artifacts_from_text(result)
         return result
 
@@ -849,21 +907,12 @@ class ToolRegistry:
         if not p.is_file():
             return f"File not found: {path}"
 
-        sender = self._media_sender or self.proactive_media_sender
-        if sender is not None:
-            try:
-                ok = await sender(p, caption)
-            except Exception as e:
-                ok = False
-                log.warning("send_file.failed", path=str(p), error=str(e))
-            if ok:
-                log.info("send_file.sent", path=str(p), size=p.stat().st_size)
-                return f"Sent file {p.name} to the user."
-            # Fall through to queue if the live sender reported failure.
+        if await self._deliver_artifact(p, caption):
+            log.info("send_file.sent", path=str(p), size=p.stat().st_size)
+            return f"Sent file {p.name} to the user."
 
         # Deferred delivery: queue for consume_pending_artifacts().
-        if p not in self._pending_artifacts:
-            self._pending_artifacts.append(p)
+        self._queue_artifact(p)
         log.info("send_file.queued", path=str(p))
         return (
             f"File {p.name} queued for delivery to the user. "

@@ -695,15 +695,20 @@ class TelegramGateway:
         reply: str,
         *,
         extra_paths: list[Path] | None = None,
-    ) -> None:
+    ) -> bool:
+        """Send generated media from reply text / pending queue. Returns True if audio sent."""
         if not update.message:
-            return
+            return False
+        tools = getattr(self.session.agent, "tools", None)
         seen: set[Path] = set()
         paths = artifact_paths_in_text(reply)
         if extra_paths:
             paths.extend(extra_paths)
+        audio_sent = False
         for path in paths:
             if path in seen:
+                continue
+            if tools is not None and tools.is_artifact_delivered(path):
                 continue
             seen.add(path)
             kind = media_kind(path)
@@ -720,8 +725,14 @@ class TelegramGateway:
                     with path.open("rb") as f:
                         await update.message.reply_audio(audio=InputFile(f))
                     log.info("telegram.sent_audio", path=str(path))
+                    audio_sent = True
+                else:
+                    continue
+                if tools is not None:
+                    tools._mark_artifact_delivered(path)
             except Exception as e:
                 log.warning("telegram.send_media_failed", path=str(path), error=str(e))
+        return audio_sent
 
     async def _send_media_to_chat(self, update: Update, path: Path, caption: str) -> bool:
         """Send a single file to the current chat as the appropriate media type.
@@ -764,11 +775,15 @@ class TelegramGateway:
                 extra_paths = tools.consume_pending_artifacts()
             except Exception:
                 extra_paths = []
-        await self._send_media_artifacts(update, reply, extra_paths=extra_paths)
+        audio_sent = await self._send_media_artifacts(
+            update, reply, extra_paths=extra_paths
+        )
+        if tools is not None and tools.audio_delivered_this_turn():
+            audio_sent = True
         voice_on = self.session.voice_enabled(
             channel, self.settings.voice_reply_default
         )
-        if voice_on and len(reply) < 800 and update.message:
+        if voice_on and not audio_sent and len(reply) < 800 and update.message:
             try:
                 bearer = None
                 if resolve_tts_provider(self.settings) == "xai":
