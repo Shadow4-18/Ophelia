@@ -622,10 +622,12 @@ Three common causes when `cargo build --release` fails at the **final link** ins
 **Fix (recommended):**
 
 ```bash
-cd ~/Ophelia && git pull
+cd /data/data/com.termux/files/home/Ophelia && git pull
 cd ~/Kokoros
-bash ~/Ophelia/scripts/kokoro-proot-build.sh
+bash /data/data/com.termux/files/home/Ophelia/scripts/kokoro-proot-build.sh
 ```
+
+Inside **proot Ubuntu**, `~` is `/root`. Ophelia is cloned in the **Termux** home (`/data/data/com.termux/files/home/Ophelia`), not `/root/Ophelia`. Do not use `~/Ophelia/...` from proot unless you symlinked it.
 
 The script unsets bad ONNX vars, removes Termux Cargo patches, sets espeak link flags, and re-fetches ONNX for `aarch64-unknown-linux-gnu`.
 

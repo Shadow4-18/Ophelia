@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Build Kokoros inside proot-distro Ubuntu (aarch64-unknown-linux-gnu).
-# Run from the Kokoros repo root:
-#   bash ~/Ophelia/scripts/kokoro-proot-build.sh
+#
+# From Kokoros repo root inside proot:
+#   bash /data/data/com.termux/files/home/Ophelia/scripts/kokoro-proot-build.sh
+#
+# (proot's ~ is /root — Ophelia lives in the Termux home, not ~/Ophelia.)
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 KOKOROS_DIR="${KOKOROS_DIR:-$(pwd)}"
 KOKOROS_CARGO="$KOKOROS_DIR/kokoros/Cargo.toml"
 CARGO_CONFIG="$KOKOROS_DIR/.cargo/config.toml"
 
 if [[ ! -f "$KOKOROS_DIR/Cargo.toml" || ! -f "$KOKOROS_CARGO" ]]; then
     echo "ERROR: run from Kokoros repo root (need Cargo.toml and kokoros/Cargo.toml)" >&2
-    echo "  cd ~/Kokoros && bash $ROOT/scripts/kokoro-proot-build.sh" >&2
+    echo "  cd ~/Kokoros && bash $SCRIPT_PATH" >&2
+    echo "  (inside proot, Ophelia scripts are under /data/data/com.termux/files/home/Ophelia/)" >&2
     exit 1
 fi
 

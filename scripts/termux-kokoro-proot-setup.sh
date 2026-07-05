@@ -55,8 +55,9 @@ termux_print_instructions() {
        "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
        -o data/voices-v1.0.bin
 
-     # Build (fixes DevGitPit ort + espeak link flags automatically):
-     bash ~/Ophelia/scripts/kokoro-proot-build.sh
+     # Build (fixes DevGitPit ort + espeak link flags automatically).
+     # proot ~ is /root — Ophelia is in the Termux home, not ~/Ophelia:
+     bash /data/data/com.termux/files/home/Ophelia/scripts/kokoro-proot-build.sh
 
      # Or manually:
      #   unset ORT_SKIP_DOWNLOAD ORT_LIB_LOCATION
