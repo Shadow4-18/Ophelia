@@ -2,3 +2,4 @@
 *
 !.gitignore
 !patch-audiopus-build-rs.py
+!patch-espeak-rs-sys-build-rs.py

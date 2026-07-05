@@ -17,6 +17,8 @@ KOKOROS_DIR="${KOKOROS_DIR:-$HOME/Kokoros}"
 KOKOROS_REPO="${KOKOROS_REPO:-https://github.com/lucasjinreal/Kokoros}"
 PORT="${KOKORO_PORT:-8880}"
 AUDIOOPUS_PATCH_DIR="$ROOT/scripts/kokoro-patches/audiopus_sys"
+ESPEAK_PATCH_DIR="$ROOT/scripts/kokoro-patches/espeak-rs-sys"
+SONIC_LIB_DIR="${HOME}/.cache/ophelia/sonic"
 
 termux_fix_rust_path
 
@@ -48,8 +50,89 @@ termux_prepare_ort_cache() {
     echo "  ORT_CACHE_DIR=$ORT_CACHE_DIR"
 }
 
-termux_cargo_build_release() {
+termux_prepare_ort_link() {
     termux_prepare_ort_cache
+    local target arch ort_root ort_dir
+    arch="$(uname -m)"
+    case "$arch" in
+        aarch64) target="aarch64-linux-android" ;;
+        arm|armv7*) target="armv7-linux-androideabi" ;;
+        i686) target="i686-linux-android" ;;
+        x86_64) target="x86_64-linux-android" ;;
+        *) return 0 ;;
+    esac
+    ort_root="$ORT_CACHE_DIR/dfbin/$target"
+    [[ -d "$ort_root" ]] || return 0
+    ort_dir="$(find "$ort_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    [[ -n "$ort_dir" ]] || return 0
+
+    shopt -s nullglob
+    local so_files=("$ort_dir"/libonnxruntime*.so)
+    shopt -u nullglob
+    if ((${#so_files[@]})); then
+        echo "=== ort-sys dynamic ONNX link ==="
+        export ORT_LIB_LOCATION="$ort_dir"
+        export ORT_PREFER_DYNAMIC_LINK=1
+        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,$ort_dir"
+        echo "  ORT_LIB_LOCATION=$ORT_LIB_LOCATION (shared)"
+        return 0
+    fi
+
+    if [[ -f "$ort_dir/libonnxruntime.a" ]]; then
+        echo "=== ort-sys static ONNX (extra C++ libs for Termux) ==="
+        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-lc++_shared -C link-arg=-lc++abi"
+        local prefix="${TERMUX_PREFIX:-${PREFIX:-/data/data/com.termux/files/usr}}"
+        if [[ -f "$prefix/lib/libandroid-execinfo.so" ]]; then
+            export RUSTFLAGS="$RUSTFLAGS -C link-arg=-landroid-execinfo"
+        fi
+        echo "  static prebuild at $ort_dir"
+        echo "  NOTE: if link still fails with __fprintf_chk / std::__cxx11, use proot:"
+        echo "        bash scripts/termux-kokoro-proot-setup.sh"
+    fi
+}
+
+termux_build_sonic_lib() {
+    echo "=== libsonic (espeak-ng — not packaged on Termux) ==="
+    mkdir -p "$SONIC_LIB_DIR"
+    if [[ -f "$SONIC_LIB_DIR/libsonic.a" ]]; then
+        echo "  using $SONIC_LIB_DIR/libsonic.a"
+        return 0
+    fi
+    local sonic_rev="fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104"
+    if [[ ! -f "$SONIC_LIB_DIR/sonic.c" ]]; then
+        curl -fsSL \
+            "https://raw.githubusercontent.com/waywardgeek/sonic/${sonic_rev}/sonic.c" \
+            -o "$SONIC_LIB_DIR/sonic.c"
+        curl -fsSL \
+            "https://raw.githubusercontent.com/waywardgeek/sonic/${sonic_rev}/sonic.h" \
+            -o "$SONIC_LIB_DIR/sonic.h"
+    fi
+    (
+        cd "$SONIC_LIB_DIR"
+        "${CC:-clang}" -O2 -c sonic.c -o sonic.o
+        ar rcs libsonic.a sonic.o
+    )
+    echo "  built $SONIC_LIB_DIR/libsonic.a"
+}
+
+termux_prepare_kokoros_rustflags() {
+    termux_build_sonic_lib
+    export RUSTFLAGS="${RUSTFLAGS:-} -L $SONIC_LIB_DIR -l static=sonic"
+}
+
+termux_write_cargo_patches() {
+    mkdir -p "$KOKOROS_DIR/.cargo"
+    cat >"$KOKOROS_DIR/.cargo/config.toml" <<EOF
+# Written by Ophelia scripts/termux-kokoro-setup.sh — Termux Android fixes
+[patch.crates-io]
+audiopus_sys = { path = "$AUDIOOPUS_PATCH_DIR" }
+espeak-rs-sys = { path = "$ESPEAK_PATCH_DIR" }
+EOF
+}
+
+termux_cargo_build_release() {
+    termux_prepare_ort_link
+    termux_prepare_kokoros_rustflags
     local -a env_args=()
     if [[ "${TERMUX_KOKORO_UNSET_LD:-}" == "1" ]]; then
         echo "  (unset LD_LIBRARY_PATH for build — avoids broken cmake/jsoncpp)"
@@ -129,9 +212,8 @@ termux_setup_audiopus_cargo_patch() {
         echo "  Using cached patched audiopus_sys at $AUDIOOPUS_PATCH_DIR"
     else
         local src=""
-        # Prefer cargo registry (no curl) — fetch deps without patch override first.
         rm -f "$KOKOROS_DIR/.cargo/config.toml"
-        echo "  cargo fetch (pulls audiopus_sys into ~/.cargo/registry)..."
+        echo "  cargo fetch (pulls crates into ~/.cargo/registry)..."
         (cd "$KOKOROS_DIR" && cargo fetch)
 
         src="$(find "$HOME/.cargo/registry/src" -type d -path '*/audiopus_sys-0.2.2' 2>/dev/null | head -1)"
@@ -146,14 +228,68 @@ termux_setup_audiopus_cargo_patch() {
         cp -a "$src" "$AUDIOOPUS_PATCH_DIR"
         termux_patch_audiopus_build_rs "$AUDIOOPUS_PATCH_DIR/build.rs"
     fi
+}
 
-    mkdir -p "$KOKOROS_DIR/.cargo"
-    cat >"$KOKOROS_DIR/.cargo/config.toml" <<EOF
-# Written by Ophelia scripts/termux-kokoro-setup.sh — audiopus_sys Android fix
-[patch.crates-io]
-audiopus_sys = { path = "$AUDIOOPUS_PATCH_DIR" }
-EOF
-    echo "  Cargo patch -> $AUDIOOPUS_PATCH_DIR"
+termux_patch_espeak_build_rs() {
+    local build_rs="$1"
+    local py="python3.11"
+    command -v "$py" &>/dev/null || py="python"
+    "$py" "$ROOT/scripts/kokoro-patches/patch-espeak-rs-sys-build-rs.py" "$build_rs"
+}
+
+termux_download_espeak_crate() {
+    local cache="${HOME}/.cache/ophelia"
+    local crate="$cache/espeak-rs-sys-0.1.9.crate"
+    local extract="$cache/espeak-rs-sys-0.1.9"
+    mkdir -p "$cache"
+
+    if [[ -f "$extract/Cargo.toml" ]]; then
+        echo "$extract"
+        return 0
+    fi
+
+    echo "  Downloading espeak-rs-sys crate to \$HOME/.cache/ophelia..."
+    rm -f "$crate"
+    curl -fL -A "ophelia-termux-kokoro/1.0" \
+        "https://static.crates.io/crates/espeak-rs-sys/espeak-rs-sys-0.1.9.crate" \
+        -o "$crate"
+    rm -rf "$extract"
+    tar xf "$crate" -C "$cache"
+    echo "$extract"
+}
+
+termux_setup_espeak_cargo_patch() {
+    echo "=== espeak-rs-sys Termux patch (disable pcaudio on Android) ==="
+
+    local fresh=0
+    if [[ -f "$ESPEAK_PATCH_DIR/Cargo.toml" ]] && \
+       grep -q 'target_os = "android"' "$ESPEAK_PATCH_DIR/build.rs" 2>/dev/null; then
+        echo "  Using cached patched espeak-rs-sys at $ESPEAK_PATCH_DIR"
+    else
+        fresh=1
+        local src=""
+        src="$(find "$HOME/.cargo/registry/src" -type d -path '*/espeak-rs-sys-0.1.9' 2>/dev/null | head -1)"
+        if [[ -z "$src" || ! -f "$src/Cargo.toml" ]]; then
+            src="$(termux_download_espeak_crate)"
+        fi
+        echo "  Copying espeak-rs-sys from: $src"
+        rm -rf "$ESPEAK_PATCH_DIR"
+        mkdir -p "$ROOT/scripts/kokoro-patches"
+        cp -a "$src" "$ESPEAK_PATCH_DIR"
+        termux_patch_espeak_build_rs "$ESPEAK_PATCH_DIR/build.rs"
+    fi
+
+    if [[ "$fresh" == "1" ]] && [[ -d "$KOKOROS_DIR/target" ]]; then
+        echo "  cargo clean -p espeak-rs-sys (rebuild with Android patch)"
+        (cd "$KOKOROS_DIR" && cargo clean -p espeak-rs-sys 2>/dev/null || true)
+    fi
+}
+
+termux_setup_kokoros_cargo_patches() {
+    termux_setup_audiopus_cargo_patch
+    termux_setup_espeak_cargo_patch
+    termux_write_cargo_patches
+    echo "  Cargo patches -> audiopus_sys + espeak-rs-sys"
 }
 
 termux_build_kokoros() {
@@ -164,8 +300,8 @@ termux_build_kokoros() {
     fi
     cd "$KOKOROS_DIR"
 
-    # Patch must run after Kokoros clone (uses cargo fetch + registry copy).
-    termux_setup_audiopus_cargo_patch
+    # Patches must run after Kokoros clone (uses cargo fetch + registry copy).
+    termux_setup_kokoros_cargo_patches
 
     mkdir -p checkpoints data
     if [[ ! -f checkpoints/kokoro-v1.0.onnx ]]; then

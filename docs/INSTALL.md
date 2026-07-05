@@ -550,6 +550,55 @@ cargo build --release
 
 The setup script sets `ORT_CACHE_DIR` automatically on future runs.
 
+### `audio_object_*` / `sonic*` linker errors (espeak-ng)
+
+**Why:** Kokoros uses `espeak-rs-sys` for phonemes. On Termux, if `libpcaudio` is installed, espeak-ng compiles with audio output enabled but the final `koko` link does not pull in `-lpcaudio`. `libsonic` is also not in Termux repos and must be linked explicitly.
+
+**Fix:** pull latest Ophelia and re-run the setup script (patches `espeak-rs-sys`, builds `libsonic.a`):
+
+```bash
+cd ~/Ophelia
+git pull
+bash scripts/termux-kokoro-setup.sh
+```
+
+Or resume manually after pulling:
+
+```bash
+export ORT_CACHE_DIR=$HOME/.cache/ort
+mkdir -p "$ORT_CACHE_DIR" ~/.cache/ophelia/sonic
+unset LD_LIBRARY_PATH
+cd ~/Ophelia
+bash scripts/termux-kokoro-setup.sh   # applies patches + libsonic
+cd ~/Kokoros
+cargo clean -p espeak-rs-sys
+cargo build --release
+```
+
+### `std::__cxx11` / `__fprintf_chk` linker errors (ONNX Runtime)
+
+**Why:** Static ONNX Runtime prebuilds can fail to link on native Termux (Android bionic + C++ runtime mismatch). This is the hardest native-Termux blocker.
+
+**Try dynamic link first** (if `libonnxruntime.so` exists in the ort cache):
+
+```bash
+ORT_DIR=$(find ~/.cache/ort/dfbin/aarch64-linux-android -mindepth 1 -maxdepth 1 -type d | head -1)
+ls "$ORT_DIR"/libonnxruntime*.so
+export ORT_LIB_LOCATION="$ORT_DIR"
+export ORT_PREFER_DYNAMIC_LINK=1
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,$ORT_DIR"
+cd ~/Kokoros && cargo build --release
+```
+
+**Recommended fallback — proot Ubuntu** (much higher success rate):
+
+```bash
+cd ~/Ophelia
+bash scripts/termux-kokoro-proot-setup.sh
+```
+
+Then follow the printed steps (`proot-distro login ubuntu`, DevGitPit/Kokoros `install.sh`). Ophelia stays on native Termux; Kokoros runs in proot on `127.0.0.1:8880`.
+
 **Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 
 **Fix:** pull latest Ophelia and re-run. The setup script vendors a patched `audiopus_sys` via Cargo `[patch.crates-io]` (editing the registry copy does not work — Cargo checksums it):
