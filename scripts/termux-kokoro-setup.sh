@@ -40,29 +40,11 @@ termux_prepare_kokoros_build() {
     export LIBOPUS_STATIC=1
 }
 
-termux_setup_audiopus_cargo_patch() {
-    echo "=== audiopus_sys Termux patch (local [patch.crates-io]) ==="
+termux_patch_audiopus_build_rs() {
+    local build_rs="$1"
     local py="python3.11"
     command -v "$py" &>/dev/null || py="python"
-
-    if [[ ! -f "$AUDIOOPUS_PATCH_DIR/Cargo.toml" ]] || \
-       ! grep -q 'target_os = "android"' "$AUDIOOPUS_PATCH_DIR/build.rs" 2>/dev/null; then
-        echo "  Downloading audiopus_sys 0.2.2..."
-        rm -rf "$AUDIOOPUS_PATCH_DIR"
-        mkdir -p "$ROOT/scripts/kokoro-patches"
-        local crate="/tmp/audiopus_sys-0.2.2.crate"
-        # crates.io API returns 403 without User-Agent; static URL is more reliable on Termux.
-        if ! curl -fsSL -A "ophelia-termux-kokoro/1.0" \
-            "https://static.crates.io/crates/audiopus_sys/audiopus_sys-0.2.2.crate" \
-            -o "$crate"; then
-            curl -fsSL -A "ophelia-termux-kokoro/1.0" \
-                "https://crates.io/api/v1/crates/audiopus_sys/0.2.2/download" \
-                -o "$crate"
-        fi
-        tar xf "$crate" -C "$ROOT/scripts/kokoro-patches"
-        mv "$ROOT/scripts/kokoro-patches/audiopus_sys-0.2.2" "$AUDIOOPUS_PATCH_DIR"
-
-        "$py" <<'PY' "$AUDIOOPUS_PATCH_DIR/build.rs"
+    "$py" <<'PY' "$build_rs"
 import re
 import sys
 
@@ -78,22 +60,86 @@ if not m:
     sys.exit(1)
 
 block = m.group(0)
-if block.rstrip().endswith("}"):
-    fixed = block[:-1] + """    #[cfg(target_os = "android")]
+if not block.rstrip().endswith("}"):
+    print("ERROR: unexpected default_library_linking block", file=sys.stderr)
+    sys.exit(1)
+
+fixed = block[:-1] + """    #[cfg(target_os = "android")]
     {
         false
     }
 }
 """
-else:
-    print("ERROR: unexpected default_library_linking block", file=sys.stderr)
-    sys.exit(1)
-
 open(path, "w").write(text[: m.start()] + fixed + text[m.end() :])
 print(f"  Patched {path}")
 PY
-    else
+}
+
+termux_download_audiopus_crate() {
+    local cache="${HOME}/.cache/ophelia"
+    local crate="$cache/audiopus_sys-0.2.2.crate"
+    local extract="$cache/audiopus_sys-0.2.2"
+    mkdir -p "$cache"
+
+    if [[ -d "$extract/Cargo.toml" ]]; then
+        echo "$extract"
+        return 0
+    fi
+
+    echo "  Downloading audiopus_sys crate to \$HOME/.cache/ophelia (avoids /tmp write errors)..."
+    rm -f "$crate"
+    local py="python3.11"
+    command -v "$py" &>/dev/null || py="python"
+    if ! "$py" <<'PY' "$crate"
+import sys
+import urllib.request
+
+url = "https://static.crates.io/crates/audiopus_sys/audiopus_sys-0.2.2.crate"
+path = sys.argv[1]
+req = urllib.request.Request(url, headers={"User-Agent": "ophelia-termux-kokoro/1.0"})
+with urllib.request.urlopen(req, timeout=120) as r, open(path, "wb") as f:
+    while True:
+        chunk = r.read(65536)
+        if not chunk:
+            break
+        f.write(chunk)
+print(f"  Downloaded {path}")
+PY
+    then
+        curl -fL -A "ophelia-termux-kokoro/1.0" \
+            "https://static.crates.io/crates/audiopus_sys/audiopus_sys-0.2.2.crate" \
+            -o "$crate"
+    fi
+
+    rm -rf "$extract"
+    tar xf "$crate" -C "$cache"
+    echo "$extract"
+}
+
+termux_setup_audiopus_cargo_patch() {
+    echo "=== audiopus_sys Termux patch (local [patch.crates-io]) ==="
+
+    if [[ -f "$AUDIOOPUS_PATCH_DIR/Cargo.toml" ]] && \
+       grep -q 'target_os = "android"' "$AUDIOOPUS_PATCH_DIR/build.rs" 2>/dev/null; then
         echo "  Using cached patched audiopus_sys at $AUDIOOPUS_PATCH_DIR"
+    else
+        local src=""
+        # Prefer cargo registry (no curl) — fetch deps without patch override first.
+        rm -f "$KOKOROS_DIR/.cargo/config.toml"
+        echo "  cargo fetch (pulls audiopus_sys into ~/.cargo/registry)..."
+        (cd "$KOKOROS_DIR" && cargo fetch)
+
+        src="$(find "$HOME/.cargo/registry/src" -type d -path '*/audiopus_sys-0.2.2' 2>/dev/null | head -1)"
+        if [[ -z "$src" || ! -f "$src/Cargo.toml" ]]; then
+            echo "  Not in cargo registry yet — direct download..."
+            src="$(termux_download_audiopus_crate)"
+        fi
+
+        echo "  Copying audiopus_sys from: $src"
+        rm -rf "$AUDIOOPUS_PATCH_DIR"
+        mkdir -p "$ROOT/scripts/kokoro-patches"
+        cp -a "$src" "$AUDIOOPUS_PATCH_DIR"
+        termux_patch_audiopus_build_rs "$AUDIOOPUS_PATCH_DIR/build.rs"
     fi
 
     mkdir -p "$KOKOROS_DIR/.cargo"
