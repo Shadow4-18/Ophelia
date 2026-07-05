@@ -10,6 +10,7 @@ from ophelia.channels.guest_approval import (
     GuestApprovals,
     append_user_to_allowlist,
 )
+from ophelia.channels.discord_log_channels import DiscordLogChannels
 from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
 from ophelia.config import Settings
@@ -34,6 +35,35 @@ class DiscordGateway:
         self._bot = None
         self._task: asyncio.Task | None = None
         self._guest_approvals = GuestApprovals()
+        self._log_channels = DiscordLogChannels(settings)
+
+    def register_log_hooks(self, session: ChannelSession) -> None:
+        if not self._log_channels.enabled():
+            return
+
+        async def _mirror(entry: dict) -> None:
+            if self._bot:
+                await self._log_channels.mirror_chat_entry(self._bot, entry)
+
+        session.add_log_hook(_mirror)
+
+    def _log_context(self, message) -> dict:
+        author = message.author
+        return {
+            "platform": "discord",
+            "display_name": str(author),
+            "is_dm": message.guild is None,
+            "guild_id": message.guild.id if message.guild else None,
+            "guild_name": message.guild.name if message.guild else None,
+        }
+
+    async def mirror_consciousness(self, text: str) -> None:
+        if self._bot and self._log_channels.enabled():
+            await self._log_channels.log_consciousness(self._bot, text)
+
+    async def mirror_inner_thought(self, text: str) -> None:
+        if self._bot and self._log_channels.enabled():
+            await self._log_channels.log_inner_thought(self._bot, text)
 
     def is_configured(self) -> bool:
         return bool(self.settings.discord_bot_token)
@@ -118,6 +148,11 @@ class DiscordGateway:
         @bot.event
         async def on_ready() -> None:
             log.info("discord.ready", user=str(bot.user))
+            await gw._log_channels.setup(bot)
+
+        @bot.event
+        async def on_guild_join(guild) -> None:
+            await gw._log_channels.on_guild_join(bot, guild)
 
         async def _check(ctx) -> bool:
             if ctx.author.bot:
@@ -219,7 +254,15 @@ class DiscordGateway:
 
                     asyncio.create_task(
                         gw.session.handle_chat(
-                            f"discord:{uid}", first_msg, _reply, media_reply=_media
+                            f"discord:{uid}",
+                            first_msg,
+                            _reply,
+                            media_reply=_media,
+                            log_context={
+                                "platform": "discord",
+                                "display_name": name,
+                                "is_dm": True,
+                            },
                         )
                     )
             except Exception as e:
@@ -250,6 +293,7 @@ class DiscordGateway:
             if admission != "ok":
                 return
             channel = f"discord:{message.author.id}"
+            ctx = gw._log_context(message)
 
             async def _reply(text: str) -> None:
                 # Send any media artifacts referenced in the reply text first.
@@ -269,6 +313,7 @@ class DiscordGateway:
                     message.content.strip(),
                     _reply,
                     media_reply=_media_reply,
+                    log_context=ctx,
                 )
 
         self._bot = bot

@@ -356,7 +356,15 @@ class TelegramGateway:
 
         try:
             await self.session.handle_chat(
-                channel, text, _reply, media_reply=_media
+                channel,
+                text,
+                _reply,
+                media_reply=_media,
+                log_context={
+                    "platform": "telegram",
+                    "display_name": str(chat_id),
+                    "chat_id": chat_id,
+                },
             )
         except Exception as e:
             log.exception("telegram.replay_turn_failed", error=str(e))
@@ -367,6 +375,11 @@ class TelegramGateway:
 
     def _remember_user(self, user_id: int) -> None:
         self.signals.last_telegram_user_id = user_id
+
+    @staticmethod
+    def _telegram_log_context(user) -> dict:
+        name = user.full_name or user.username or str(user.id)
+        return {"platform": "telegram", "display_name": name, "chat_id": user.id}
 
     async def _reject_user(self, update: Update) -> None:
         user = update.effective_user
@@ -497,6 +510,7 @@ class TelegramGateway:
             "continue",
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+            log_context=self._telegram_log_context(user),
         )
         await self._maybe_attach_continue(update, context, channel)
 
@@ -546,6 +560,7 @@ class TelegramGateway:
                 prompt,
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+                log_context=self._telegram_log_context(user),
             )
         except Exception as e:
             log.exception("telegram.photo_error")
@@ -593,6 +608,7 @@ class TelegramGateway:
                 prompt,
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+                log_context=self._telegram_log_context(user),
             )
         except Exception as e:
             log.exception("telegram.document_error")
@@ -616,6 +632,7 @@ class TelegramGateway:
             text,
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+            log_context=self._telegram_log_context(user),
         )
         await self._maybe_attach_continue(update, context, channel)
 
@@ -681,6 +698,7 @@ class TelegramGateway:
                 text,
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+                log_context=self._telegram_log_context(user),
             )
         except Exception as e:
             log.exception("telegram.voice_error")
@@ -908,6 +926,7 @@ class TelegramGateway:
             "continue",
             _reply,
             media_reply=_media,
+            log_context=self._telegram_log_context(user),
         )
         await self._maybe_attach_continue(update, context, channel)
 

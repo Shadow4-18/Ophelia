@@ -50,12 +50,12 @@ class InnerMonologue:
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(line)
 
-        if self.mirror_telegram and self.notify:
+        if self.notify:
             preview = thought[:500]
             try:
-                await self.notify(f"💭 {preview}")
+                await self.notify(preview)
             except Exception as e:
-                log.warning("inner.telegram_mirror_failed", error=str(e))
+                log.warning("inner.notify_failed", error=str(e))
 
     def tail(self, lines: int = 40) -> str:
         if not self.log_path.is_file():

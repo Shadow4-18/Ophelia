@@ -26,15 +26,29 @@ Your id: [@userinfobot](https://t.me/userinfobot)
 DISCORD_BOT_TOKEN=...
 DISCORD_ALLOWED_USER_IDS=987654321012345678
 OPHELIA_DISCORD_ENABLED=true
+DISCORD_GUILD_ID=123456789012345678
+OPHELIA_DISCORD_LOG=true
 ```
 
 Setup:
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) → New Application → Bot → **Reset Token**
 2. Enable **Message Content Intent** (Bot → Privileged Gateway Intents)
-3. OAuth2 → URL Generator → scopes: `bot` → permissions: Send Messages, Read Message History
+3. OAuth2 → URL Generator → scopes: `bot` → permissions: **Send Messages**, **Read Message History**, **Manage Channels**, **Attach Files**
 4. Invite bot to your server or DM it
 5. Your user id: Settings → Advanced → Developer Mode → right-click your profile → **Copy User ID**
+6. For logging: create (or use) a dedicated server → right-click the server icon → **Copy Server ID** → set `DISCORD_GUILD_ID`
+
+On first connect, Ophelia creates four categories in that server:
+
+| Category | Purpose |
+|----------|---------|
+| **Main** | `activity`, `consciousness`, `inner-thoughts`, `system` |
+| **Telegram** | One channel per Telegram chat (text, photos, voice, etc.) |
+| **DMs** | One channel per Discord DM partner |
+| **Discord Servers** | One channel per Discord server she is in |
+
+New people and servers get a channel automatically the first time she talks there or joins. Channel IDs are saved in `~/.ophelia/data/discord_log_channels.json` so restarts do not duplicate channels.
 
 Commands use `!` prefix: `!start`, `!pause`, `!resume`, `!game`, `!inner`, `!listen`, `!voice`
 

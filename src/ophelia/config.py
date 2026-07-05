@@ -260,6 +260,16 @@ class Settings(BaseSettings):
         alias="DISCORD_ALLOWED_USER_IDS",
     )
     discord_enabled: bool | None = Field(default=None, alias="OPHELIA_DISCORD_ENABLED")
+    # Discord logging server — Ophelia auto-creates categories/channels here.
+    discord_guild_id: int | None = Field(default=None, alias="DISCORD_GUILD_ID")
+    discord_log_enabled: bool | None = Field(
+        default=None,
+        alias="OPHELIA_DISCORD_LOG",
+        description=(
+            "Mirror chat logs into Discord categories/channels in DISCORD_GUILD_ID. "
+            "Default: on when DISCORD_GUILD_ID is set."
+        ),
+    )
 
     # Which channel consciousness mirrors into (e.g. telegram:123 or discord:456)
     primary_channel: str | None = Field(default=None, alias="OPHELIA_PRIMARY_CHANNEL")
@@ -645,6 +655,8 @@ class Settings(BaseSettings):
             self.telegram_enabled = bool(self.telegram_bot_token)
         if self.discord_enabled is None:
             self.discord_enabled = bool(self.discord_bot_token)
+        if self.discord_log_enabled is None:
+            self.discord_log_enabled = bool(self.discord_guild_id)
         return self
 
     def consciousness_on(self) -> bool:

@@ -23,6 +23,7 @@ log = structlog.get_logger()
 
 ReplyFn = Callable[[str], Awaitable[None]]
 MediaReplyFn = Callable[[Path, str], Awaitable[bool]]
+LogHookFn = Callable[[dict], Awaitable[None]]
 
 
 def _sender_id(channel: str) -> str:
@@ -57,6 +58,18 @@ class ChannelSession:
         self.vision = vision
         self._voice_reply: dict[str, bool] = {}
         self._chat_logger: ChatLogger | None = None
+        self._log_hooks: list[LogHookFn] = []
+        self._current_log_context: dict | None = None
+
+    def add_log_hook(self, hook: LogHookFn) -> None:
+        self._log_hooks.append(hook)
+
+    async def _emit_log_hook(self, entry: dict) -> None:
+        for hook in self._log_hooks:
+            try:
+                await hook(entry)
+            except Exception as e:
+                log.warning("channel.log_hook_failed", error=str(e))
 
     def _logger(self) -> ChatLogger | None:
         if not self.agent.settings.chat_log_enabled:
@@ -78,11 +91,13 @@ class ChannelSession:
         reply: ReplyFn,
         *,
         media_reply: MediaReplyFn | None = None,
+        log_context: dict | None = None,
     ) -> None:
         settings = self.agent.settings
         is_owner = settings.is_owner_channel(channel)
         sender_id = _sender_id(channel)
         logger = self._logger()
+        self._current_log_context = log_context
 
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
@@ -124,41 +139,54 @@ class ChannelSession:
         # text carries the inbound media filename; we capture it explicitly too.
         if logger:
             inbound_media = self._extract_inbound_media(text, settings)
-            await logger.log(
-                channel=channel,
-                direction="in",
-                text=text,
-                media_path=inbound_media,
-                media_kind="photo" if inbound_media else None,
-                sender_id=sender_id,
-                is_owner=is_owner,
-                role="user",
-            )
+            inbound_entry = {
+                "channel": channel,
+                "direction": "in",
+                "text": text,
+                "media_path": inbound_media,
+                "media_kind": "photo" if inbound_media else None,
+                "sender_id": sender_id,
+                "is_owner": is_owner,
+                "role": "user",
+                "log_context": log_context,
+            }
+            await logger.log(**{k: v for k, v in inbound_entry.items() if k != "log_context"})
+            await self._emit_log_hook(inbound_entry)
 
         # Wrap the reply/media senders so every outbound chunk + media file is
         # logged too. Generated images appear as "saved to <path>" in the reply
         # text — extract and log those as outbound media as well.
         async def _logged_reply(chunk: str) -> None:
             if logger:
+                out_entry = {
+                    "channel": channel,
+                    "direction": "out",
+                    "text": chunk,
+                    "sender_id": sender_id,
+                    "is_owner": is_owner,
+                    "role": "assistant",
+                    "log_context": log_context,
+                }
                 await logger.log(
-                    channel=channel,
-                    direction="out",
-                    text=chunk,
-                    sender_id=sender_id,
-                    is_owner=is_owner,
-                    role="assistant",
+                    **{k: v for k, v in out_entry.items() if k != "log_context"}
                 )
+                await self._emit_log_hook(out_entry)
                 for p in artifact_paths_in_text(chunk):
+                    media_entry = {
+                        "channel": channel,
+                        "direction": "out",
+                        "text": f"[media sent: {p.name}]",
+                        "media_path": p,
+                        "media_kind": "generated",
+                        "sender_id": sender_id,
+                        "is_owner": is_owner,
+                        "role": "media",
+                        "log_context": log_context,
+                    }
                     await logger.log(
-                        channel=channel,
-                        direction="out",
-                        text=f"[media sent: {p.name}]",
-                        media_path=p,
-                        media_kind="generated",
-                        sender_id=sender_id,
-                        is_owner=is_owner,
-                        role="media",
+                        **{k: v for k, v in media_entry.items() if k != "log_context"}
                     )
+                    await self._emit_log_hook(media_entry)
             await reply(chunk)
 
         logged_media_reply: MediaReplyFn | None = None
@@ -166,16 +194,21 @@ class ChannelSession:
             async def _logged_media(path: Path, caption: str) -> bool:
                 ok = await media_reply(path, caption)
                 if logger:
+                    media_entry = {
+                        "channel": channel,
+                        "direction": "out",
+                        "text": caption or f"[media sent: {path.name}]",
+                        "media_path": path,
+                        "media_kind": "file",
+                        "sender_id": sender_id,
+                        "is_owner": is_owner,
+                        "role": "media",
+                        "log_context": log_context,
+                    }
                     await logger.log(
-                        channel=channel,
-                        direction="out",
-                        text=caption or f"[media sent: {path.name}]",
-                        media_path=path,
-                        media_kind="file",
-                        sender_id=sender_id,
-                        is_owner=is_owner,
-                        role="media",
+                        **{k: v for k, v in media_entry.items() if k != "log_context"}
                     )
+                    await self._emit_log_hook(media_entry)
                 return ok
             logged_media_reply = _logged_media
 
@@ -228,6 +261,7 @@ class ChannelSession:
             self.agent.tools.clear_owner()
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
+            self._current_log_context = None
 
     @staticmethod
     def _extract_inbound_media(text: str, settings) -> str | None:

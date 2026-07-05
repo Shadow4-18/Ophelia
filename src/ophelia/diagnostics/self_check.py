@@ -423,6 +423,16 @@ async def _check_discord(report: SelfCheckReport, settings: Settings, *, chat_on
         hint="Discord: User Settings -> Advanced -> Developer Mode -> right-click profile -> Copy User ID",
         required=settings.discord_enabled and not chat_only,
     )
+    if settings.discord_log_enabled:
+        gid = settings.discord_guild_id
+        report.add(
+            category="services",
+            name="Discord log channels",
+            ok=bool(gid),
+            detail=f"guild_id={gid}" if gid else "DISCORD_GUILD_ID not set",
+            hint="Right-click logging server icon -> Copy Server ID; bot needs Manage Channels",
+            required=False,
+        )
 
 
 async def _check_channels(report: SelfCheckReport, settings: Settings, *, chat_only: bool) -> None:

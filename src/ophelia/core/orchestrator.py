@@ -144,7 +144,7 @@ class Orchestrator:
             else None
         )
         if self.inner:
-            self.inner.notify = self._notify_inner_mirror
+            self.inner.notify = self._notify_inner
             self.signals.inner_mirror = settings.inner_mirror_telegram
             self.tools.inner = self.inner
         self.consciousness: ConsciousnessLoop | None = None
@@ -474,8 +474,13 @@ class Orchestrator:
     ) -> None:
         await self.hub.broadcast_proactive_media(paths, caption=caption)
 
+    async def _notify_inner(self, text: str) -> None:
+        await self.hub.mirror_inner_thought(text)
+        if self.settings.inner_mirror_telegram:
+            await self.hub.broadcast_proactive(text)
+
     async def _notify_inner_mirror(self, text: str) -> None:
-        await self.hub.broadcast_proactive(text)
+        await self._notify_inner(text)
 
     async def start(self) -> None:
         await self.memory.init()

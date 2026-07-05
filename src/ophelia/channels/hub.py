@@ -49,13 +49,13 @@ class ChannelHub:
                 )
             )
         if settings.discord_enabled:
-            self._gateways.append(
-                DiscordGateway(
-                    settings,
-                    self.session,
-                    signals,
-                )
+            dc = DiscordGateway(
+                settings,
+                self.session,
+                signals,
             )
+            dc.register_log_hooks(self.session)
+            self._gateways.append(dc)
 
     def gateways(self) -> list[ChatGateway]:
         return list(self._gateways)
@@ -85,6 +85,12 @@ class ChannelHub:
                     if i:
                         await asyncio.sleep(1.2)
                     await gw.send_proactive(chunk)
+                    mirror = getattr(gw, "mirror_consciousness", None)
+                    if callable(mirror):
+                        try:
+                            await mirror(chunk)
+                        except Exception as e:
+                            log.warning("hub.consciousness_mirror_failed", platform=gw.platform, error=str(e))
                 except Exception as e:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
 
@@ -159,3 +165,12 @@ class ChannelHub:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def mirror_inner_thought(self, text: str) -> None:
+        for gw in self._gateways:
+            mirror = getattr(gw, "mirror_inner_thought", None)
+            if callable(mirror):
+                try:
+                    await mirror(text)
+                except Exception as e:
+                    log.warning("hub.inner_mirror_failed", platform=gw.platform, error=str(e))
