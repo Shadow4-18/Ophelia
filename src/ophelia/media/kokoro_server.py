@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
     from ophelia.config import Settings
 
 log = structlog.get_logger()
+
+_KOKORO_IN_PROOT = "/root/Kokoros/target/release/koko"
+_KOKORO_CWD_PROOT = "/root/Kokoros"
 
 
 def kokoro_listen_port(settings: Settings) -> int:
@@ -48,10 +52,72 @@ def _termux_prefix() -> Path:
     return Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr"))
 
 
-def _candidate_koko_bins() -> list[tuple[Path, Path | None, str]]:
-    """(binary, cwd, mode) — mode is 'direct' or 'proot'."""
+def _proot_distro_names() -> list[str]:
+    if not shutil.which("proot-distro"):
+        return []
+    try:
+        r = subprocess.run(
+            ["proot-distro", "list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return ["ubuntu"]
+    names: list[str] = []
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("supported"):
+            continue
+        token = line.split()[0]
+        if token and token not in names:
+            names.append(token)
+    return names or ["ubuntu"]
+
+
+def _proot_rootfs_bases() -> list[Path]:
+    bases: list[Path] = []
+    prefix = _termux_prefix()
+    parent = prefix / "var/lib/proot-distro/installed-rootfs"
+    if parent.is_dir():
+        for child in sorted(parent.iterdir()):
+            if child.is_dir():
+                bases.append(child)
+    legacy = parent / "ubuntu"
+    if legacy not in bases:
+        bases.append(legacy)
+    home_link = Path.home() / "ubuntu"
+    if home_link.is_dir() and home_link not in bases:
+        bases.append(home_link)
+    return bases
+
+
+def _koko_exists_inside_proot(distro: str) -> bool:
+    try:
+        r = subprocess.run(
+            [
+                "proot-distro",
+                "login",
+                distro,
+                "--",
+                "test",
+                "-f",
+                _KOKORO_IN_PROOT,
+            ],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _candidate_koko_bins() -> list[tuple[Path, Path | None, str, str | None]]:
+    """(binary, cwd, mode, proot_distro) — mode is direct, proot, or shell."""
     home = Path.home()
-    candidates: list[tuple[Path, Path | None, str]] = []
+    candidates: list[tuple[Path, Path | None, str, str | None]] = []
 
     direct_paths = [
         home / "Kokoros/target/release/koko",
@@ -59,21 +125,35 @@ def _candidate_koko_bins() -> list[tuple[Path, Path | None, str]]:
     ]
     for path in direct_paths:
         if path.is_file():
-            candidates.append((path, path.parent.parent, "direct"))
+            candidates.append((path, path.parent.parent, "direct", None))
+
+    for base in _proot_rootfs_bases():
+        proot_koko = base / "root/Kokoros/target/release/koko"
+        if proot_koko.is_file():
+            candidates.append((proot_koko, proot_koko.parent.parent, "proot", "ubuntu"))
 
     if is_termux():
-        rootfs = _termux_prefix() / "var/lib/proot-distro/installed-rootfs/ubuntu"
-        proot_koko = rootfs / "root/Kokoros/target/release/koko"
-        if proot_koko.is_file():
-            candidates.append((proot_koko, proot_koko.parent.parent, "proot"))
+        for distro in _proot_distro_names():
+            if _koko_exists_inside_proot(distro):
+                candidates.append(
+                    (Path(_KOKORO_IN_PROOT), Path(_KOKORO_CWD_PROOT), "proot", distro)
+                )
+                break
 
     which = shutil.which("koko")
     if which:
         path = Path(which)
         cwd = path.parent.parent if path.parent.name == "release" else None
-        candidates.append((path, cwd, "direct"))
+        candidates.append((path, cwd, "direct", None))
 
     return candidates
+
+
+def _proot_autostart_argv(distro: str, port: int) -> list[str]:
+    inner = (
+        f"cd {_KOKORO_CWD_PROOT} && exec ./target/release/koko openai --port {port}"
+    )
+    return ["proot-distro", "login", distro, "--", "bash", "-lc", inner]
 
 
 def resolve_kokoro_autostart(
@@ -103,16 +183,12 @@ def resolve_kokoro_autostart(
             "direct",
         )
 
-    for koko, cwd, mode in _candidate_koko_bins():
+    for koko, cwd, mode, distro in _candidate_koko_bins():
         if mode == "proot":
+            use_distro = distro or "ubuntu"
             if not shutil.which("proot-distro"):
                 continue
-            inner = f"cd /root/Kokoros && exec ./target/release/koko openai --port {port}"
-            return (
-                ["proot-distro", "login", "ubuntu", "--", "bash", "-lc", inner],
-                None,
-                "proot",
-            )
+            return (_proot_autostart_argv(use_distro, port), None, "proot")
         argv = [str(koko), "openai", "--port", str(port)]
         return (
             argv,
@@ -126,8 +202,7 @@ def resolve_kokoro_autostart(
 def describe_kokoro_autostart_hint(settings: Settings) -> str:
     port = kokoro_listen_port(settings)
     return (
-        "Set KOKORO_KOKO_BIN to your koko binary, or KOKORO_AUTOSTART_CMD for a "
-        f"custom launcher. Example (proot): "
+        "Set KOKORO_AUTOSTART_CMD in ~/.ophelia/.env, e.g. "
         f"proot-distro login ubuntu -- bash -lc "
-        f"'cd /root/Kokoros && ./target/release/koko openai --port {port}'"
+        f"'cd {_KOKORO_CWD_PROOT} && ./target/release/koko openai --port {port}'"
     )
