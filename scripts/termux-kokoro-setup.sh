@@ -159,6 +159,7 @@ termux_build_kokoros() {
     fi
     cd "$KOKOROS_DIR"
 
+    # Patch must run after Kokoros clone (uses cargo fetch + registry copy).
     termux_setup_audiopus_cargo_patch
 
     mkdir -p checkpoints data
