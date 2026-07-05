@@ -568,11 +568,23 @@ Or resume manually after pulling:
 export ORT_CACHE_DIR=$HOME/.cache/ort
 mkdir -p "$ORT_CACHE_DIR" ~/.cache/ophelia/sonic
 unset LD_LIBRARY_PATH
+unset RUSTFLAGS
 cd ~/Ophelia
 bash scripts/termux-kokoro-setup.sh   # applies patches + libsonic
-cd ~/Kokoros
-cargo clean -p espeak-rs-sys
-cargo build --release
+```
+
+Do **not** set global `RUSTFLAGS` with `-l sonic` or `-lc++abi` — that breaks `proc-macro2` and other build-script crates on Termux.
+
+### `unable to find library -lc++abi` / `-lsonic` during proc-macro2 build
+
+**Why:** Global `RUSTFLAGS` from a previous attempt polluted the build environment.
+
+**Fix:**
+
+```bash
+unset RUSTFLAGS
+cd ~/Ophelia && git pull
+bash scripts/termux-kokoro-setup.sh
 ```
 
 ### `std::__cxx11` / `__fprintf_chk` linker errors (ONNX Runtime)
@@ -582,12 +594,13 @@ cargo build --release
 **Try dynamic link first** (if `libonnxruntime.so` exists in the ort cache):
 
 ```bash
+unset RUSTFLAGS
 ORT_DIR=$(find ~/.cache/ort/dfbin/aarch64-linux-android -mindepth 1 -maxdepth 1 -type d | head -1)
 ls "$ORT_DIR"/libonnxruntime*.so
 export ORT_LIB_LOCATION="$ORT_DIR"
 export ORT_PREFER_DYNAMIC_LINK=1
-export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,$ORT_DIR"
-cd ~/Kokoros && cargo build --release
+export OPHELIA_SONIC_LIB_DIR=$HOME/.cache/ophelia/sonic
+cd ~/Ophelia && bash scripts/termux-kokoro-setup.sh
 ```
 
 **Recommended fallback — proot Ubuntu** (much higher success rate):

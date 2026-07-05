@@ -73,19 +73,15 @@ termux_prepare_ort_link() {
         echo "=== ort-sys dynamic ONNX link ==="
         export ORT_LIB_LOCATION="$ort_dir"
         export ORT_PREFER_DYNAMIC_LINK=1
-        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,$ort_dir"
+        export TERMUX_KOKORO_ORT_LIB_DIR="$ort_dir"
         echo "  ORT_LIB_LOCATION=$ORT_LIB_LOCATION (shared)"
         return 0
     fi
 
     if [[ -f "$ort_dir/libonnxruntime.a" ]]; then
-        echo "=== ort-sys static ONNX (extra C++ libs for Termux) ==="
-        export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-lc++_shared -C link-arg=-lc++abi"
-        local prefix="${TERMUX_PREFIX:-${PREFIX:-/data/data/com.termux/files/usr}}"
-        if [[ -f "$prefix/lib/libandroid-execinfo.so" ]]; then
-            export RUSTFLAGS="$RUSTFLAGS -C link-arg=-landroid-execinfo"
-        fi
+        echo "=== ort-sys static ONNX prebuild ==="
         echo "  static prebuild at $ort_dir"
+        echo "  (ort-sys links libc++_shared itself — no global RUSTFLAGS)"
         echo "  NOTE: if link still fails with __fprintf_chk / std::__cxx11, use proot:"
         echo "        bash scripts/termux-kokoro-proot-setup.sh"
     fi
@@ -115,9 +111,19 @@ termux_build_sonic_lib() {
     echo "  built $SONIC_LIB_DIR/libsonic.a"
 }
 
-termux_prepare_kokoros_rustflags() {
+termux_cargo_build_release() {
+    termux_prepare_ort_link
     termux_build_sonic_lib
-    export RUSTFLAGS="${RUSTFLAGS:-} -L $SONIC_LIB_DIR -l static=sonic"
+    export OPHELIA_SONIC_LIB_DIR="$SONIC_LIB_DIR"
+    local -a env_args=()
+    if [[ "${TERMUX_KOKORO_UNSET_LD:-}" == "1" ]]; then
+        echo "  (unset LD_LIBRARY_PATH for build — avoids broken cmake/jsoncpp)"
+        env_args+=(-u LD_LIBRARY_PATH)
+    fi
+    # Do NOT set global RUSTFLAGS (-l sonic / -lc++abi) — that breaks proc-macro
+    # and other build-script crates on Termux. espeak-rs-sys emits link lines instead.
+    unset RUSTFLAGS
+    env "${env_args[@]}" cargo build --release
 }
 
 termux_write_cargo_patches() {
@@ -128,17 +134,6 @@ termux_write_cargo_patches() {
 audiopus_sys = { path = "$AUDIOOPUS_PATCH_DIR" }
 espeak-rs-sys = { path = "$ESPEAK_PATCH_DIR" }
 EOF
-}
-
-termux_cargo_build_release() {
-    termux_prepare_ort_link
-    termux_prepare_kokoros_rustflags
-    local -a env_args=()
-    if [[ "${TERMUX_KOKORO_UNSET_LD:-}" == "1" ]]; then
-        echo "  (unset LD_LIBRARY_PATH for build — avoids broken cmake/jsoncpp)"
-        env_args+=(-u LD_LIBRARY_PATH)
-    fi
-    env "${env_args[@]}" cargo build --release
 }
 
 termux_prepare_cmake() {
@@ -263,7 +258,8 @@ termux_setup_espeak_cargo_patch() {
 
     local fresh=0
     if [[ -f "$ESPEAK_PATCH_DIR/Cargo.toml" ]] && \
-       grep -q 'target_os = "android"' "$ESPEAK_PATCH_DIR/build.rs" 2>/dev/null; then
+       grep -q 'target_os = "android"' "$ESPEAK_PATCH_DIR/build.rs" 2>/dev/null && \
+       grep -q 'OPHELIA_SONIC_LIB_DIR' "$ESPEAK_PATCH_DIR/build.rs" 2>/dev/null; then
         echo "  Using cached patched espeak-rs-sys at $ESPEAK_PATCH_DIR"
     else
         fresh=1
@@ -328,6 +324,16 @@ termux_run_kokoros() {
     if [[ ! -x target/release/koko ]]; then
         echo "Binary missing — run without 'run' first."
         exit 1
+    fi
+    if [[ -n "${TERMUX_KOKORO_ORT_LIB_DIR:-}" ]]; then
+        export LD_LIBRARY_PATH="${TERMUX_KOKORO_ORT_LIB_DIR}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    else
+        local ort_dir
+        ort_dir="$(find "${HOME}/.cache/ort/dfbin" -name 'libonnxruntime*.so' -print -quit 2>/dev/null)"
+        ort_dir="${ort_dir%/*}"
+        if [[ -n "$ort_dir" && -d "$ort_dir" ]]; then
+            export LD_LIBRARY_PATH="${ort_dir}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        fi
     fi
     echo "Starting Kokoros OpenAI-compatible server on http://127.0.0.1:${PORT}/v1"
     echo "In another tmux pane: ophelia tts speak 'hello' --play"

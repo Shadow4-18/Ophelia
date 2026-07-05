@@ -50,13 +50,24 @@ def main() -> int:
     android_link = """    let bindings_dir = config.build();
 
     if cfg!(target_os = "android") {
+        println!("cargo:rerun-if-env-changed=OPHELIA_SONIC_LIB_DIR");
         println!("cargo:rustc-link-lib=c++_shared");
-        for entry in glob(&format!("{}/**/libsonic.a", out_dir.display())).unwrap() {
-            if let Ok(path) = entry {
-                if let Some(parent) = path.parent() {
-                    println!("cargo:rustc-link-search=native={}", parent.display());
-                    println!("cargo:rustc-link-lib=static=sonic");
-                    break;
+        let mut linked_sonic = false;
+        if let Ok(dir) = std::env::var("OPHELIA_SONIC_LIB_DIR") {
+            if !dir.is_empty() {
+                println!("cargo:rustc-link-search=native={dir}");
+                println!("cargo:rustc-link-lib=static=sonic");
+                linked_sonic = true;
+            }
+        }
+        if !linked_sonic {
+            for entry in glob(&format!("{}/**/libsonic.a", out_dir.display())).unwrap() {
+                if let Ok(path) = entry {
+                    if let Some(parent) = path.parent() {
+                        println!("cargo:rustc-link-search=native={}", parent.display());
+                        println!("cargo:rustc-link-lib=static=sonic");
+                        break;
+                    }
                 }
             }
         }
