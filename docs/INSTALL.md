@@ -454,7 +454,7 @@ cd ~/Ophelia
 git pull
 bash scripts/termux-kokoro-proot-setup.sh
 proot-distro login ubuntu
-# follow printed steps — DevGitPit/Kokoros install.sh, XNNPACK, port 8880
+# follow printed steps — proot Ubuntu, cargo build --release, port 8880
 ```
 
 Ophelia stays on native Termux; Kokoros runs inside proot on `127.0.0.1:8880`.
@@ -599,28 +599,25 @@ bash scripts/termux-kokoro-setup.sh
 
 ### `std::__cxx11` / `__fprintf_chk` linker errors (ONNX Runtime)
 
-**Why:** Static ONNX Runtime prebuilds can fail to link on native Termux (Android bionic + C++ runtime mismatch). This is the hardest native-Termux blocker.
+**Why:** The ONNX Runtime prebuild for `aarch64-linux-android` is a **static library built for a different C++ ABI** than Termux (Android bionic). Native Termux Kokoros **cannot link it** — this is not fixable with more flags.
 
-**Try dynamic link first** (if `libonnxruntime.so` exists in the ort cache):
-
-```bash
-unset RUSTFLAGS
-ORT_DIR=$(find ~/.cache/ort/dfbin/aarch64-linux-android -mindepth 1 -maxdepth 1 -type d | head -1)
-ls "$ORT_DIR"/libonnxruntime*.so
-export ORT_LIB_LOCATION="$ORT_DIR"
-export ORT_PREFER_DYNAMIC_LINK=1
-export OPHELIA_SONIC_LIB_DIR=$HOME/.cache/ophelia/sonic
-cd ~/Ophelia && bash scripts/termux-kokoro-setup.sh
-```
-
-**Recommended fallback — proot Ubuntu** (much higher success rate):
+**Fix — use proot Ubuntu** (works on S21 and most Termux phones):
 
 ```bash
 cd ~/Ophelia
 bash scripts/termux-kokoro-proot-setup.sh
+proot-distro login ubuntu
 ```
 
-Then follow the printed steps (`proot-distro login ubuntu`, DevGitPit/Kokoros `install.sh`). Ophelia stays on native Termux; Kokoros runs in proot on `127.0.0.1:8880`.
+Inside Ubuntu, follow the script output (`DevGitPit/Kokoros` + `./install.sh`, XNNPACK, port 8880).
+
+**Alternatives while Kokoro is down:**
+
+```env
+OPHELIA_TTS_PROVIDER=xai
+```
+
+Or run [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) on a PC and point `KOKORO_TTS_URL` at your LAN IP.
 
 **Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 

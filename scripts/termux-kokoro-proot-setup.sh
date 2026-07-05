@@ -43,17 +43,29 @@ termux_print_instructions() {
      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
      source "$HOME/.cargo/env"
 
-     git clone https://github.com/DevGitPit/Kokoros
+     git clone https://github.com/lucasjinreal/Kokoros
      cd Kokoros
-     chmod +x install.sh
-     ./install.sh
-     # Choose XNNPACK (option 1). Thread count: 5 for SD 7+ Gen 3, else 4.
+
+     # Download models (skip if you already have checkpoints/ and data/)
+     mkdir -p checkpoints data
+     test -f checkpoints/kokoro-v1.0.onnx || curl -L \
+       "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model.onnx" \
+       -o checkpoints/kokoro-v1.0.onnx
+     test -f data/voices-v1.0.bin || curl -L \
+       "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
+       -o data/voices-v1.0.bin
+
+     # Do NOT use DevGitPit install.sh option "XNNPACK" — that feature was removed.
+     # Plain CPU build works in proot Ubuntu:
+     cargo build --release
+
+     # If espeak link fails on Linux, retry with:
+     #   export RUSTFLAGS="-L /usr/lib/aarch64-linux-gnu -l espeak-ng -l sonic -l pcaudio"
+     #   cargo build --release
 
 3. Run server (keep this tmux session open):
      tmux new -s kokoro
      ./target/release/koko openai --port 8880
-
-   S21 / Snapdragon 8xx: use thread count 4 or 5 when install.sh asks.
 
 4. Ophelia on Termux (outside proot) — in ~/.ophelia/.env:
      OPHELIA_TTS_PROVIDER=kokoro
@@ -66,7 +78,7 @@ If ONNX download fails inside proot, download in native Termux first:
 Then in proot, extract and:
      export ORT_LIB_LOCATION=/path/to/extracted
      export ORT_SKIP_DOWNLOAD=1
-     cargo build --release --features xnnpack
+     cargo build --release
 
 EOF
 }
