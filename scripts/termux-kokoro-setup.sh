@@ -40,6 +40,21 @@ termux_prepare_kokoros_build() {
     export LIBOPUS_STATIC=1
 }
 
+termux_prepare_cmake() {
+    echo "=== cmake / jsoncpp (espeak-ng build needs working cmake) ==="
+    pkg install -y cmake jsoncpp
+    # Polluted LD_LIBRARY_PATH (~/.local/lib, /system/lib) breaks cmake+jsoncpp on Termux.
+    if ! env -u LD_LIBRARY_PATH cmake --version >/dev/null 2>&1; then
+        echo "ERROR: cmake cannot run (jsoncpp symbol missing)." >&2
+        echo "  Try: pkg upgrade -y cmake jsoncpp" >&2
+        echo "  Then: unset LD_LIBRARY_PATH && cmake --version" >&2
+        echo "  If that works, remove bad paths from ~/.bashrc (see docs/INSTALL.md)." >&2
+        exit 1
+    fi
+    echo "  cmake ok: $(env -u LD_LIBRARY_PATH cmake --version | head -1)"
+    export TERMUX_KOKORO_UNSET_LD=1
+}
+
 termux_patch_audiopus_build_rs() {
     local build_rs="$1"
     local py="python3.11"

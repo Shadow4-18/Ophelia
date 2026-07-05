@@ -498,7 +498,30 @@ bash scripts/termux-kokoro-setup.sh
 
 If you previously ran `rustup-init`, edit `~/.cargo/env` and remove the line that prepends `~/.cargo/bin` to PATH.
 
-### `audiopus_sys` / `expected bool, found ()` (Kokoros cargo build)
+### `cmake` / `cannot locate symbol "_ZN4Json5Value` (Kokoros espeak-rs-sys build)
+
+**Why:** `cmake` on Termux links against `jsoncpp`. A polluted `LD_LIBRARY_PATH` (often `~/.local/lib`, `/system/lib`, or `/vendor/lib` from other hacks) loads the wrong `.so` and cmake crashes when building `espeak-ng`.
+
+**Fix:**
+
+```bash
+pkg upgrade -y cmake jsoncpp
+unset LD_LIBRARY_PATH
+cmake --version    # must print a version, not CANNOT LINK EXECUTABLE
+cd ~/Ophelia
+bash scripts/termux-kokoro-setup.sh
+```
+
+If `cmake --version` only works after `unset LD_LIBRARY_PATH`, edit `~/.bashrc` and remove the `LD_LIBRARY_PATH=...` line (or the paths that break cmake). The Kokoro setup script now unsets it during `cargo build` automatically.
+
+Resume a failed build (audiopus patch is cached):
+
+```bash
+cd ~/Kokoros
+unset LD_LIBRARY_PATH
+cargo build --release
+```
+
 
 **Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 
