@@ -500,9 +500,9 @@ If you previously ran `rustup-init`, edit `~/.cargo/env` and remove the line tha
 
 ### `audiopus_sys` / `expected bool, found ()` (Kokoros cargo build)
 
-**Why:** Kokoros depends on `audiopus_sys`, whose `build.rs` does not pick a linking mode on `aarch64-linux-android` unless told explicitly.
+**Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 
-**Fix:** the setup script sets `OPUS_STATIC=1` and installs `libopus`. Re-run:
+**Fix:** pull latest Ophelia and re-run (the setup script patches `audiopus_sys` automatically after `cargo fetch`):
 
 ```bash
 cd ~/Ophelia

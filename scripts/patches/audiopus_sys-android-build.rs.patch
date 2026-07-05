@@ -1,0 +1,13 @@
+--- build.rs.orig
++++ build.rs
+@@ -80,6 +80,10 @@
+     {
+         false
+     }
++    #[cfg(target_os = "android")]
++    {
++        false
++    }
+ }
+ 
+ fn find_installed_opus() -> Option<String> {

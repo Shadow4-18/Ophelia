@@ -35,9 +35,48 @@ termux_prepare_kokoros_build() {
     pkg install -y rust "$std_pkg" binutils clang git curl libopus pkg-config
     echo "rustc: $(command -v rustc) ($(rustc --version 2>&1))"
 
-    # audiopus_sys build.rs returns () on aarch64-linux-android unless linking mode is set.
+    # Link against Termux libopus via pkg-config (after android build.rs patch).
     export OPUS_STATIC=1
     export LIBOPUS_STATIC=1
+}
+
+termux_patch_audiopus_sys() {
+    echo "=== Patching audiopus_sys for Termux Android ==="
+    # audiopus_sys 0.2.2 build.rs does not compile on target_os=android (empty
+    # default_library_linking body). OPUS_STATIC alone cannot fix — rustc fails
+    # before the build script runs. See Lakelezz/audiopus_sys#15.
+    local f patched=0
+    while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        if grep -q 'target_os = "android"' "$f"; then
+            echo "  ok: $f"
+            patched=1
+            continue
+        fi
+        local tmp
+        tmp="$(mktemp)"
+        awk '
+            /all\(unix, target_env = "gnu"\)/ { in_gnu=1 }
+            in_gnu && /^    \}$/ && !done {
+                print
+                print "    #[cfg(target_os = \"android\")]"
+                print "    {"
+                print "        false"
+                print "    }"
+                done=1
+                next
+            }
+            { print }
+        ' "$f" > "$tmp"
+        mv "$tmp" "$f"
+        echo "  patched: $f"
+        patched=1
+    done < <(find "$HOME/.cargo/registry/src" -path '*/audiopus_sys-0.2.2/build.rs' 2>/dev/null || true)
+
+    if [[ "$patched" -eq 0 ]]; then
+        return 1
+    fi
+    return 0
 }
 
 termux_build_kokoros() {
