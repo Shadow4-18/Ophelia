@@ -167,14 +167,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "generate_image",
             "description": (
-                "Generate an image from a text prompt. Backends: xAI Grok Imagine, "
-                "OpenAI DALL-E, Ollama (local), Pollinations (free), A1111/SDWebUI "
-                "(local), ComfyUI (local), fal.ai, Replicate, Civitai, ModelsLab. "
-                "Set nsfw=true for explicit/pornographic prompts — those are routed "
-                "to an uncensored backend (never xAI/OpenAI) and require "
-                "OPHELIA_IMAGE_NSFW_ALLOWED=true or they will be refused. Only set "
-                "nsfw=true when the user explicitly asks for explicit content; "
-                "leave it false for everything else."
+                "Generate an image from a text prompt. Auto-sends to chat when "
+                "delivered — do NOT call send_file afterward. Backends: xAI Grok "
+                "Imagine, OpenAI DALL-E, Ollama (local), Pollinations (free), "
+                "A1111/SDWebUI (local), ComfyUI (local), fal.ai, Replicate, "
+                "Civitai, ModelsLab. Set nsfw=true for explicit prompts (requires "
+                "OPHELIA_IMAGE_NSFW_ALLOWED=true)."
             ),
             "parameters": {
                 "type": "object",
@@ -201,8 +199,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "generate_video",
             "description": (
-                "Generate a video from a text prompt (xAI Grok Imagine). "
-                "Waits up to 10m, saves mp4 under artifacts, returns path for Telegram."
+                "Generate a video from a text prompt (xAI Grok Imagine). Auto-sends "
+                "to chat when delivered — do NOT call send_file afterward. Waits up "
+                "to 10m, saves mp4 under artifacts."
             ),
             "parameters": {
                 "type": "object",
@@ -693,6 +692,37 @@ class ToolRegistry:
 
         return any(media_kind(p) == "audio" for p in self._delivered_artifacts)
 
+    def media_delivered_this_turn(self) -> bool:
+        return bool(self._delivered_artifacts)
+
+    async def _finalize_media_tool_result(
+        self,
+        result: str,
+        *,
+        caption: str = "",
+        paths: list[Path] | None = None,
+    ) -> str:
+        """Auto-send generated media once; queue only if live delivery failed."""
+        artifact_paths = paths or artifact_paths_in_text(result)
+        if not artifact_paths:
+            self._record_artifacts_from_text(result)
+            return result
+
+        delivered_any = False
+        for path in artifact_paths:
+            if await self._deliver_artifact(path, caption):
+                delivered_any = True
+            else:
+                self._queue_artifact(path)
+
+        if delivered_any and "do not call send_file" not in result:
+            result = (
+                f"{result.rstrip()} "
+                "(sent to the user — do not call send_file for this file)"
+            )
+        self._record_artifacts_from_text(result)
+        return result
+
     def _mark_artifact_delivered(self, path: Path) -> None:
         try:
             resolved = path.expanduser().resolve()
@@ -816,8 +846,7 @@ class ToolRegistry:
             artifacts_dir=self.artifacts_dir,
             nsfw=nsfw,
         )
-        self._record_artifacts_from_text(result)
-        return result
+        return await self._finalize_media_tool_result(result)
 
     async def _generate_video(
         self, prompt: str, duration_seconds: int = 6
@@ -829,8 +858,7 @@ class ToolRegistry:
             duration_seconds=duration_seconds,
             artifacts_dir=self.artifacts_dir,
         )
-        self._record_artifacts_from_text(result)
-        return result
+        return await self._finalize_media_tool_result(result)
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()
@@ -881,14 +909,8 @@ class ToolRegistry:
             )
         except Exception as e:
             return f"TTS failed ({provider}): {e}"
-        delivered = await self._deliver_artifact(out)
-        if not delivered:
-            self._queue_artifact(out)
         result = f"TTS saved to {out}"
-        if delivered:
-            result += " (sent to the user — do not call send_file for this audio)"
-        self._record_artifacts_from_text(result)
-        return result
+        return await self._finalize_media_tool_result(result, paths=[out])
 
     async def _send_file(self, path: str, caption: str = "") -> str:
         """Send any saved file (audio/video/image/doc) to the current chat.

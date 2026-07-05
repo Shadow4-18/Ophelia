@@ -250,7 +250,6 @@ class DiscordGateway:
             if admission != "ok":
                 return
             channel = f"discord:{message.author.id}"
-            tools = getattr(gw.session.agent, "tools", None)
 
             async def _reply(text: str) -> None:
                 # Send any media artifacts referenced in the reply text first.
@@ -271,10 +270,6 @@ class DiscordGateway:
                     _reply,
                     media_reply=_media_reply,
                 )
-            # Forward any remaining queued artifacts (e.g. send_file mid-turn).
-            if tools and hasattr(tools, "consume_pending_artifacts"):
-                for p in tools.consume_pending_artifacts():
-                    await gw._send_discord_file(message, p, "")
 
         self._bot = bot
         return bot

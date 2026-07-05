@@ -215,6 +215,14 @@ class ChannelSession:
             log.exception("channel.chat_error", channel=channel)
             await _logged_reply(f"Error: {e}")
         finally:
+            if logged_media_reply is not None:
+                for path in self.agent.tools.consume_pending_artifacts():
+                    try:
+                        ok = await logged_media_reply(path, "")
+                        if ok:
+                            self.agent.tools._mark_artifact_delivered(path)
+                    except Exception as e:
+                        log.warning("channel.flush_media_failed", path=str(path), error=str(e))
             self.agent.tools.clear_message_sender()
             self.agent.tools.clear_media_sender()
             self.agent.tools.clear_owner()

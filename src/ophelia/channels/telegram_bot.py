@@ -756,6 +756,9 @@ class TelegramGateway:
                 else:
                     await update.message.reply_document(document=InputFile(f), caption=cap)
             log.info("telegram.send_file", path=str(path), kind=kind or "document")
+            tools = getattr(self.session.agent, "tools", None)
+            if tools is not None:
+                tools._mark_artifact_delivered(path)
             return True
         except Exception as e:
             log.warning("telegram.send_file_failed", path=str(path), error=str(e))
@@ -768,16 +771,8 @@ class TelegramGateway:
         channel: str,
         reply: str,
     ) -> None:
-        extra_paths: list[Path] = []
         tools = getattr(self.session.agent, "tools", None)
-        if tools and hasattr(tools, "consume_pending_artifacts"):
-            try:
-                extra_paths = tools.consume_pending_artifacts()
-            except Exception:
-                extra_paths = []
-        audio_sent = await self._send_media_artifacts(
-            update, reply, extra_paths=extra_paths
-        )
+        audio_sent = await self._send_media_artifacts(update, reply)
         if tools is not None and tools.audio_delivered_this_turn():
             audio_sent = True
         voice_on = self.session.voice_enabled(
