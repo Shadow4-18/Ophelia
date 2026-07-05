@@ -502,13 +502,15 @@ If you previously ran `rustup-init`, edit `~/.cargo/env` and remove the line tha
 
 **Why:** `audiopus_sys` 0.2.2's `build.rs` has no Android branch — rustc fails to compile the build script itself on Termux (`expected bool, found ()`). `OPUS_STATIC=1` alone does not fix this.
 
-**Fix:** pull latest Ophelia and re-run (the setup script patches `audiopus_sys` automatically after `cargo fetch`):
+**Fix:** pull latest Ophelia and re-run. The setup script vendors a patched `audiopus_sys` via Cargo `[patch.crates-io]` (editing the registry copy does not work — Cargo checksums it):
 
 ```bash
 cd ~/Ophelia
 git pull
 bash scripts/termux-kokoro-setup.sh
 ```
+
+First run downloads `audiopus_sys` (~few MB) into `scripts/kokoro-patches/` and writes `~/Kokoros/.cargo/config.toml`.
 
 ### Ollama not reachable
 

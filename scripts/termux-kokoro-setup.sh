@@ -16,6 +16,7 @@ source "$ROOT/scripts/termux-pip-env.sh"
 KOKOROS_DIR="${KOKOROS_DIR:-$HOME/Kokoros}"
 KOKOROS_REPO="${KOKOROS_REPO:-https://github.com/lucasjinreal/Kokoros}"
 PORT="${KOKORO_PORT:-8880}"
+AUDIOOPUS_PATCH_DIR="$ROOT/scripts/kokoro-patches/audiopus_sys"
 
 termux_fix_rust_path
 
@@ -32,51 +33,69 @@ termux_prepare_kokoros_build() {
 
     echo "=== Termux Rust toolchain ==="
     pkg update -y
-    pkg install -y rust "$std_pkg" binutils clang git curl libopus pkg-config
+    pkg install -y rust "$std_pkg" binutils clang git curl libopus pkg-config cmake
     echo "rustc: $(command -v rustc) ($(rustc --version 2>&1))"
 
-    # Link against Termux libopus via pkg-config (after android build.rs patch).
     export OPUS_STATIC=1
     export LIBOPUS_STATIC=1
 }
 
-termux_patch_audiopus_sys() {
-    echo "=== Patching audiopus_sys for Termux Android ==="
-    # audiopus_sys 0.2.2 build.rs does not compile on target_os=android (empty
-    # default_library_linking body). OPUS_STATIC alone cannot fix — rustc fails
-    # before the build script runs. See Lakelezz/audiopus_sys#15.
-    local f patched=0
-    while IFS= read -r f; do
-        [[ -f "$f" ]] || continue
-        if grep -q 'target_os = "android"' "$f"; then
-            echo "  ok: $f"
-            patched=1
-            continue
-        fi
-        local tmp
-        tmp="$(mktemp)"
-        awk '
-            /all\(unix, target_env = "gnu"\)/ { in_gnu=1 }
-            in_gnu && /^    \}$/ && !done {
-                print
-                print "    #[cfg(target_os = \"android\")]"
-                print "    {"
-                print "        false"
-                print "    }"
-                done=1
-                next
-            }
-            { print }
-        ' "$f" > "$tmp"
-        mv "$tmp" "$f"
-        echo "  patched: $f"
-        patched=1
-    done < <(find "$HOME/.cargo/registry/src" -path '*/audiopus_sys-0.2.2/build.rs' 2>/dev/null || true)
+termux_setup_audiopus_cargo_patch() {
+    echo "=== audiopus_sys Termux patch (local [patch.crates-io]) ==="
+    local py="python3.11"
+    command -v "$py" &>/dev/null || py="python"
 
-    if [[ "$patched" -eq 0 ]]; then
-        return 1
+    if [[ ! -f "$AUDIOOPUS_PATCH_DIR/Cargo.toml" ]] || \
+       ! grep -q 'target_os = "android"' "$AUDIOOPUS_PATCH_DIR/build.rs" 2>/dev/null; then
+        echo "  Downloading audiopus_sys 0.2.2 from crates.io..."
+        rm -rf "$AUDIOOPUS_PATCH_DIR"
+        mkdir -p "$ROOT/scripts/kokoro-patches"
+        curl -fsSL "https://crates.io/api/v1/crates/audiopus_sys/0.2.2/download" \
+            -o /tmp/audiopus_sys-0.2.2.crate
+        tar xf /tmp/audiopus_sys-0.2.2.crate -C "$ROOT/scripts/kokoro-patches"
+        mv "$ROOT/scripts/kokoro-patches/audiopus_sys-0.2.2" "$AUDIOOPUS_PATCH_DIR"
+
+        "$py" <<'PY' "$AUDIOOPUS_PATCH_DIR/build.rs"
+import re
+import sys
+
+path = sys.argv[1]
+text = open(path).read()
+if 'target_os = "android"' in text:
+    sys.exit(0)
+
+pat = r"fn default_library_linking\(\) -> bool \{.*?\n\}"
+m = re.search(pat, text, flags=re.DOTALL)
+if not m:
+    print("ERROR: audiopus_sys build.rs layout changed — cannot patch", file=sys.stderr)
+    sys.exit(1)
+
+block = m.group(0)
+if block.rstrip().endswith("}"):
+    fixed = block[:-1] + """    #[cfg(target_os = "android")]
+    {
+        false
+    }
+}
+"""
+else:
+    print("ERROR: unexpected default_library_linking block", file=sys.stderr)
+    sys.exit(1)
+
+open(path, "w").write(text[: m.start()] + fixed + text[m.end() :])
+print(f"  Patched {path}")
+PY
+    else
+        echo "  Using cached patched audiopus_sys at $AUDIOOPUS_PATCH_DIR"
     fi
-    return 0
+
+    mkdir -p "$KOKOROS_DIR/.cargo"
+    cat >"$KOKOROS_DIR/.cargo/config.toml" <<EOF
+# Written by Ophelia scripts/termux-kokoro-setup.sh — audiopus_sys Android fix
+[patch.crates-io]
+audiopus_sys = { path = "$AUDIOOPUS_PATCH_DIR" }
+EOF
+    echo "  Cargo patch -> $AUDIOOPUS_PATCH_DIR"
 }
 
 termux_build_kokoros() {
@@ -86,6 +105,8 @@ termux_build_kokoros() {
         git clone "$KOKOROS_REPO" "$KOKOROS_DIR"
     fi
     cd "$KOKOROS_DIR"
+
+    termux_setup_audiopus_cargo_patch
 
     mkdir -p checkpoints data
     if [[ ! -f checkpoints/kokoro-v1.0.onnx ]]; then
@@ -101,7 +122,7 @@ termux_build_kokoros() {
             -o data/voices-v1.0.bin
     fi
 
-    echo "Building with OPUS_STATIC=1 (fixes audiopus_sys on Termux)..."
+    echo "Building Kokoros (release)..."
     cargo build --release
     echo ""
     echo "Built: $KOKOROS_DIR/target/release/koko"
