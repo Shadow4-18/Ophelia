@@ -47,12 +47,19 @@ termux_setup_audiopus_cargo_patch() {
 
     if [[ ! -f "$AUDIOOPUS_PATCH_DIR/Cargo.toml" ]] || \
        ! grep -q 'target_os = "android"' "$AUDIOOPUS_PATCH_DIR/build.rs" 2>/dev/null; then
-        echo "  Downloading audiopus_sys 0.2.2 from crates.io..."
+        echo "  Downloading audiopus_sys 0.2.2..."
         rm -rf "$AUDIOOPUS_PATCH_DIR"
         mkdir -p "$ROOT/scripts/kokoro-patches"
-        curl -fsSL "https://crates.io/api/v1/crates/audiopus_sys/0.2.2/download" \
-            -o /tmp/audiopus_sys-0.2.2.crate
-        tar xf /tmp/audiopus_sys-0.2.2.crate -C "$ROOT/scripts/kokoro-patches"
+        local crate="/tmp/audiopus_sys-0.2.2.crate"
+        # crates.io API returns 403 without User-Agent; static URL is more reliable on Termux.
+        if ! curl -fsSL -A "ophelia-termux-kokoro/1.0" \
+            "https://static.crates.io/crates/audiopus_sys/audiopus_sys-0.2.2.crate" \
+            -o "$crate"; then
+            curl -fsSL -A "ophelia-termux-kokoro/1.0" \
+                "https://crates.io/api/v1/crates/audiopus_sys/0.2.2/download" \
+                -o "$crate"
+        fi
+        tar xf "$crate" -C "$ROOT/scripts/kokoro-patches"
         mv "$ROOT/scripts/kokoro-patches/audiopus_sys-0.2.2" "$AUDIOOPUS_PATCH_DIR"
 
         "$py" <<'PY' "$AUDIOOPUS_PATCH_DIR/build.rs"
