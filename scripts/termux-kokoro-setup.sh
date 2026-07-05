@@ -44,35 +44,7 @@ termux_patch_audiopus_build_rs() {
     local build_rs="$1"
     local py="python3.11"
     command -v "$py" &>/dev/null || py="python"
-    "$py" <<'PY' "$build_rs"
-import re
-import sys
-
-path = sys.argv[1]
-text = open(path).read()
-if 'target_os = "android"' in text:
-    sys.exit(0)
-
-pat = r"fn default_library_linking\(\) -> bool \{.*?\n\}"
-m = re.search(pat, text, flags=re.DOTALL)
-if not m:
-    print("ERROR: audiopus_sys build.rs layout changed — cannot patch", file=sys.stderr)
-    sys.exit(1)
-
-block = m.group(0)
-if not block.rstrip().endswith("}"):
-    print("ERROR: unexpected default_library_linking block", file=sys.stderr)
-    sys.exit(1)
-
-fixed = block[:-1] + """    #[cfg(target_os = "android")]
-    {
-        false
-    }
-}
-"""
-open(path, "w").write(text[: m.start()] + fixed + text[m.end() :])
-print(f"  Patched {path}")
-PY
+    "$py" "$ROOT/scripts/kokoro-patches/patch-audiopus-build-rs.py" "$build_rs"
 }
 
 termux_download_audiopus_crate() {
@@ -90,7 +62,7 @@ termux_download_audiopus_crate() {
     rm -f "$crate"
     local py="python3.11"
     command -v "$py" &>/dev/null || py="python"
-    if ! "$py" <<'PY' "$crate"
+    if ! "$py" - "$crate" <<'PY'
 import sys
 import urllib.request
 
