@@ -17,6 +17,7 @@ cd "$ROOT"
 source "$ROOT/scripts/termux-pip-env.sh"
 
 termux_fix_rust_path
+termux_enable_plain_pip
 termux_ensure_compatible_python
 export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
 
@@ -53,9 +54,9 @@ pkg install -y \
 echo "[2/4] Native wheels (pydantic-core)..."
 termux_preinstall_native_wheels
 
-echo "[3/4] Reinstall Ophelia (editable, Termux constraints)..."
+echo "[3/4] Reinstall Ophelia (editable)..."
 "$TERMUX_PYTHON" -m pip install -U setuptools wheel
-termux_pip_install -e "$ROOT" -c "$ROOT/scripts/termux-constraints.txt"
+termux_pip_install_editable "$ROOT"
 
 echo "[4/4] Verify CLI..."
 termux_install_ophelia_wrapper "$TERMUX_PYTHON"

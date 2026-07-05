@@ -1,14 +1,13 @@
-# Termux / Android pip constraints for Ophelia.
+# Termux / Android pip constraints for Ophelia (legacy fallback).
 #
-# Termux is Linux userland — PEP 508 cannot target it. PyPI manylinux wheels
-# often do not match Termux's libc, so pip falls back to Rust/C source builds
-# (maturin) which fail without ANDROID_API_LEVEL + a full NDK toolchain.
-#
-# Usage (from repo root):
+# Prefer plain `pip install -e .` after one-time setup:
 #   source scripts/termux-pip-env.sh
-#   termux_preinstall_native_wheels
-#   termux_pip_install -e . -c scripts/termux-constraints.txt
+#   termux_enable_plain_pip
+#   termux_preinstall_native_wheels   # first time / after Python upgrade
+#   pip install -e .
 #
+# pyproject.toml applies these pins automatically on Termux via a hatch hook.
+# This file remains for manual installs: pip install -e . -c scripts/termux-constraints.txt
 # openai>=1.40 depends on jiter (Rust) — no reliable Termux wheel on PyPI.
 openai>=1.35,<1.40
 # openai<1.40 passes proxies= to httpx; removed in httpx 0.28+.

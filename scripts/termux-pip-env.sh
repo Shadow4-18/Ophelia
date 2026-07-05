@@ -8,6 +8,54 @@ TERMUX_PYDANTIC_INSTALLER="${TERMUX_PYDANTIC_INSTALLER:-https://raw.githubuserco
 
 # Maturin on Termux expects API 24 for cross-target builds (not the device SDK).
 export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
+TERMUX_PIP_TRUSTED_HOST="${TERMUX_PIP_TRUSTED_HOST:-termux-user-repository.github.io}"
+
+termux_enable_plain_pip() {
+    # One-time setup so plain `pip install -e .` works on Termux (TUR wheels + Android API).
+    export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
+    export PIP_EXTRA_INDEX_URL="$TERMUX_PIP_EXTRA_INDEX"
+    export PIP_TRUSTED_HOST="$TERMUX_PIP_TRUSTED_HOST"
+
+    local pip_conf="${HOME}/.config/pip/pip.conf"
+    mkdir -p "$(dirname "$pip_conf")"
+    if [[ ! -f "$pip_conf" ]]; then
+        cat >"$pip_conf" <<EOF
+[global]
+extra-index-url = ${TERMUX_PIP_EXTRA_INDEX}
+trusted-host = ${TERMUX_PIP_TRUSTED_HOST}
+EOF
+        echo "  Wrote $pip_conf (TUR extra index for Android wheels)"
+    elif ! grep -q 'termux-user-repository' "$pip_conf" 2>/dev/null; then
+        echo "  TIP: add to $pip_conf under [global]:"
+        echo "    extra-index-url = $TERMUX_PIP_EXTRA_INDEX"
+        echo "    trusted-host = $TERMUX_PIP_TRUSTED_HOST"
+    fi
+
+    local bashrc="${HOME}/.bashrc"
+    local marker="# ophelia-termux-pip"
+    if [[ -f "$bashrc" ]] && ! grep -q "$marker" "$bashrc" 2>/dev/null; then
+        cat >>"$bashrc" <<EOF
+
+$marker
+export ANDROID_API_LEVEL=24
+export PIP_EXTRA_INDEX_URL=$TERMUX_PIP_EXTRA_INDEX
+export PIP_TRUSTED_HOST=$TERMUX_PIP_TRUSTED_HOST
+EOF
+        echo "  Appended Termux pip env to ~/.bashrc (open a new shell or: source ~/.bashrc)"
+    fi
+}
+
+termux_pip_install_editable() {
+    # Plain editable install — pyproject hatch hook caps openai/httpx on Termux.
+    local root="${1:-.}"
+    local py="${TERMUX_PYTHON:-$(termux_resolve_python)}"
+    termux_enable_plain_pip
+    termux_fix_rust_path
+    termux_ensure_compatible_python
+    py="${TERMUX_PYTHON:-$(termux_resolve_python)}"
+    echo "  -> pip install -e $root ($("$py" --version 2>&1))"
+    "$py" -m pip install --no-cache-dir --prefer-binary -e "$root"
+}
 
 # rustup breaks Termux's patched rustc (core/std rlib not found).
 termux_fix_rust_path() {
@@ -88,6 +136,9 @@ termux_ensure_compatible_python() {
     if [[ "$minor" == "3.10" ]] || [[ "$minor" == "3.11" ]] || [[ "$minor" == "3.12" ]]; then
         return 0
     fi
+
+    echo "WARNING: default python is $minor — Ophelia on Termux needs 3.10–3.12 for prebuilt wheels." >&2
+    echo "  pkg install tur-repo && pkg install python-is-python3.11" >&2
 
     local bin
     for bin in python3.11 python3.10 python3.12; do

@@ -699,15 +699,33 @@ Hermes/OpenClaw avoid this by:
 - Installing build tools + `ANDROID_API_LEVEL` when compilation is unavoidable
 - Skipping `uvicorn[standard]` extras that pull `uvloop`/`httptools`
 
-**Fix:** always use the Termux install script (do not plain `pip install -e .`):
+**Fix:** use Python **3.11** (not 3.14) and one-time Termux pip setup, then plain `pip install -e .` works:
 
 ```bash
 cd ~/Ophelia
 git pull
+
+# Switch off Python 3.14 (recommended)
+pkg install -y tur-repo
+pkg install -y python-is-python3.11   # or python-is-python3.10
+
+# One-time: TUR wheels + ANDROID_API_LEVEL for any Rust builds
+source scripts/termux-pip-env.sh
+termux_enable_plain_pip
+termux_preinstall_native_wheels
+
+pip install -e .
+```
+
+Or use the all-in-one script (same result):
+
+```bash
 bash scripts/termux-install.sh
 ```
 
-Manual equivalent:
+**Why plain `pip install -e .` failed before:** default Termux Python is 3.14, which pulls `openai` 2.x → `jiter` (Rust, needs `ANDROID_API_LEVEL`). Ophelia's `pyproject.toml` now auto-caps `openai` and `httpx` on Termux; `termux_enable_plain_pip` adds the TUR wheel index and `ANDROID_API_LEVEL=24` to your shell.
+
+Manual equivalent (legacy):
 
 ```bash
 source scripts/termux-pip-env.sh

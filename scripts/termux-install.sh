@@ -9,6 +9,7 @@ cd "$ROOT"
 source "$ROOT/scripts/termux-pip-env.sh"
 
 termux_fix_rust_path
+termux_enable_plain_pip
 export TERMUX_PYTHON="${PYTHON:-$(termux_resolve_python)}"
 
 echo ""
@@ -32,7 +33,7 @@ termux_preinstall_native_wheels
 echo "[3/5] Ophelia + dependencies..."
 # Termux manages pip via pkg; do not self-upgrade pip.
 "$TERMUX_PYTHON" -m pip install -U setuptools wheel
-termux_pip_install -e "$ROOT" -c "$ROOT/scripts/termux-constraints.txt"
+termux_pip_install_editable "$ROOT"
 
 echo "[4/5] Auto-setup (~/.ophelia)..."
 "$TERMUX_PYTHON" -m ophelia setup --do

@@ -34,6 +34,9 @@ packages = ["src/ophelia"]
 [tool.hatch.build]
 sources = ["src"]
 
+[tool.hatch.metadata.hooks.custom]
+path = "packaging/termux_metadata_hook.py"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
