@@ -26,6 +26,25 @@ from ophelia.providers.router import (
 log = structlog.get_logger()
 
 
+def extra_body_for(settings: Settings, provider: str) -> dict[str, Any] | None:
+    """Provider-specific extra_body for chat.completions.create.
+
+    DeepSeek V4 enables thinking mode by default. Thinking mode returns a
+    long reasoning_content and tends to reason past tool calls — the model
+    talks itself out of calling web_search and just answers from weights,
+    which is why "web search stopped working" when routed through DeepSeek.
+    Disable it unless the user explicitly opted in via
+    OPHELIA_DEEPSEEK_THINKING=true.
+
+    Callers should pass the result as `extra_body=` to
+    client.chat.completions.create(...). Returns None when no override is
+    needed so the call site can pass None cleanly.
+    """
+    if provider == "deepseek" and not settings.deepseek_thinking:
+        return {"thinking": {"type": "disabled"}}
+    return None
+
+
 def _is_transient_error(exc: BaseException) -> bool:
     detail = api_error_detail(exc).lower()
     if any(k in detail for k in ("429", "rate limit", "rate_limit")):
@@ -60,15 +79,16 @@ async def call_with_fallback(
     primary_provider: str,
     primary_model: str,
     primary_client,
-    make_call: Callable[[Any, str], Awaitable[Any]],
+    make_call: Callable[[Any, str, str], Awaitable[Any]],
     gate: ModelGate | None = None,
     log_tag: str = "llm.fallback",
 ) -> Any:
     """Try the primary provider, then each fallback on transient failure.
 
-    `make_call(client, model)` is called with the resolved client and model and
-    must return the awaited completion result. This lets each caller shape its
-    own request (tools, max_tokens, messages) while sharing fallback behavior.
+    `make_call(client, model, provider)` is called with the resolved client,
+    model, and provider name and must return the awaited completion result.
+    This lets each caller shape its own request (tools, max_tokens, messages,
+    provider-specific extra_body) while sharing fallback behavior.
 
     Raises only if every provider fails transiently, or immediately if the
     primary failure is non-transient (e.g. 400).
@@ -78,7 +98,7 @@ async def call_with_fallback(
     # Primary
     try:
         async with gate.session(role, primary_model, primary_provider):
-            return await make_call(primary_client, primary_model)
+            return await make_call(primary_client, primary_model, primary_provider)
     except Exception as e:
         if not _is_transient_error(e):
             raise
@@ -109,7 +129,7 @@ async def call_with_fallback(
             continue
         try:
             async with gate.session(role, fb_model, prov):
-                result = await make_call(fb_client, fb_model)
+                result = await make_call(fb_client, fb_model, prov)
             log.info(
                 f"{log_tag}.succeeded",
                 role=role,

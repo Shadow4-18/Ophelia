@@ -100,12 +100,15 @@ class VoiceMind:
             model = agent._model("consciousness")
             gate = get_model_gate()
             provider = agent.stack.name("consciousness")  # type: ignore[attr-defined]
+            from ophelia.providers.fallback import extra_body_for
+
             async with gate.session("voice", model, provider):
                 resp = await client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.7,
                     max_tokens=400,
+                    extra_body=extra_body_for(agent.settings, provider),  # type: ignore[attr-defined]
                 )
             refined = (resp.choices[0].message.content or "").strip()
             if not refined:

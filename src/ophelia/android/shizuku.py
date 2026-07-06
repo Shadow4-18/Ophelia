@@ -295,7 +295,22 @@ class AndroidBody:
             root = " + root" if self.adb_root else " (no root)"
             target = self.adb_device or "default USB/wireless"
             return f"Phone body: adb → {target}{root}"
-        return f"Phone body: {self.mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"
+        mode = self.mode
+        if mode == "termux_only":
+            # Be explicit about WHAT is missing so the agent (and the user)
+            # don't over-generalize "no phone access" — the tools are still
+            # registered, but every call will fail until the bridge is wired.
+            missing: list[str] = []
+            if not self.rish_path:
+                missing.append("~/rish (Shizuku → Export to Termux)")
+            if not (self.phone_control.is_file() and is_termux()):
+                missing.append(f"{self.phone_control} (phone_control.sh)")
+            hint = "; ".join(missing) or "no bridge installed"
+            return (
+                f"Phone body: termux_only — NO Shizuku/phone_control bridge. "
+                f"Missing: {hint}. Run: bash scripts/termux-shizuku-setup.sh"
+            )
+        return f"Phone body: {mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"
 
     async def display_size(self) -> tuple[int, int] | None:
         """Native display resolution in pixels, cached. `input tap` coordinates

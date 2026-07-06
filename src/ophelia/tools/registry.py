@@ -1270,12 +1270,15 @@ class ToolRegistry:
         client = self._backend.async_client()
         model = self._model_for("chat")
         try:
+            from ophelia.providers.fallback import extra_body_for
+
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are Ophelia reflecting privately. Output only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
+                extra_body=extra_body_for(self.settings, self._backend.provider_name),
             )
             raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
@@ -1315,26 +1318,48 @@ class ToolRegistry:
             return "Vision disabled or no phone body."
         return await self.vision.see(question=question or "What is on screen?")
 
-    async def _phone_ui_dump(self) -> str:
+    def _phone_unavailable_reason(self) -> str | None:
+        """Precise reason the phone body can't be used right now, or None if OK.
+
+        Distinguishes 'feature disabled' from 'bridge not wired' so the agent
+        doesn't collapse both into 'I have no phone access' — the latter is
+        fixable by running termux-shizuku-setup.sh, the former is an intentional
+        config choice.
+        """
         if not self.android:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        mode = getattr(self.android, "mode", None)
+        if mode in ("termux_only", "none"):
+            return (
+                "Phone bridge not wired — Shizuku/phone_control.sh missing. "
+                "Run: bash scripts/termux-shizuku-setup.sh (and start Shizuku on the phone)."
+            )
+        return None
+
+    async def _phone_ui_dump(self) -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.ui_dump()
 
     async def _phone_tap(self, x: int | float, y: int | float) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         x, y, note = await _resolve_tap_coords(self.android, x, y)
         result = await self.android.tap(x, y)
         return f"{result}{note}"
 
     async def _phone_open_app(self, package: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.open_app(package)
 
     async def _phone_shell(self, command: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         blocked = _phone_shell_blocked_reason(command)
         if blocked:
             # Don't let her accidentally start a second Ophelia (which would
@@ -1351,16 +1376,18 @@ class ToolRegistry:
         y2: int | float,
         duration_ms: int = 300,
     ) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         x1, y1, n1 = await _resolve_tap_coords(self.android, x1, y1)
         x2, y2, n2 = await _resolve_tap_coords(self.android, x2, y2)
         result = await self.android.swipe(x1, y1, x2, y2, duration_ms)
         return f"{result}{n1}{n2}"
 
     async def _phone_key(self, key: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.key(key)
 
     async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:

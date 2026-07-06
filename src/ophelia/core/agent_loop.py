@@ -747,6 +747,16 @@ class AgentLoop:
             return False
         return signatures[-1] == signatures[-2]
 
+    def _extra_body_for(self, provider: str) -> dict[str, Any] | None:
+        """Provider-specific extra body for chat.completions.create.
+
+        See ophelia.providers.fallback.extra_body_for — same logic, shared
+        so curator/director/consciousness callers stay in sync.
+        """
+        from ophelia.providers.fallback import extra_body_for
+
+        return extra_body_for(self.settings, provider)
+
     async def _call_with_fallback(
         self,
         *,
@@ -773,6 +783,7 @@ class AgentLoop:
                     model=primary_model,
                     messages=messages,
                     tools=tools,
+                    extra_body=self._extra_body_for(primary_provider),
                 )
         except Exception as e:
             if not self._is_transient_error(e):
@@ -808,6 +819,7 @@ class AgentLoop:
                         model=fb_model,
                         messages=messages,
                         tools=tools,
+                        extra_body=self._extra_body_for(fb_provider),
                     )
                 log.info(
                     "tool_loop.fallback_succeeded",
@@ -866,6 +878,7 @@ class AgentLoop:
                 model=model,
                 messages=messages,
                 tools=None,
+                extra_body=self._extra_body_for(provider),
             )
         msg = response.choices[0].message
         text = (msg.content or "").strip() or "(no response)"
