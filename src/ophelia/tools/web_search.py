@@ -158,6 +158,9 @@ async def _brave_search(query: str, api_key: str, max_results: int) -> str:
 
 async def _duckduckgo_search(query: str, max_results: int) -> str:
     lines: list[str] = []
+    # Track failure reasons separately from "no results" so the agent can
+    # tell the user whether the search backend is down vs. just empty.
+    errors: list[str] = []
     async with httpx.AsyncClient(timeout=20.0, headers=HEADERS) as client:
         try:
             r = await client.get(
@@ -173,8 +176,10 @@ async def _duckduckgo_search(query: str, max_results: int) -> str:
                 for topic in (data.get("RelatedTopics") or [])[:5]:
                     if isinstance(topic, dict) and topic.get("Text"):
                         lines.append(f"- {topic['Text'][:300]}")
-        except httpx.HTTPError:
-            pass
+            else:
+                errors.append(f"api.duckduckgo.com HTTP {r.status_code}")
+        except httpx.HTTPError as e:
+            errors.append(f"api.duckduckgo.com: {type(e).__name__}")
 
         try:
             r = await client.get(
@@ -191,12 +196,23 @@ async def _duckduckgo_search(query: str, max_results: int) -> str:
                     title = unescape(re.sub(r"<[^>]+>", "", title)).strip()
                     if title and url.startswith("http"):
                         lines.append(f"- {title}\n  {url}")
-        except httpx.HTTPError:
-            pass
+            else:
+                errors.append(f"html.duckduckgo.com HTTP {r.status_code}")
+        except httpx.HTTPError as e:
+            errors.append(f"html.duckduckgo.com: {type(e).__name__}")
 
-    if not lines:
-        return f"No results for '{query}'. Try a more specific query."
-    return f"Web search: {query}\n\n" + "\n".join(lines[: max_results + 3])
+    if lines:
+        return f"Web search: {query}\n\n" + "\n".join(lines[: max_results + 3])
+    if errors:
+        # All backends failed — surface the reason so the agent can tell the
+        # user the search service is having problems (not just "no results").
+        return (
+            f"Web search failed for '{query}'. All DuckDuckGo endpoints errored: "
+            + "; ".join(errors)
+            + ". The search backend may be rate-limiting or temporarily down; "
+            "retry shortly or try fetch_url on a known URL."
+        )
+    return f"No results for '{query}'. Try a more specific query."
 
 
 async def fetch_url(url: str, max_chars: int = 8000) -> str:

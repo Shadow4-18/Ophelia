@@ -186,8 +186,26 @@ class AgentLoop:
         life_block = ""
         humor_block = ""
         if self.life is not None:
-            await self.life.refresh()
-            life_block = self.life.to_context_block()
+            try:
+                await self.life.refresh()
+                life_block = self.life.to_context_block()
+            except Exception as e:
+                log.warning("agent.life_context_failed", error=str(e))
+                self.life = None
+        if not life_block:
+            # Always inject the current time so the agent never loses track
+            # of when "now" is — even if LifeContext is unavailable or
+            # refresh() threw. This is the one piece of context the agent
+            # cannot derive on its own.
+            from ophelia.timeutil import now_in_timezone
+
+            now = now_in_timezone(self.settings.timezone)
+            tz_name = self.settings.timezone or "UTC"
+            life_block = (
+                "# Current context (AUTHORITATIVE — trust this, not vague memory)\n"
+                f"- Now: {now.strftime('%A, %B %d, %Y — %I:%M %p %Z')} ({tz_name})\n"
+                "Never invent the date or time. Use the line above."
+            )
         if self.humor is not None:
             humor_block = await self.humor.hints_for_prompt()
         return build_system_context(
