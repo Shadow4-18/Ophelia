@@ -312,10 +312,27 @@ def cmd_whoami(_: argparse.Namespace) -> int:
         print("    WARNING: no owner is configured — everyone is a guest or rejected.")
         return 1
 
+    explicit = (settings.owner_id or "").strip()
+    if not explicit:
+        rc = 1
+        print()
+        print("  !! OWNER ID IS NOT EXPLICITLY SET:")
+        print("    You're relying on list-order fallback (first user in each platform's")
+        print("    allowlist is treated as owner). This is fragile — adding a second")
+        print("    platform or reordering the list can silently demote you to guest.")
+        print("    Fix: set OPHELIA_OWNER_ID explicitly in ~/.ophelia/.env:")
+        tg_id = tg[0] if tg else "YOUR_TG_ID"
+        dc_id = dc[0] if dc else "YOUR_DC_ID"
+        parts = []
+        if settings.telegram_enabled:
+            parts.append(f"telegram:{tg_id}")
+        if settings.discord_enabled:
+            parts.append(f"discord:{dc_id}")
+        print(f"      OPHELIA_OWNER_ID={','.join(parts)}")
+
     # Detect the classic footgun: OPHELIA_OWNER_ID set to a subset of the
     # enabled platforms. e.g. OPHELIA_OWNER_ID=discord:222 when both telegram
     # and discord are enabled silently demotes the Telegram owner to a guest.
-    explicit = (settings.owner_id or "").strip()
     if explicit:
         present_platforms = {c.split(":", 1)[0] for c in settings.owner_channels()}
         enabled_platforms: set[str] = set()

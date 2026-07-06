@@ -64,8 +64,10 @@ def _phone_shell_blocked_reason(command: str) -> str | None:
 
 # Tools a sandboxed GUEST may not call. These either shape her identity
 # (soul/prompter/lessons/goals/drives/skills), touch private memory/databases,
-# spend money/resources (media generation), or control her phone body. Guests
-# get conversational tools only: send_message, send_file, web_search, fetch_url.
+# or control her phone body. Guests get conversational tools + constrained
+# media (1:1 images/videos, voice via local Kokoro) + web search.
+# `generate_image`, `generate_video`, and `text_to_speech` are allowed for
+# guests but clamped in their handlers (_guest_media_clamp / dispatch).
 GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
     {
         "edit_soul",
@@ -82,10 +84,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "sqlite_exec",
         "run_code",
         "recall_memory",
-        "generate_image",
-        "generate_video",
         "list_inbox_images",
-        "text_to_speech",
         "phone_see_screen",
         "phone_ui_dump",
         "phone_tap",
@@ -899,6 +898,11 @@ class ToolRegistry:
     async def _generate_image(
         self, prompt: str, aspect_ratio: str = "1:1", nsfw: bool = False
     ) -> str:
+        # Guests get 1:1 only — wider aspect ratios cost more tokens and the
+        # experience is "see I can make images," not "produce wallpaper for
+        # strangers." Owner is unaffected.
+        if not self._is_owner:
+            aspect_ratio = "1:1"
         result = await generate_image(
             self.settings,
             self.stack,
@@ -917,6 +921,11 @@ class ToolRegistry:
         aspect_ratio: str | None = None,
         resolution: str | None = None,
     ) -> str:
+        # Guests get 1:1 + low resolution only. Keeps the experience (she can
+        # make a short clip) without spending full-quality tokens on strangers.
+        if not self._is_owner:
+            aspect_ratio = "1:1"
+            resolution = "low"
         result = await generate_video(
             self.settings,
             self.stack,

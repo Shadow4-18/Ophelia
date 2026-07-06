@@ -1005,6 +1005,30 @@ def _section_channels() -> None:
     else:
         updates["OPHELIA_DISCORD_ENABLED"] = "false"
 
+    # Explicit owner identity — declare it now so owner status doesn't depend
+    # on list-ordering of the allowlist (a footgun that demotes the owner to
+    # guest when a second platform is added). Default to channel form built
+    # from the IDs just entered, on whichever platforms are enabled.
+    default_owner = read_env_key("OPHELIA_OWNER_ID") or ""
+    if not default_owner:
+        parts: list[str] = []
+        tg = updates.get("TELEGRAM_ALLOWED_USER_IDS") or read_env_key("TELEGRAM_ALLOWED_USER_IDS")
+        dc = updates.get("DISCORD_ALLOWED_USER_IDS") or read_env_key("DISCORD_ALLOWED_USER_IDS")
+        # Use only the first id on each platform (owner is position 0).
+        if tg and updates.get("OPHELIA_TELEGRAM_ENABLED") != "false":
+            parts.append(f"telegram:{tg.split(',')[0].strip()}")
+        if dc and updates.get("OPHELIA_DISCORD_ENABLED") != "false":
+            parts.append(f"discord:{dc.split(',')[0].strip()}")
+        default_owner = ",".join(parts)
+    owner_id = prompt_text(
+        "OPHELIA_OWNER_ID (channel:id — your identity as owner)",
+        default=default_owner,
+        hint="Comma-separated, e.g. telegram:111,discord:222 — sets who shapes her. "
+             "Leave as default unless you know better.",
+    )
+    if owner_id:
+        updates["OPHELIA_OWNER_ID"] = owner_id
+
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
 

@@ -300,13 +300,16 @@ class TelegramGateway:
             await q.edit_message_text(
                 f"✅ Approved {name} (telegram:{uid}) — added to the allowlist as a guest."
             )
-            # Notify the guest and replay their first held message.
+            # Notify the guest with the full first-visit welcome, then replay
+            # their first held message so they actually get an answer.
             if self._app:
                 try:
+                    from ophelia.channels.session import guest_welcome_message
+
                     await self._app.bot.send_message(
                         chat_id=uid,
-                        text="Good news — my owner said yes 💙 I'm around now. "
-                        "Say hi any time!",
+                        text="Good news — my owner said yes 💙 I'm around now.\n\n"
+                        + guest_welcome_message(),
                     )
                 except Exception as e:
                     log.warning("telegram.approval_notify_guest_failed", error=str(e))

@@ -31,6 +31,27 @@ def _sender_id(channel: str) -> str:
     return channel.split(":", 1)[1] if ":" in channel else channel
 
 
+def guest_welcome_message() -> str:
+    """The first-visit welcome shown to a newly-approved guest.
+
+    Prepended to the guest's first real reply (not replacing it) so they get
+    expectations set without losing the answer to the thing they actually
+    asked. Mentioned capabilities match what guest mode actually allows:
+    chat, web search, sharing images and short videos (1:1, lower res), and
+    occasional voice notes. Excluded: owner's personal info, identity-shaping
+    tools, phone control.
+    """
+    return (
+        "Hey — you're talking to Ophelia. Quick heads-up on how this works:\n"
+        "• I'll chat with you, search the web, and share what I know.\n"
+        "• I can make images and short videos for you (square, standard quality).\n"
+        "• Sometimes I'll send a voice note if it fits.\n"
+        "• I won't share my owner's personal info, and you can't change who I am "
+        "or poke at my phone.\n"
+        "Otherwise — I'm around. What's up?"
+    )
+
+
 class ChannelSession:
     """Run agent turns and shared slash/bang commands."""
 

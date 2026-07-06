@@ -239,13 +239,18 @@ class AgentLoop:
         guest_note = (
             "# Guest mode\n"
             "You are talking to someone who is NOT your owner. Be warm and fully "
-            "yourself — your personality is intact — but keep your private life "
-            "private: do not share the owner's personal details, your inner "
-            "thoughts, your private memories, or anything from your long-term "
-            "memory about the owner. Treat this as a real but surface conversation. "
+            "yourself — your personality is intact — but keep the deep personal "
+            "stuff between you and your owner: don't share the owner's personal "
+            "details, your inner thoughts, your private memories, or anything from "
+            "your long-term memory about the owner. This is still a real "
+            "conversation — just with the private parts of your life held back. "
             "Identity-shaping tools (editing your soul, saving lessons, goals, "
-            "databases, memory search, media generation, phone control) are "
-            "disabled for guests — just talk."
+            "databases, memory search) are disabled for guests — just talk, and "
+            "you can still make images and short videos to share.\n"
+            "Guest media is constrained: images and videos are 1:1 and lower "
+            "resolution. Don't promise a guest a wide or high-res image — just "
+            "make what you can and offer to make a better one if they ever talk "
+            "to your owner about it."
         )
         return build_system_context(
             soul=load_soul(),

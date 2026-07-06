@@ -238,11 +238,15 @@ class DiscordGateway:
             rec = gw._guest_approvals.set_status("discord", uid, "approved") or {}
             name = rec.get("display_name") or str(uid)
             await ctx.send(f"✅ Approved {name} (discord:{uid}) — added as a guest.")
-            # Notify the guest and replay their first held message.
+            # Notify the guest with the full first-visit welcome, then replay
+            # their first held message so they actually get an answer.
             try:
+                from ophelia.channels.session import guest_welcome_message
+
                 user = await bot.fetch_user(uid)
                 await user.send(
-                    "Good news — my owner said yes 💙 I'm around now. Say hi any time!"
+                    "Good news — my owner said yes 💙 I'm around now.\n\n"
+                    + guest_welcome_message()
                 )
                 first_msg = rec.get("first_message") or ""
                 if first_msg:
