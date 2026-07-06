@@ -752,11 +752,14 @@ class ProviderStack:
                     return False, f"Ollama not reachable at {self.settings.ollama_base_url}"
                 return True, f"OK ({backend.default_model()})"
             client = backend.async_client()
+            from ophelia.providers.fallback import extra_body_for
+
             await asyncio.wait_for(
                 client.chat.completions.create(
                     model=self.model(role),
                     messages=[{"role": "user", "content": "ping"}],
                     max_tokens=1,
+                    extra_body=extra_body_for(self.settings, backend.provider_name),
                 ),
                 timeout=8.0,
             )

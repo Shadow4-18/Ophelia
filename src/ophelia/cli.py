@@ -564,6 +564,57 @@ def cmd_phone_harden(_: argparse.Namespace) -> int:
     return 0 if before.overall_ok else 0  # always 0 — hints are the point
 
 
+def cmd_phone_status(_: argparse.Namespace) -> int:
+    """Diagnose why the phone body / Shizuku bridge isn't working.
+
+    Prints exactly what Ophelia sees: whether android_enabled is set, whether
+    rish / phone_control.sh / adb are present, the resolved mode, and the
+    concrete next step. This is the first thing to run when the agent claims
+    it has 'no termux api access' or 'shizuku isn't working'.
+    """
+    from pathlib import Path
+
+    from ophelia.android.factory import build_android_body
+    from ophelia.android.shizuku import AndroidBody
+    from ophelia.platform import is_termux
+
+    settings = Settings()
+    print("== Phone body status ==")
+    print(f"  is_termux:        {is_termux()}")
+    print(f"  android_enabled:  {settings.android_enabled}")
+    print(f"  adb_device:       {settings.adb_device or '(none)'}")
+    print(f"  phone_control:    {settings.phone_control_path}"
+          + ("  [exists]" if Path(settings.phone_control_path).is_file() else "  [missing]"))
+
+    android = build_android_body(settings)
+    if not android:
+        print("\n  Phone body: NOT built (android_enabled is false).")
+        print("  Fix: set OPHELIA_ANDROID_ENABLED=true in ~/.ophelia/.env")
+        return 1
+
+    rish = android.rish_path
+    print(f"  rish_path:        {rish or '(none found)'}")
+    print(f"  adb_path:         {android._adb_path or '(none)'}")
+    print(f"  resolved mode:    {android.mode}")
+    print(f"  status_line:      {android.status_line()}")
+
+    if android.mode in ("termux_only", "none"):
+        print("\n  Bridge is NOT wired — phone tools will all fail with 'not wired'.")
+        print("  The Shizuku APP being running is not enough; Termux needs the bridge script.")
+        print("  Fix on the phone:")
+        print("    1. Shizuku app -> Start (already done)")
+        print("    2. Shizuku -> 'Use in terminal apps' -> Export to Termux folder")
+        print("    3. Fix ~/rish line 11: replace PKG with com.termux")
+        print("    4. chmod +x ~/rish")
+        print("  Then run: bash scripts/termux-shizuku-setup.sh")
+        print("  Verify:  ~/rish -c whoami   (should print shell, not an error)")
+        return 1
+
+    print("\n  Bridge is wired. If tools still fail, Shizuku may have stopped since")
+    print("  boot — restart it in the Shizuku app, then re-run this command.")
+    return 0
+
+
 def cmd_phone_calibrate(_: argparse.Namespace) -> int:
     """Diagnose + calibrate touch input: reports native display size vs
     screenshot pixel size, saves a grid-annotated screenshot, and taps the four
@@ -1025,6 +1076,10 @@ def main(argv: list[str] | None = None) -> int:
 
     phone = sub.add_parser("phone", help="Phone body tools (touch calibration, kill-switch)")
     phone_sub = phone.add_subparsers(dest="phone_cmd", required=True)
+    phone_sub.add_parser(
+        "status",
+        help="Diagnose why Shizuku / phone body isn't working and print the fix.",
+    ).set_defaults(func=cmd_phone_status)
     phone_sub.add_parser(
         "calibrate",
         help="Diagnose + calibrate touch: native size, screenshot scale, grid save, tap corners.",

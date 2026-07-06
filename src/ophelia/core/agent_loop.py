@@ -186,8 +186,26 @@ class AgentLoop:
         life_block = ""
         humor_block = ""
         if self.life is not None:
-            await self.life.refresh()
-            life_block = self.life.to_context_block()
+            try:
+                await self.life.refresh()
+                life_block = self.life.to_context_block()
+            except Exception as e:
+                log.warning("agent.life_context_failed", error=str(e))
+                self.life = None
+        if not life_block:
+            # Always inject the current time so the agent never loses track
+            # of when "now" is — even if LifeContext is unavailable or
+            # refresh() threw. This is the one piece of context the agent
+            # cannot derive on its own.
+            from ophelia.timeutil import now_in_timezone
+
+            now = now_in_timezone(self.settings.timezone)
+            tz_name = self.settings.timezone or "UTC"
+            life_block = (
+                "# Current context (AUTHORITATIVE — trust this, not vague memory)\n"
+                f"- Now: {now.strftime('%A, %B %d, %Y — %I:%M %p %Z')} ({tz_name})\n"
+                "Never invent the date or time. Use the line above."
+            )
         if self.humor is not None:
             humor_block = await self.humor.hints_for_prompt()
         return build_system_context(
@@ -729,6 +747,16 @@ class AgentLoop:
             return False
         return signatures[-1] == signatures[-2]
 
+    def _extra_body_for(self, provider: str) -> dict[str, Any] | None:
+        """Provider-specific extra body for chat.completions.create.
+
+        See ophelia.providers.fallback.extra_body_for — same logic, shared
+        so curator/director/consciousness callers stay in sync.
+        """
+        from ophelia.providers.fallback import extra_body_for
+
+        return extra_body_for(self.settings, provider)
+
     async def _call_with_fallback(
         self,
         *,
@@ -755,6 +783,7 @@ class AgentLoop:
                     model=primary_model,
                     messages=messages,
                     tools=tools,
+                    extra_body=self._extra_body_for(primary_provider),
                 )
         except Exception as e:
             if not self._is_transient_error(e):
@@ -790,6 +819,7 @@ class AgentLoop:
                         model=fb_model,
                         messages=messages,
                         tools=tools,
+                        extra_body=self._extra_body_for(fb_provider),
                     )
                 log.info(
                     "tool_loop.fallback_succeeded",
@@ -848,6 +878,7 @@ class AgentLoop:
                 model=model,
                 messages=messages,
                 tools=None,
+                extra_body=self._extra_body_for(provider),
             )
         msg = response.choices[0].message
         text = (msg.content or "").strip() or "(no response)"

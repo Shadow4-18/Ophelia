@@ -36,11 +36,42 @@ def _read_heartbeat() -> dict:
         return {}
 
 
-def _is_running() -> bool:
+def _heartbeat_alive() -> bool:
+    """True if the heartbeat file exists and was written within 120s."""
     hb = _read_heartbeat()
     if not hb:
         return False
-    return (time.time() - float(hb.get("ts", 0))) < 120
+    try:
+        return (time.time() - float(hb.get("ts", 0))) < 120
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_running() -> bool:
+    """True if Ophelia appears to be running right now.
+
+    On Termux this requires BOTH a fresh heartbeat AND an alive tmux session —
+    a stale-but-recent heartbeat (left over from a crash) must not trap the
+    user out of the Start menu. On other platforms the heartbeat is the only
+    signal (the process runs in the foreground).
+    """
+    if not _heartbeat_alive():
+        return False
+    if not is_termux():
+        return True
+    return _tmux_session_active()
+
+
+def _stale_state() -> bool:
+    """True when the heartbeat says running but the tmux session is dead.
+
+    This is the "trapped" state: the menu would show Stop/Restart, but
+    action_stop would no-op and Start isn't offered. The launcher exposes a
+    cleanup action for this case.
+    """
+    if not is_termux():
+        return False
+    return _heartbeat_alive() and not _tmux_session_active()
 
 
 def _status_line() -> str:
@@ -53,7 +84,12 @@ def _status_line() -> str:
     pressure = hb.get("pressure", "?")
     paused = hb.get("paused", False)
     age = int(time.time() - float(hb.get("ts", 0)))
-    state = "paused" if paused else ("running" if running else "stale")
+    if _stale_state():
+        state = "stale (tmux dead, heartbeat recent — use Clear stale state)"
+    elif paused:
+        state = "paused"
+    else:
+        state = "running" if running else "stale"
     return (
         f"Status: {state} ({age}s ago) | Mood: {mood} | Pressure: {pressure} | "
         f"Channels: {','.join(hb.get('channels', [])) or 'none'}"
@@ -154,6 +190,31 @@ def action_stop() -> int:
     print("[ok] Ophelia stopped (tmux session killed, wake lock released)")
     tui.pause()
     return rc
+
+
+def action_cleanup_stale() -> int:
+    """Clear a stale heartbeat / zombie tmux state so Start becomes available.
+
+    Reached from the menu when the heartbeat says running but the tmux session
+    is dead — the 'trapped' state where Stop no-ops and Start isn't shown.
+    """
+    if not is_termux():
+        return 0
+    # Kill any zombie tmux session (silently — it may already be gone).
+    if _tmux_session_active():
+        _run_blocking(["tmux", "kill-session", "-t", "ophelia"])
+        print("[ok] Killed stale tmux session 'ophelia'")
+    # Remove the stale heartbeat so _is_running() returns False.
+    if HEARTBEAT_PATH.is_file():
+        try:
+            HEARTBEAT_PATH.unlink()
+            print(f"[ok] Removed stale heartbeat ({HEARTBEAT_PATH.name})")
+        except OSError as e:
+            print(f"[warn] Could not remove heartbeat: {e}")
+    _run_blocking(["termux-wake-unlock"])
+    print("[ok] State cleared — you can Start Ophelia now.")
+    tui.pause()
+    return 0
 
 
 def action_restart() -> int:
@@ -292,6 +353,11 @@ def _menu_items() -> list[tuple[str, str, callable]]:
             items.append(("Stop Ophelia", "Run", action_stop))
             items.append(("Restart Ophelia", "Run", action_restart))
             items.append(("Reattach to live session (tmux)", "Run", action_reattach))
+        elif _stale_state():
+            # Heartbeat says running but tmux session is dead — the user is
+            # trapped without Start. Offer to clear the stale state.
+            items.append(("Clear stale state (heartbeat/tmux out of sync) and Start", "Run", action_cleanup_stale))
+            items.append(("Start Ophelia (wake-lock + tmux + run)", "Run", action_start))
         else:
             items.append(("Start Ophelia (wake-lock + tmux + run)", "Run", action_start))
     else:

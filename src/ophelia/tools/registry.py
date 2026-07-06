@@ -84,6 +84,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "recall_memory",
         "generate_image",
         "generate_video",
+        "list_inbox_images",
         "text_to_speech",
         "phone_see_screen",
         "phone_ui_dump",
@@ -199,17 +200,76 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "generate_video",
             "description": (
-                "Generate a video from a text prompt (xAI Grok Imagine). Auto-sends "
-                "to chat when delivered — do NOT call send_file afterward. Waits up "
-                "to 10m, saves mp4 under artifacts."
+                "Generate a video (xAI Grok Imagine). Supports text-to-video "
+                "(prompt only) and image-to-video (prompt + image). For image-to-video, "
+                "the image becomes the first frame and the prompt describes the motion. "
+                "Auto-sends to chat when delivered — do NOT call send_file afterward. "
+                "Waits up to 10m, saves mp4 under artifacts. To use a photo the user "
+                "sent, call list_inbox_images first to get the saved path, then pass "
+                "it as `image`."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string"},
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Motion description. For image-to-video, describe how the "
+                            "scene should animate forward from the source image."
+                        ),
+                    },
+                    "image": {
+                        "type": "string",
+                        "description": (
+                            "Optional source image for image-to-video. Accepts an "
+                            "http(s) URL, a local file path (auto base64-encoded "
+                            "for the API — your phone's saved photos work), or a "
+                            "file_id: prefix (xAI Files API). When provided, the "
+                            "image becomes the first frame. Omit for text-to-video."
+                        ),
+                    },
                     "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15},
+                    "aspect_ratio": {
+                        "type": "string",
+                        "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4. Image-to-video defaults to the input image's ratio.",
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "enum": ["480p", "720p", "1080p"],
+                        "description": "1080p only on grok-imagine-video-1.5 image-to-video.",
+                    },
                 },
                 "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_inbox_images",
+            "description": (
+                "List image files the user recently sent over chat (Telegram "
+                "photos/images or Discord image attachments). Returns absolute "
+                "paths sorted newest-first. Use this to find a source image "
+                "for generate_video image-to-video, or to re-examine a sent "
+                "photo. Only files modified within the lookback window are "
+                "returned (default 24h)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Max number of paths to return (default 10).",
+                    },
+                    "within_hours": {
+                        "type": "number",
+                        "minimum": 0.1,
+                        "description": "Only include files newer than this many hours (default 24).",
+                    },
+                },
             },
         },
     },
@@ -636,6 +696,7 @@ class ToolRegistry:
             "send_message": self._send_message,
             "generate_image": self._generate_image,
             "generate_video": self._generate_video,
+            "list_inbox_images": self._list_inbox_images,
             "text_to_speech": self._text_to_speech,
             "send_file": self._send_file,
             "run_code": self._run_code,
@@ -849,7 +910,12 @@ class ToolRegistry:
         return await self._finalize_media_tool_result(result)
 
     async def _generate_video(
-        self, prompt: str, duration_seconds: int = 6
+        self,
+        prompt: str,
+        duration_seconds: int = 6,
+        image: str | None = None,
+        aspect_ratio: str | None = None,
+        resolution: str | None = None,
     ) -> str:
         result = await generate_video(
             self.settings,
@@ -857,8 +923,61 @@ class ToolRegistry:
             prompt,
             duration_seconds=duration_seconds,
             artifacts_dir=self.artifacts_dir,
+            image=image,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
         )
         return await self._finalize_media_tool_result(result)
+
+    async def _list_inbox_images(
+        self, limit: int = 10, within_hours: float = 24.0
+    ) -> str:
+        """List image files the user recently sent over chat.
+
+        Scans the gateway media dirs (telegram_media + discord_media) for
+        inbound image files (prefixed `in_`) modified within the lookback
+        window. Returns absolute paths sorted newest-first.
+        """
+        import time as _time
+        from pathlib import Path
+
+        data_dir = Path(self.settings.data_dir)
+        suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        cutoff = _time.time() - within_hours * 3600.0
+        candidates: list[Path] = []
+        for sub in ("telegram_media", "discord_media"):
+            d = data_dir / sub
+            if not d.is_dir():
+                continue
+            for p in d.iterdir():
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in suffixes:
+                    continue
+                # Only inbound images — gateways save sent images with the
+                # `in_` prefix (in_<msg_id>...). Generated images live under
+                # artifacts/ with different naming.
+                if not p.name.startswith("in_"):
+                    continue
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        candidates.append(p)
+                except OSError:
+                    continue
+        if not candidates:
+            return (
+                f"No inbound images in the last {within_hours:.1f}h. "
+                "Ask the user to send a photo, then call this again."
+            )
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = candidates[:limit]
+        lines = [f"Recent inbound images (newest first, {len(candidates)}):"]
+        for p in candidates:
+            lines.append(f"  {p}")
+        lines.append(
+            "Pass any of these as `image` to generate_video for image-to-video."
+        )
+        return "\n".join(lines)
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()
@@ -1151,12 +1270,15 @@ class ToolRegistry:
         client = self._backend.async_client()
         model = self._model_for("chat")
         try:
+            from ophelia.providers.fallback import extra_body_for
+
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": "You are Ophelia reflecting privately. Output only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
+                extra_body=extra_body_for(self.settings, self._backend.provider_name),
             )
             raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
@@ -1196,26 +1318,48 @@ class ToolRegistry:
             return "Vision disabled or no phone body."
         return await self.vision.see(question=question or "What is on screen?")
 
-    async def _phone_ui_dump(self) -> str:
+    def _phone_unavailable_reason(self) -> str | None:
+        """Precise reason the phone body can't be used right now, or None if OK.
+
+        Distinguishes 'feature disabled' from 'bridge not wired' so the agent
+        doesn't collapse both into 'I have no phone access' — the latter is
+        fixable by running termux-shizuku-setup.sh, the former is an intentional
+        config choice.
+        """
         if not self.android:
             return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        mode = getattr(self.android, "mode", None)
+        if mode in ("termux_only", "none"):
+            return (
+                "Phone bridge not wired — Shizuku/phone_control.sh missing. "
+                "Run: bash scripts/termux-shizuku-setup.sh (and start Shizuku on the phone)."
+            )
+        return None
+
+    async def _phone_ui_dump(self) -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.ui_dump()
 
     async def _phone_tap(self, x: int | float, y: int | float) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         x, y, note = await _resolve_tap_coords(self.android, x, y)
         result = await self.android.tap(x, y)
         return f"{result}{note}"
 
     async def _phone_open_app(self, package: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.open_app(package)
 
     async def _phone_shell(self, command: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         blocked = _phone_shell_blocked_reason(command)
         if blocked:
             # Don't let her accidentally start a second Ophelia (which would
@@ -1232,16 +1376,18 @@ class ToolRegistry:
         y2: int | float,
         duration_ms: int = 300,
     ) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         x1, y1, n1 = await _resolve_tap_coords(self.android, x1, y1)
         x2, y2, n2 = await _resolve_tap_coords(self.android, x2, y2)
         result = await self.android.swipe(x1, y1, x2, y2, duration_ms)
         return f"{result}{n1}{n2}"
 
     async def _phone_key(self, key: str) -> str:
-        if not self.android:
-            return "Phone body disabled (optional — enable OPHELIA_ANDROID_ENABLED)."
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
         return await self.android.key(key)
 
     async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:

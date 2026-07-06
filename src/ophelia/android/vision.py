@@ -253,11 +253,14 @@ class ScreenVision:
 
         try:
             gate = get_model_gate()
+            from ophelia.providers.fallback import extra_body_for
+
             async with gate.session("vision", model, self.stack.name("vision")):
                 resp = await client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": content}],
                     max_tokens=800,
+                    extra_body=extra_body_for(self.settings, self.stack.name("vision")),
                 )
             text = (resp.choices[0].message.content or "").strip()
             log.info("vision.ok", model=model, chars=len(text))

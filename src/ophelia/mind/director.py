@@ -189,12 +189,15 @@ class Director:
             model = self.agent._model("consciousness")  # type: ignore[union-attr]
             gate = get_model_gate()
             provider = self.agent.stack.name("consciousness")  # type: ignore[union-attr]
+            from ophelia.providers.fallback import extra_body_for
+
             async with gate.session("director", model, provider):
                 resp = await client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.4,
                     max_tokens=200,
+                    extra_body=extra_body_for(self.agent.settings, provider),  # type: ignore[union-attr]
                 )
             raw = (resp.choices[0].message.content or "").strip()
             self.last = self._parse_decision(raw)

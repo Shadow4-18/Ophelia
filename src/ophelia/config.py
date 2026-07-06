@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     deepseek_vision_model: str | None = Field(
         default=None, alias="DEEPSEEK_VISION_MODEL"
     )
+    # DeepSeek V4 enables "thinking mode" by default, which returns a long
+    # reasoning_content and tends to reason past tool calls (e.g. it talks
+    # itself out of calling web_search). Default off for snappy tool-driven
+    # turns; set OPHELIA_DEEPSEEK_THINKING=true to enable for harder prompts.
+    deepseek_thinking: bool = Field(
+        default=False,
+        alias="OPHELIA_DEEPSEEK_THINKING",
+        description="Enable DeepSeek V4 thinking mode (returns reasoning_content). "
+        "Off by default — thinking mode often skips tool calls like web_search.",
+    )
 
     # Generic OpenAI-compatible (OpenRouter, LM Studio, vLLM, etc.)
     compat_api_key: str | None = Field(default=None, alias="OPHELIA_COMPAT_API_KEY")

@@ -105,10 +105,14 @@ class DreamLoop:
             {"role": "system", "content": dream_prompt},
             {"role": "user", "content": f"Recent experience:\n{transcript}\n\nRecent inner thoughts:\n{inner_tail or '(none)'}"},
         ]
-        from ophelia.providers.fallback import call_with_fallback
+        from ophelia.providers.fallback import call_with_fallback, extra_body_for
 
-        async def _make_call(cl, mdl):
-            return await cl.chat.completions.create(model=mdl, messages=messages)
+        async def _make_call(cl, mdl, prov):
+            return await cl.chat.completions.create(
+                model=mdl,
+                messages=messages,
+                extra_body=extra_body_for(self.agent.settings, prov),
+            )
 
         try:
             resp = await call_with_fallback(

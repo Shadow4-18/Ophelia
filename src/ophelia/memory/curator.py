@@ -134,9 +134,11 @@ class MemoryCurator:
 
         try:
             gate = get_model_gate()
-            from ophelia.providers.fallback import call_with_fallback
+            from ophelia.providers.fallback import call_with_fallback, extra_body_for
 
-            async def _make_call(client, mdl):
+            primary_provider = stack.name("curator")
+
+            async def _make_call(client, mdl, provider):
                 return await client.chat.completions.create(
                     model=mdl,
                     messages=[
@@ -147,13 +149,14 @@ class MemoryCurator:
                         },
                     ],
                     max_tokens=300,
+                    extra_body=extra_body_for(self.settings, provider),
                 )
 
             resp = await call_with_fallback(
                 self.settings,
                 stack,
                 role="curator",
-                primary_provider=stack.name("curator"),
+                primary_provider=primary_provider,
                 primary_model=model,
                 primary_client=client,
                 make_call=_make_call,
@@ -214,13 +217,14 @@ class MemoryCurator:
 
         try:
             gate = get_model_gate()
-            from ophelia.providers.fallback import call_with_fallback
+            from ophelia.providers.fallback import call_with_fallback, extra_body_for
 
-            async def _make_call(cl, mdl):
+            async def _make_call(cl, mdl, provider):
                 return await cl.chat.completions.create(
                     model=mdl,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=1200,
+                    extra_body=extra_body_for(self.settings, provider),
                 )
 
             resp = await call_with_fallback(

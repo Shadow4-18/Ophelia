@@ -550,8 +550,10 @@ class TelegramGateway:
             path = self._media_dir / f"in_{update.message.message_id}.jpg"
             await file.download_to_drive(str(path))
             description = await self._describe_saved_image(path, caption)
+            # Surface the absolute path — the agent can pass it to tools that
+            # need the image (e.g. generate_video for image-to-video).
             prompt = (
-                f"[User sent a photo — saved {path.name}]\n"
+                f"[User sent a photo — saved to {path}]\n"
                 f"Caption: {caption or '(none)'}\n\n"
                 f"Vision analysis:\n{description}"
             )
@@ -598,8 +600,10 @@ class TelegramGateway:
             file = await doc.get_file()
             await file.download_to_drive(str(path))
             description = await self._describe_saved_image(path, caption)
+            # Surface the absolute path — the agent can pass it to tools that
+            # need the image (e.g. generate_video for image-to-video).
             prompt = (
-                f"[User sent an image file — saved {path.name}]\n"
+                f"[User sent an image file — saved to {path}]\n"
                 f"Caption: {caption or '(none)'}\n\n"
                 f"Vision analysis:\n{description}"
             )
