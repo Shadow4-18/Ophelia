@@ -24,6 +24,7 @@ log = structlog.get_logger()
 ReplyFn = Callable[[str], Awaitable[None]]
 MediaReplyFn = Callable[[Path, str], Awaitable[bool]]
 LogHookFn = Callable[[dict], Awaitable[None]]
+SendToGuestFn = Callable[[str, int, str], Awaitable[bool]]
 
 
 def _sender_id(channel: str) -> str:
@@ -127,6 +128,9 @@ class ChannelSession:
         # Let send_message tool push follow-ups mid-turn through this channel.
         self.agent.tools.set_message_sender(reply)
         self.agent.tools.set_owner(is_owner)
+        # Record who's speaking so guest-self-only tools (e.g. set_guest_name)
+        # can verify the sender matches the target.
+        self.agent.tools._current_sender_channel = channel
         if media_reply is not None:
             self.agent.tools.set_media_sender(media_reply)
 
@@ -280,6 +284,7 @@ class ChannelSession:
             self.agent.tools.clear_message_sender()
             self.agent.tools.clear_media_sender()
             self.agent.tools.clear_owner()
+            self.agent.tools._current_sender_channel = None
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
             self._current_log_context = None
@@ -489,5 +494,101 @@ class ChannelSession:
             "/game list|play <id>|stop|look\n"
             "/models — per-role provider/model routing\n"
             "/continue — resume an unfinished tool chain\n"
+            "/tell <guest> <message> — relay an exact message to a guest\n"
+            "/suggest <guest> <topic> — nudge her to reach out to a guest in her own words\n"
             "/help — this list"
         )
+
+    async def cmd_tell(
+        self, args: list[str], reply: ReplyFn, *, send_to_guest: SendToGuestFn
+    ) -> None:
+        """Relay an exact message from the owner to a specific guest.
+
+        No agent turn, no model — pure relay. `send_to_guest` is provided by
+        the gateway (Telegram/Discord) and knows how to DM a user on its
+        platform. Returns confirmation (or an error) to the owner via `reply`.
+        """
+        from ophelia.memory.guests import resolve_guest_target
+
+        if len(args) < 2:
+            await reply("Usage: /tell <guest> <message>")
+            return
+        target_query = args[0]
+        message = " ".join(args[1:]).strip()
+        if not message:
+            await reply("Usage: /tell <guest> <message>")
+            return
+        resolved = resolve_guest_target(self.agent.settings, self.memory, target_query)
+        if not resolved:
+            await reply(
+                f"Couldn't resolve '{target_query}' to a known guest. "
+                "Use a channel like 'telegram:111', a numeric id, or an exact "
+                "approval display name."
+            )
+            return
+        platform, user_id = resolved
+        ok = await send_to_guest(platform, user_id, message)
+        if ok:
+            await reply(f"Sent to {platform}:{user_id}.")
+        else:
+            await reply(f"Failed to send to {platform}:{user_id} (see logs).")
+
+    async def cmd_suggest(
+        self, args: list[str], reply: ReplyFn, *, send_to_guest: SendToGuestFn
+    ) -> None:
+        """Nudge Ophelia to reach out to a guest about a topic, in her own words.
+
+        Spawns a real agent turn with a system nudge; the resulting message is
+        sent to the guest AND cc'd to the owner (per user preference)."""
+        from ophelia.memory.guests import (
+            get_guest_name,
+            resolve_guest_target,
+        )
+
+        if len(args) < 2:
+            await reply("Usage: /suggest <guest> <topic>")
+            return
+        target_query = args[0]
+        topic = " ".join(args[1:]).strip()
+        if not topic:
+            await reply("Usage: /suggest <guest> <topic>")
+            return
+        resolved = resolve_guest_target(self.agent.settings, self.memory, target_query)
+        if not resolved:
+            await reply(
+                f"Couldn't resolve '{target_query}' to a known guest. "
+                "Use a channel like 'telegram:111', a numeric id, or an exact "
+                "approval display name."
+            )
+            return
+        platform, user_id = resolved
+        name = await get_guest_name(
+            self.memory, platform, user_id, data_dir=self.agent.settings.data_dir
+        ) or f"{platform}:{user_id}"
+        # Compose a one-shot agent turn that produces a short outbound message.
+        prompt = (
+            f"The owner suggests you reach out to {name} ({platform}:{user_id}) "
+            f"about: {topic}. Compose a short, warm message to {name} — in your "
+            "own voice, as if texting them. Just the message body, no preamble, "
+            "no quotes, no 'hey this is ophelia'. One or two sentences."
+        )
+        try:
+            outbound = await self.agent.compose_message(
+                channel=f"{platform}:{user_id}",
+                user_text=prompt,
+                is_owner=True,  # the owner issued this; full context
+            )
+        except Exception as e:
+            log.warning("session.suggest_compose_failed", error=str(e))
+            await reply(f"Couldn't compose a message: {e}")
+            return
+        outbound = (outbound or "").strip()
+        if not outbound:
+            await reply("She didn't produce a message — try rephrasing the topic.")
+            return
+        ok = await send_to_guest(platform, user_id, outbound)
+        if ok:
+            # CC the owner a copy (per user preference).
+            await reply(f"To {name} ({platform}:{user_id}):\n\n{outbound}")
+        else:
+            await reply(f"Failed to send to {platform}:{user_id}. Draft was:\n\n{outbound}")

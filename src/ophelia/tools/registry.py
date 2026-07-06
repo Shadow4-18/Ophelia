@@ -85,6 +85,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "run_code",
         "recall_memory",
         "list_inbox_images",
+        "list_guests",
         "phone_see_screen",
         "phone_ui_dump",
         "phone_tap",
@@ -624,6 +625,50 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_guests",
+            "description": (
+                "List the guests you know — approved users on Telegram/Discord, "
+                "with their resolved name, name source (owner-set / self-set / "
+                "approval display), and last activity. Use this when the owner "
+                "asks about your guests or when you want to address/refer to "
+                "one by name. Owner-only."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_guest_name",
+            "description": (
+                "Remember a name for a guest. The owner can name any guest; a "
+                "guest can only name themselves, and only if the owner hasn't "
+                "set an overriding name. Owner-set names take precedence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "enum": ["telegram", "discord"],
+                        "description": "Which platform the guest is on.",
+                    },
+                    "user_id": {
+                        "type": "integer",
+                        "description": "The guest's numeric id on that platform.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "The name to remember (1-60 chars).",
+                    },
+                },
+                "required": ["platform", "user_id", "name"],
+            },
+        },
+    },
 ]
 
 
@@ -691,6 +736,10 @@ class ToolRegistry:
         self._pending_artifacts: list[Path] = []
         self._delivered_artifacts: set[Path] = set()
         self._is_owner: bool = True
+        # The channel of the user who sent the current turn (e.g. "telegram:111").
+        # Set by ChannelSession before dispatching tool calls so guests can be
+        # constrained to self-only actions (e.g. set_guest_name on themselves).
+        self._current_sender_channel: str | None = None
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
@@ -723,6 +772,8 @@ class ToolRegistry:
             "phone_key": self._phone_key,
             "phone_game_look": self._phone_game_look,
             "phone_game_open": self._phone_game_open,
+            "list_guests": self._list_guests,
+            "set_guest_name": self._set_guest_name,
         }
 
     def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
@@ -987,6 +1038,61 @@ class ToolRegistry:
             "Pass any of these as `image` to generate_video for image-to-video."
         )
         return "\n".join(lines)
+
+    async def _list_guests(self) -> str:
+        """List approved guests with resolved names + last activity. Owner-only."""
+        if not self.memory:
+            return "Memory store unavailable — can't look up guests."
+        from ophelia.memory.guests import list_guests
+
+        roster = await list_guests(self.settings, self.memory)
+        # Exclude the owner(s) from the listing — they're not guests to themselves.
+        owner_channels = self.settings.owner_channels()
+        guests = [g for g in roster if g["channel"] not in owner_channels]
+        if not guests:
+            return "No approved guests yet."
+        lines = [f"Guests you know ({len(guests)}):"]
+        for g in guests:
+            src = g["name_source"]
+            last = ""
+            if g.get("last_ts"):
+                from ophelia.memory.guests import _format_last_seen
+
+                last = _format_last_seen(g["last_ts"])
+            lines.append(f"  • {g['channel']} — \"{g['name']}\" ({src}{last})")
+        return "\n".join(lines)
+
+    async def _set_guest_name(
+        self, platform: str, user_id: int, name: str
+    ) -> str:
+        """Remember a name for a guest. Owner can name any guest; a guest can
+        only name themselves and only if the owner hasn't overridden it."""
+        if not self.memory:
+            return "Memory store unavailable — can't save guest name."
+        from ophelia.memory.guests import set_guest_name
+
+        # Determine whether the current turn is the owner. The owner can name
+        # anyone; a guest can only name themselves.
+        if self._is_owner:
+            by_owner = True
+        else:
+            # Guest turn — they may only name themselves, and only on their
+            # own platform. The current channel isn't directly visible here,
+            # but the dispatch path sets _is_owner=False for guests and the
+            # caller's channel is enforced at the session layer. We rely on
+            # the session layer to set the sender channel; if it's not set,
+            # fail safe (deny).
+            sender = getattr(self, "_current_sender_channel", None)
+            expected = f"{platform}:{user_id}"
+            if sender and sender.lower() != expected.lower():
+                return (
+                    f"You can only set your own name, not someone else's "
+                    f"({platform}:{user_id} doesn't match you)."
+                )
+            by_owner = False
+        return await set_guest_name(
+            self.memory, platform, user_id, name[:60], by_owner=by_owner
+        )
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()

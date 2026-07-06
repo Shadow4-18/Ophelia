@@ -287,6 +287,36 @@ class DiscordGateway:
             name = rec.get("display_name") or str(uid)
             await ctx.send(f"❌ Declined {name} (discord:{uid}).")
 
+        @bot.command(name="tell")
+        async def cmd_tell(ctx, guest: str = "", *, message: str = "") -> None:
+            """Relay an exact message to a guest: !tell <guest> <message>"""
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            if not guest or not message:
+                await ctx.send("Usage: !tell <guest> <message>")
+                return
+            await gw.session.cmd_tell(
+                [guest, message],
+                lambda t: ctx.send(t[:2000]),
+                send_to_guest=gw._send_to_guest,
+            )
+
+        @bot.command(name="suggest")
+        async def cmd_suggest(ctx, guest: str = "", *, topic: str = "") -> None:
+            """Nudge her to reach out to a guest in her own words: !suggest <guest> <topic>"""
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            if not guest or not topic:
+                await ctx.send("Usage: !suggest <guest> <topic>")
+                return
+            await gw.session.cmd_suggest(
+                [guest, topic],
+                lambda t: ctx.send(t[:2000]),
+                send_to_guest=gw._send_to_guest,
+            )
+
         @bot.event
         async def on_message(message) -> None:
             if message.author.bot:
@@ -445,6 +475,22 @@ class DiscordGateway:
                 await user.send(text[:2000])
             except Exception as e:
                 log.warning("discord.notify_failed", user=uid, error=str(e))
+
+    async def _send_to_guest(self, platform: str, user_id: int, message: str) -> bool:
+        """Send a DM to a specific user on the given platform. Returns True on
+        success. Only Discord is supported here (Telegram has its own)."""
+        if platform != "discord":
+            log.warning("discord.send_to_guest_unsupported_platform", platform=platform)
+            return False
+        if not self._bot:
+            return False
+        try:
+            user = await self._bot.fetch_user(user_id)
+            await user.send(message[:2000])
+            return True
+        except Exception as e:
+            log.warning("discord.send_to_guest_failed", user=user_id, error=str(e))
+            return False
 
     async def send_proactive_media(self, path, *, caption: str = "") -> None:
         """Send a generated media file (image/video/audio/doc) to all recipients.

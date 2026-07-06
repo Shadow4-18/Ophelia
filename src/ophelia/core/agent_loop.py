@@ -208,6 +208,7 @@ class AgentLoop:
             )
         if self.humor is not None:
             humor_block = await self.humor.hints_for_prompt()
+        guests_block = await self._guests_context_block(channel)
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
@@ -223,11 +224,31 @@ class AgentLoop:
                     humor_block,
                     tts_block,
                     honcho_ctx,
+                    guests_block,
                     extra,
                 )
                 if x
             ),
         )
+
+    async def _guests_context_block(self, channel: str) -> str:
+        """For owner turns only: list the guests she knows by name + last
+        activity, so she has social context to bring them up or address them
+        by name. Returns '' for guests or when memory is unavailable."""
+        if not channel:
+            return ""
+        if channel not in self.settings.owner_channels():
+            return ""
+        if not self.memory:
+            return ""
+        try:
+            from ophelia.memory.guests import guests_context_block, list_guests
+
+            roster = await list_guests(self.settings, self.memory)
+            return guests_context_block(roster, owner_channel=channel)
+        except Exception as e:
+            log.warning("agent.guests_context_failed", error=str(e))
+            return ""
 
     def _guest_system_prompt(self, extra: str = "") -> str:
         """Reduced context for guest (non-owner) conversations.
@@ -377,6 +398,34 @@ class AgentLoop:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
+        return text
+
+    async def compose_message(
+        self,
+        channel: str,
+        user_text: str,
+        *,
+        is_owner: bool = True,
+    ) -> str:
+        """Compose an outbound message to `channel` without storing the
+        prompt as if it came from that channel's user.
+
+        Used by /suggest: the owner's nudge is a transient user turn that
+        shapes what she writes, but it must NOT be recorded as a message
+        from the guest. Only the resulting assistant message is stored
+        under the target channel, so when the guest replies later she has
+        context for what she sent them.
+        """
+        messages = await self._build_messages(
+            channel, user_text, is_owner=is_owner, include_consciousness=is_owner
+        )
+        text = await self._complete(
+            messages, store_channel=channel, role="chat", is_owner=is_owner
+        )
+        # Store only the outbound assistant message under the guest's channel.
+        # The owner's nudge is intentionally not recorded.
+        if text:
+            await self._store(channel, "assistant", text, is_owner=is_owner)
         return text
 
     async def run_consciousness_tick(

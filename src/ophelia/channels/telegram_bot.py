@@ -444,12 +444,53 @@ class TelegramGateway:
         arg = context.args[0] if context.args else "status"
         await self.session.cmd_inner(arg, lambda t: self._reply_text(update, t))
 
+    async def cmd_tell(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Relay an exact message from the owner to a specific guest."""
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        await self.session.cmd_tell(
+            list(context.args or []),
+            lambda t: self._reply_text(update, t),
+            send_to_guest=self._send_to_guest,
+        )
+
+    async def cmd_suggest(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Nudge Ophelia to reach out to a guest in her own words (cc'd to owner)."""
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        await self.session.cmd_suggest(
+            list(context.args or []),
+            lambda t: self._reply_text(update, t),
+            send_to_guest=self._send_to_guest,
+        )
+
+    async def _send_to_guest(self, platform: str, user_id: int, message: str) -> bool:
+        """Send a DM to a specific user on the given platform. Returns True on
+        success. Only Telegram is supported here (Discord has its own)."""
+        if platform != "telegram":
+            log.warning("telegram.send_to_guest_unsupported_platform", platform=platform)
+            return False
+        if not self._app:
+            return False
+        try:
+            await self._app.bot.send_message(chat_id=user_id, text=message[:4000])
+            return True
+        except Exception as e:
+            log.warning(
+                "telegram.send_to_guest_failed",
+                user=user_id,
+                error=str(e),
+                hint="send /start to your bot in Telegram first"
+                if "can't initiate conversation" in str(e).lower()
+                else None,
+            )
+            return False
+
     async def cmd_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not self._allowed(update.effective_user.id):
             return
         arg = context.args[0] if context.args else "status"
         rest = context.args[1:] if len(context.args) > 1 else []
-
         def _android():
             if self.settings.android_enabled:
                 return build_android_body(self.settings)
@@ -990,6 +1031,8 @@ class TelegramGateway:
         app.add_handler(CommandHandler("listen", self.cmd_listen))
         app.add_handler(CommandHandler("inner", self.cmd_inner))
         app.add_handler(CommandHandler("game", self.cmd_game))
+        app.add_handler(CommandHandler("tell", self.cmd_tell))
+        app.add_handler(CommandHandler("suggest", self.cmd_suggest))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
@@ -1042,6 +1085,8 @@ class TelegramGateway:
                     BotCommand("inner", "inner-monologue mirror on/off/tail"),
                     BotCommand("game", "game list / play / stop / look"),
                     BotCommand("models", "per-role provider/model routing"),
+                    BotCommand("tell", "relay an exact message to a guest"),
+                    BotCommand("suggest", "nudge her to reach out to a guest"),
                     BotCommand("help", "list commands"),
                 ]
             )

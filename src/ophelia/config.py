@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -6,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ophelia.platform import is_termux, platform_summary
 
-OPHELIA_HOME = Path.home() / ".ophelia"
+OPHELIA_HOME = Path(os.environ.get("OPHELIA_HOME") or (Path.home() / ".ophelia"))
 
 
 class Settings(BaseSettings):
@@ -667,6 +668,23 @@ class Settings(BaseSettings):
             self.discord_enabled = bool(self.discord_bot_token)
         if self.discord_log_enabled is None:
             self.discord_log_enabled = bool(self.discord_guild_id)
+        # Honor OPHELIA_HOME env var for path fields. The module-level
+        # OPHELIA_HOME constant is read once at import, so if a user (or a
+        # test) sets the env var after import, the field defaults won't
+        # reflect it. Re-resolve here so `data_dir`, `memory_db`, and
+        # `mcp_config_path` follow the live env var.
+        env_home = os.environ.get("OPHELIA_HOME")
+        if env_home:
+            env_home_path = Path(env_home)
+            # Only re-resolve fields that are still at their default (i.e. the
+            # user didn't explicitly override them). We can't easily detect
+            # "still default" with Pydantic, so instead always re-resolve to
+            # env_home/<basename> — this matches the documented behavior that
+            # OPHELIA_HOME controls the whole tree.
+            self.data_dir = env_home_path / "data"
+            self.memory_db = env_home_path / "data" / "memory.db"
+            if not self.mcp_config_path or self.mcp_config_path == OPHELIA_HOME / "mcp.json":
+                self.mcp_config_path = env_home_path / "mcp.json"
         return self
 
     def consciousness_on(self) -> bool:
