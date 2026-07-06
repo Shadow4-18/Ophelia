@@ -175,7 +175,16 @@ async def generate_video(
     *,
     duration_seconds: int = 6,
     artifacts_dir: Path | None = None,
+    image: str | None = None,
+    aspect_ratio: str | None = None,
+    resolution: str | None = None,
 ) -> str:
+    """Generate a video via xAI Grok Imagine.
+
+    If `image` is provided, runs image-to-video: the image becomes the first
+    frame. Accepts an http(s) URL or a local file path (PNG/JPG/etc.) — local
+    files are base64-encoded into a data URI. If omitted, runs text-to-video.
+    """
     role = "video"
     provider = stack.name(role)
     model = stack.model(role)
@@ -190,6 +199,9 @@ async def generate_video(
                 duration_seconds,
                 model,
                 artifacts_dir=artifacts_dir,
+                image=image,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
             )
         raise RuntimeError(
             f"Video generation requires xAI (provider={provider}). "
@@ -787,6 +799,62 @@ async def _modelslab_image(
     return f"Image saved to {saved}"
 
 
+def _mime_for_image_path(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".png":
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".gif":
+        return "image/gif"
+    return "image/jpeg"
+
+
+async def _resolve_xai_video_image(image: str) -> dict[str, str] | None:
+    """Turn an image reference into the xAI `image` field value.
+
+    Accepts:
+      - http(s) URL → {"url": "..."}
+      - file_id: prefix (xAI Files API) → {"file_id": "..."}
+      - data: URI → {"url": "data:..."}
+      - bare base64 (long, no scheme/path) → wrapped as a JPEG data URI
+      - local file path → read, base64-encode, wrap as a data URI
+
+    Returns None if the input can't be resolved (file missing / unreadable).
+    """
+    s = (image or "").strip()
+    if not s:
+        return None
+
+    if s.startswith(("http://", "https://")):
+        return {"url": s}
+    if s.startswith("data:"):
+        return {"url": s}
+    if s.startswith("file_id:"):
+        return {"file_id": s[len("file_id:") :].strip()}
+    if s.startswith("/9j/") or s.startswith("iVBOR"):  # bare base64 JPEG/PNG
+        return {"url": f"data:image/jpeg;base64,{s}"}
+
+    # Treat as a local file path.
+    try:
+        p = Path(s).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+    if not p.is_file():
+        log.warning("video.image_not_found", path=s)
+        return None
+    try:
+        raw = p.read_bytes()
+    except OSError as e:
+        log.warning("video.image_read_failed", path=str(p), error=str(e))
+        return None
+    mime = _mime_for_image_path(p)
+    b64 = base64.standard_b64encode(raw).decode("ascii")
+    return {"url": f"data:{mime};base64,{b64}"}
+
+
 async def _xai_video(
     settings: Settings,
     stack: ProviderStack,
@@ -795,6 +863,9 @@ async def _xai_video(
     model: str,
     *,
     artifacts_dir: Path | None = None,
+    image: str | None = None,
+    aspect_ratio: str | None = None,
+    resolution: str | None = None,
 ) -> str:
     backend = stack.backend("video")
     assert isinstance(backend, XAIBackend)
@@ -805,18 +876,31 @@ async def _xai_video(
     if not token:
         return "No xAI credentials for video."
 
+    image_input = await _resolve_xai_video_image(image) if image else None
+
     base = settings.xai_base_url.rstrip("/")
     headers = {"Authorization": f"Bearer {token}"}
+
+    body: dict[str, object] = {
+        "model": model,
+        "prompt": prompt,
+        "duration": duration_seconds,
+    }
+    # Image-to-video: image becomes the first frame. Omit `image` entirely
+    # for text-to-video. xAI rejects requests that set both `image` and
+    # `reference_images`, so we never send them together.
+    if image_input is not None:
+        body["image"] = image_input
+    if aspect_ratio:
+        body["aspect_ratio"] = aspect_ratio
+    if resolution:
+        body["resolution"] = resolution
 
     async with httpx.AsyncClient(timeout=120.0) as http:
         r = await http.post(
             f"{base}/videos/generations",
             headers=headers,
-            json={
-                "model": model,
-                "prompt": prompt,
-                "duration": duration_seconds,
-            },
+            json=body,
         )
         if r.status_code >= 400:
             return f"Video start failed HTTP {r.status_code}: {r.text[:300]}"
@@ -864,9 +948,15 @@ async def _xai_video(
                     dl = await http.get(url, headers=headers)
                 dl.raise_for_status()
                 out.write_bytes(dl.content)
-                log.info("video.saved", path=str(out), request_id=request_id)
+                mode = "image-to-video" if image_input is not None else "text-to-video"
+                log.info(
+                    "video.saved",
+                    path=str(out),
+                    request_id=request_id,
+                    mode=mode,
+                )
                 return (
-                    f"Video generated ({model}, {duration_seconds}s). "
+                    f"Video generated ({model}, {duration_seconds}s, {mode}). "
                     f"Video saved to {out}"
                 )
             if status in {"failed", "expired"}:

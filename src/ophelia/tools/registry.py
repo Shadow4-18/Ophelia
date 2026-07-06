@@ -199,15 +199,41 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "generate_video",
             "description": (
-                "Generate a video from a text prompt (xAI Grok Imagine). Auto-sends "
-                "to chat when delivered — do NOT call send_file afterward. Waits up "
-                "to 10m, saves mp4 under artifacts."
+                "Generate a video (xAI Grok Imagine). Supports text-to-video "
+                "(prompt only) and image-to-video (prompt + image). For image-to-video, "
+                "the image becomes the first frame and the prompt describes the motion. "
+                "Auto-sends to chat when delivered — do NOT call send_file afterward. "
+                "Waits up to 10m, saves mp4 under artifacts."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string"},
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Motion description. For image-to-video, describe how the "
+                            "scene should animate forward from the source image."
+                        ),
+                    },
+                    "image": {
+                        "type": "string",
+                        "description": (
+                            "Optional source image for image-to-video. Accepts an "
+                            "http(s) URL, a local file path, or a file_id: prefix "
+                            "(xAI Files API). When provided, the image becomes the "
+                            "first frame. Omit for text-to-video."
+                        ),
+                    },
                     "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15},
+                    "aspect_ratio": {
+                        "type": "string",
+                        "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4. Image-to-video defaults to the input image's ratio.",
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "enum": ["480p", "720p", "1080p"],
+                        "description": "1080p only on grok-imagine-video-1.5 image-to-video.",
+                    },
                 },
                 "required": ["prompt"],
             },
@@ -849,7 +875,12 @@ class ToolRegistry:
         return await self._finalize_media_tool_result(result)
 
     async def _generate_video(
-        self, prompt: str, duration_seconds: int = 6
+        self,
+        prompt: str,
+        duration_seconds: int = 6,
+        image: str | None = None,
+        aspect_ratio: str | None = None,
+        resolution: str | None = None,
     ) -> str:
         result = await generate_video(
             self.settings,
@@ -857,6 +888,9 @@ class ToolRegistry:
             prompt,
             duration_seconds=duration_seconds,
             artifacts_dir=self.artifacts_dir,
+            image=image,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
         )
         return await self._finalize_media_tool_result(result)
 
