@@ -289,7 +289,7 @@ def cmd_whoami(_: argparse.Namespace) -> int:
     """
     settings = Settings()
     print("== Owner recognition ==")
-    print(f"  OPHELIA_OWNER_ID:        {settings.owner_id or '(unset — using fallback)'}")
+    print(f"  OPHELIA_OWNER_ID:         {settings.owner_id or '(unset — using fallback)'}")
     print(f"  OPHELIA_PRIMARY_CHANNEL:  {settings.primary_channel or '(unset)'}")
     print(f"  telegram_enabled:         {settings.telegram_enabled}")
     print(f"  discord_enabled:          {settings.discord_enabled}")
@@ -306,15 +306,48 @@ def cmd_whoami(_: argparse.Namespace) -> int:
     if dc:
         print(f"    Discord owner  = discord:{dc[0]}  (first entry; "
               f"{'also approved guests: ' + ','.join(map(str, dc[1:])) if len(dc) > 1 else 'no guests'})")
+
+    rc = 0
     if not settings.owner_channels():
         print("    WARNING: no owner is configured — everyone is a guest or rejected.")
         return 1
+
+    # Detect the classic footgun: OPHELIA_OWNER_ID set to a subset of the
+    # enabled platforms. e.g. OPHELIA_OWNER_ID=discord:222 when both telegram
+    # and discord are enabled silently demotes the Telegram owner to a guest.
+    explicit = (settings.owner_id or "").strip()
+    if explicit:
+        present_platforms = {c.split(":", 1)[0] for c in settings.owner_channels()}
+        enabled_platforms: set[str] = set()
+        if settings.telegram_enabled:
+            enabled_platforms.add("telegram")
+        if settings.discord_enabled:
+            enabled_platforms.add("discord")
+        missing = enabled_platforms - present_platforms
+        if missing and present_platforms:
+            rc = 1
+            print()
+            print("  !! FOOTGUN DETECTED:")
+            print(f"    OPHELIA_OWNER_ID is set to {sorted(present_platforms)} but "
+                  f"{sorted(missing)} is ALSO enabled.")
+            print(f"    Your {sorted(missing)} identity is NOT recognized as owner — "
+                  "you're a guest there.")
+            print("    Fix: add the missing platform(s) to OPHELIA_OWNER_ID, e.g.:")
+            tg_id = tg[0] if tg else "YOUR_TG_ID"
+            dc_id = dc[0] if dc else "YOUR_DC_ID"
+            print(f"      OPHELIA_OWNER_ID=telegram:{tg_id},discord:{dc_id}")
+            print("    ...or delete the OPHELIA_OWNER_ID line entirely to let "
+                  "auto-detection cover both.")
+
+    # Also flag: an enabled platform's allowlist has a user who ISN'T in
+    # owner_channels — that user would be a guest on a platform where the
+    # owner is also configured. (Only relevant for the primary user.)
     print()
     print("  If your Telegram ID isn't in owner_channels above, you'll be a guest.")
     print("  Fix: remove OPHELIA_OWNER_ID from ~/.ophelia/.env (let it auto-detect")
     print("  the first allowed user on each platform), OR set it to BOTH platforms:")
     print('    OPHELIA_OWNER_ID=telegram:YOUR_TG_ID,discord:YOUR_DC_ID')
-    return 0
+    return rc
 
 
 def cmd_curator_run(_: argparse.Namespace) -> int:
