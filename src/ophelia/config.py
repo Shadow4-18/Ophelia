@@ -773,22 +773,66 @@ class Settings(BaseSettings):
             return None
         return {int(x.strip()) for x in raw.split(",") if x.strip()}
 
+    def _allowed_telegram_users_ordered(self) -> list[int]:
+        """Allowlist as an ordered list (owner first, guests appended after).
+
+        The configured owner is always the first entry because the setup flow
+        writes it first and guest approvals append. Preserving order matters
+        for the owner-detection fallback — `next(iter(set))` is unordered and
+        could pick a guest as the owner.
+        """
+        raw = self.telegram_allowed_user_ids.strip()
+        if not raw:
+            return []
+        seen: set[int] = set()
+        out: list[int] = []
+        for x in raw.split(","):
+            x = x.strip()
+            if not x:
+                continue
+            try:
+                uid = int(x)
+            except ValueError:
+                continue
+            if uid not in seen:
+                seen.add(uid)
+                out.append(uid)
+        return out
+
+    def _allowed_discord_users_ordered(self) -> list[int]:
+        raw = self.discord_allowed_user_ids.strip()
+        if not raw:
+            return []
+        seen: set[int] = set()
+        out: list[int] = []
+        for x in raw.split(","):
+            x = x.strip()
+            if not x:
+                continue
+            try:
+                uid = int(x)
+            except ValueError:
+                continue
+            if uid not in seen:
+                seen.add(uid)
+                out.append(uid)
+        return out
+
     def primary_user_channel(self) -> str | None:
         if self.primary_channel and self.primary_channel.strip():
             return self.primary_channel.strip()
-        if self.telegram_enabled and self.allowed_telegram_users():
-            uid = next(iter(self.allowed_telegram_users()))
-            return f"telegram:{uid}"
-        if self.discord_enabled and self.allowed_discord_users():
-            uid = next(iter(self.allowed_discord_users()))
-            return f"discord:{uid}"
+        if self.telegram_enabled and self._allowed_telegram_users_ordered():
+            return f"telegram:{self._allowed_telegram_users_ordered()[0]}"
+        if self.discord_enabled and self._allowed_discord_users_ordered():
+            return f"discord:{self._allowed_discord_users_ordered()[0]}"
         return None
 
     def owner_channels(self) -> set[str]:
         """The set of channel strings that count as the owner (shape her identity).
         From OPHELIA_OWNER_ID (channel-style, comma-separated); falls back to
-        primary_user_channel() when unset so existing single-user setups keep
-        working."""
+        the first allowed user on EACH enabled platform when unset, so a user
+        who is the owner on both Telegram and Discord is recognized on both
+        (not just whichever platform happens to be checked first)."""
         raw = self.owner_id.strip()
         chans: set[str] = set()
         if raw:
@@ -806,8 +850,16 @@ class Settings(BaseSettings):
                         chans.add(f"discord:{tok}")
             if chans:
                 return chans
-        pc = self.primary_user_channel()
-        return {pc.lower()} if pc else set()
+        # No explicit OPHELIA_OWNER_ID — the first allowed user on each
+        # enabled platform is the configured owner (guests are appended
+        # after, so they're never first). This keeps single-platform setups
+        # working AND fixes the regression where adding Discord demoted the
+        # Telegram owner to a guest.
+        if self.telegram_enabled and self._allowed_telegram_users_ordered():
+            chans.add(f"telegram:{self._allowed_telegram_users_ordered()[0]}")
+        if self.discord_enabled and self._allowed_discord_users_ordered():
+            chans.add(f"discord:{self._allowed_discord_users_ordered()[0]}")
+        return chans
 
     def is_owner_channel(self, channel: str) -> bool:
         """True if this inbound channel is the owner (not a sandboxed guest)."""

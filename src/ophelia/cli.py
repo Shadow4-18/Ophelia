@@ -278,6 +278,45 @@ def cmd_providers(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_whoami(_: argparse.Namespace) -> int:
+    """Diagnose owner recognition — why you might be stuck in guest mode.
+
+    Prints exactly which channels Ophelia treats as owner right now, what
+    OPHELIA_OWNER_ID is set to (if anything), and the allowlists. Run this
+    on the phone when Telegram suddenly shows you as a guest — the usual
+    cause is OPHELIA_OWNER_ID being set to a single platform (e.g. just
+    'discord:222'), which demotes the Telegram owner.
+    """
+    settings = Settings()
+    print("== Owner recognition ==")
+    print(f"  OPHELIA_OWNER_ID:        {settings.owner_id or '(unset — using fallback)'}")
+    print(f"  OPHELIA_PRIMARY_CHANNEL:  {settings.primary_channel or '(unset)'}")
+    print(f"  telegram_enabled:         {settings.telegram_enabled}")
+    print(f"  discord_enabled:          {settings.discord_enabled}")
+    print(f"  TELEGRAM_ALLOWED_USER_IDS: {settings.telegram_allowed_user_ids or '(empty)'}")
+    print(f"  DISCORD_ALLOWED_USER_IDS:  {settings.discord_allowed_user_ids or '(empty)'}")
+    print(f"  owner_channels (resolved): {sorted(settings.owner_channels()) or '(none!)'}")
+    print()
+    tg = settings._allowed_telegram_users_ordered()
+    dc = settings._allowed_discord_users_ordered()
+    print("  Interpretation:")
+    if tg:
+        print(f"    Telegram owner = telegram:{tg[0]}  (first entry; "
+              f"{'also approved guests: ' + ','.join(map(str, tg[1:])) if len(tg) > 1 else 'no guests'})")
+    if dc:
+        print(f"    Discord owner  = discord:{dc[0]}  (first entry; "
+              f"{'also approved guests: ' + ','.join(map(str, dc[1:])) if len(dc) > 1 else 'no guests'})")
+    if not settings.owner_channels():
+        print("    WARNING: no owner is configured — everyone is a guest or rejected.")
+        return 1
+    print()
+    print("  If your Telegram ID isn't in owner_channels above, you'll be a guest.")
+    print("  Fix: remove OPHELIA_OWNER_ID from ~/.ophelia/.env (let it auto-detect")
+    print("  the first allowed user on each platform), OR set it to BOTH platforms:")
+    print('    OPHELIA_OWNER_ID=telegram:YOUR_TG_ID,discord:YOUR_DC_ID')
+    return 0
+
+
 def cmd_curator_run(_: argparse.Namespace) -> int:
     async def _once() -> None:
         settings = Settings()
@@ -971,6 +1010,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("providers", help="Show resolved AI provider routing").set_defaults(
         func=cmd_providers
     )
+    sub.add_parser(
+        "whoami",
+        help="Diagnose owner recognition — why you might be stuck in guest mode.",
+    ).set_defaults(func=cmd_whoami)
     sub.add_parser("models", help="Local model cookbook (RAM/GPU -> Ollama picks)").set_defaults(
         func=cmd_models
     )
