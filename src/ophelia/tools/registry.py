@@ -84,6 +84,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "recall_memory",
         "generate_image",
         "generate_video",
+        "list_inbox_images",
         "text_to_speech",
         "phone_see_screen",
         "phone_ui_dump",
@@ -203,7 +204,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "(prompt only) and image-to-video (prompt + image). For image-to-video, "
                 "the image becomes the first frame and the prompt describes the motion. "
                 "Auto-sends to chat when delivered — do NOT call send_file afterward. "
-                "Waits up to 10m, saves mp4 under artifacts."
+                "Waits up to 10m, saves mp4 under artifacts. To use a photo the user "
+                "sent, call list_inbox_images first to get the saved path, then pass "
+                "it as `image`."
             ),
             "parameters": {
                 "type": "object",
@@ -219,9 +222,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Optional source image for image-to-video. Accepts an "
-                            "http(s) URL, a local file path, or a file_id: prefix "
-                            "(xAI Files API). When provided, the image becomes the "
-                            "first frame. Omit for text-to-video."
+                            "http(s) URL, a local file path (auto base64-encoded "
+                            "for the API — your phone's saved photos work), or a "
+                            "file_id: prefix (xAI Files API). When provided, the "
+                            "image becomes the first frame. Omit for text-to-video."
                         ),
                     },
                     "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 15},
@@ -236,6 +240,36 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_inbox_images",
+            "description": (
+                "List image files the user recently sent over chat (Telegram "
+                "photos/images or Discord image attachments). Returns absolute "
+                "paths sorted newest-first. Use this to find a source image "
+                "for generate_video image-to-video, or to re-examine a sent "
+                "photo. Only files modified within the lookback window are "
+                "returned (default 24h)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Max number of paths to return (default 10).",
+                    },
+                    "within_hours": {
+                        "type": "number",
+                        "minimum": 0.1,
+                        "description": "Only include files newer than this many hours (default 24).",
+                    },
+                },
             },
         },
     },
@@ -662,6 +696,7 @@ class ToolRegistry:
             "send_message": self._send_message,
             "generate_image": self._generate_image,
             "generate_video": self._generate_video,
+            "list_inbox_images": self._list_inbox_images,
             "text_to_speech": self._text_to_speech,
             "send_file": self._send_file,
             "run_code": self._run_code,
@@ -893,6 +928,56 @@ class ToolRegistry:
             resolution=resolution,
         )
         return await self._finalize_media_tool_result(result)
+
+    async def _list_inbox_images(
+        self, limit: int = 10, within_hours: float = 24.0
+    ) -> str:
+        """List image files the user recently sent over chat.
+
+        Scans the gateway media dirs (telegram_media + discord_media) for
+        inbound image files (prefixed `in_`) modified within the lookback
+        window. Returns absolute paths sorted newest-first.
+        """
+        import time as _time
+        from pathlib import Path
+
+        data_dir = Path(self.settings.data_dir)
+        suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        cutoff = _time.time() - within_hours * 3600.0
+        candidates: list[Path] = []
+        for sub in ("telegram_media", "discord_media"):
+            d = data_dir / sub
+            if not d.is_dir():
+                continue
+            for p in d.iterdir():
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() not in suffixes:
+                    continue
+                # Only inbound images — gateways save sent images with the
+                # `in_` prefix (in_<msg_id>...). Generated images live under
+                # artifacts/ with different naming.
+                if not p.name.startswith("in_"):
+                    continue
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        candidates.append(p)
+                except OSError:
+                    continue
+        if not candidates:
+            return (
+                f"No inbound images in the last {within_hours:.1f}h. "
+                "Ask the user to send a photo, then call this again."
+            )
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = candidates[:limit]
+        lines = [f"Recent inbound images (newest first, {len(candidates)}):"]
+        for p in candidates:
+            lines.append(f"  {p}")
+        lines.append(
+            "Pass any of these as `image` to generate_video for image-to-video."
+        )
+        return "\n".join(lines)
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()

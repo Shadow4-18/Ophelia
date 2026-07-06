@@ -34,6 +34,7 @@ class DiscordGateway:
         self._bot = None
         self._task: asyncio.Task | None = None
         self._guest_approvals = GuestApprovals()
+        self._media_dir = settings.data_dir / "discord_media"
 
     def is_configured(self) -> bool:
         return bool(self.settings.discord_bot_token)
@@ -263,16 +264,64 @@ class DiscordGateway:
             async def _media_reply(path: Path, caption: str) -> bool:
                 return await gw._send_discord_file(message, path, caption)
 
+            # Capture image attachments: download, run vision, and fold the
+            # saved absolute paths into the prompt so the agent can use them
+            # (e.g. pass to generate_video for image-to-video).
+            image_prompt = await gw._save_and_describe_image_attachments(message)
+            prompt_text = message.content.strip()
+            if image_prompt:
+                prompt_text = f"{image_prompt}\n\n{prompt_text}" if prompt_text else image_prompt
+
             async with message.channel.typing():
                 await gw.session.handle_chat(
                     channel,
-                    message.content.strip(),
+                    prompt_text,
                     _reply,
                     media_reply=_media_reply,
                 )
 
         self._bot = bot
         return bot
+
+    async def _save_and_describe_image_attachments(self, message) -> str | None:
+        """Download any image attachments on a Discord message, run vision on
+        each, and return a prompt fragment listing the saved absolute paths
+        (so the agent can pass them to media tools like generate_video).
+
+        Non-image attachments are ignored. Returns None if there are no image
+        attachments.
+        """
+        image_attachments = [
+            a for a in message.attachments
+            if (a.content_type or "").startswith("image/")
+            or Path(a.filename).suffix.lower()
+            in (".png", ".jpg", ".jpeg", ".webp", ".gif")
+        ]
+        if not image_attachments:
+            return None
+
+        from ophelia.media.vision_input import describe_image_file
+
+        self._media_dir.mkdir(parents=True, exist_ok=True)
+        parts: list[str] = []
+        for att in image_attachments:
+            ext = Path(att.filename).suffix.lower() or ".png"
+            path = self._media_dir / f"in_{message.id}_{att.id}{ext}"
+            try:
+                await att.save(str(path))
+            except Exception as e:
+                log.warning("discord.attachment_save_failed", att=att.id, error=str(e))
+                continue
+            caption = (message.content or "").strip()
+            description = await describe_image_file(self.settings, path, question=caption or (
+                "The user sent this image on Discord. Describe it and respond to what they likely want."
+            ))
+            parts.append(
+                f"[User sent an image — saved to {path}]\n"
+                f"Caption: {caption or '(none)'}\n\n"
+                f"Vision analysis:\n{description}"
+            )
+        return "\n\n".join(parts) if parts else None
 
     async def _send_discord_media(self, message, text: str) -> None:
         """Send media artifacts detected in a reply blob (Image/Video/TTS saved to ...)."""

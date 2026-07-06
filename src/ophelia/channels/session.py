@@ -231,19 +231,30 @@ class ChannelSession:
 
     @staticmethod
     def _extract_inbound_media(text: str, settings) -> str | None:
-        """Pull the saved-photo filename out of the gateway's photo prompt text
-        and resolve it to the absolute path the gateway downloaded it to."""
+        """Pull the saved-photo path out of the gateway's photo prompt text.
+
+        Gateways write either "saved to /abs/path/in_123.jpg" (preferred —
+        the agent can pass it straight to media tools) or the legacy
+        "saved in_123.jpg" form (filename only, resolved under telegram_media).
+        """
         marker = "saved "
         idx = text.find(marker)
         if idx < 0:
             return None
         rest = text[idx + len(marker) :]
+        # Skip an optional "to " between "saved" and the path.
+        if rest.startswith("to "):
+            rest = rest[3:]
         end = rest.find("]")
         token = rest[:end] if end >= 0 else rest.split()[0]
         token = token.strip().strip(".")
         if not token:
             return None
-        # Gateways download inbound photos to <data_dir>/telegram_media/<name>.
+        # Absolute path: use it directly (gateways now surface the full path).
+        p = Path(token)
+        if p.is_absolute():
+            return str(p) if p.is_file() else token
+        # Legacy filename-only form: resolve under the gateway media dir.
         resolved = settings.data_dir / "telegram_media" / token
         return str(resolved) if resolved.is_file() else token
 
