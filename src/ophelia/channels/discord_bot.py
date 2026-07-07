@@ -411,16 +411,35 @@ class DiscordGateway:
             await self._send_discord_file(message, path, "")
 
     async def _send_discord_file(self, message, path: Path, caption: str) -> bool:
-        """Send a file to the originating Discord channel as an attachment."""
+        """Send a file to the originating Discord channel as an attachment.
+
+        Discord's bot upload limit is 25MB (or lower on non-boosted servers).
+        Videos from xAI Grok at 720p can exceed this, so we check and notify
+        the user instead of failing silently.
+        """
         import discord
 
         tools = getattr(self.session.agent, "tools", None)
         try:
             p = Path(path).expanduser()
             if not p.is_file():
+                log.warning("discord.send_file_missing", path=str(p))
                 return False
             if tools is not None and tools.is_artifact_delivered(p):
                 return True
+            # Discord's file upload limit. 25MB is the standard bot limit;
+            # non-boosted servers may be lower but we can't detect that here.
+            size = p.stat().st_size
+            if size > 25 * 1024 * 1024:
+                await message.channel.send(
+                    f"Generated {p.name} ({size // (1024*1024)}MB) but it's too "
+                    "big for Discord's upload limit. Saved to disk — ask the "
+                    "owner to retrieve it."
+                )
+                log.warning("discord.send_file_too_large", path=str(p), size_mb=size // (1024 * 1024))
+                if tools is not None:
+                    tools._mark_artifact_delivered(p)
+                return False
             await message.channel.send(
                 content=caption[:2000] if caption else None,
                 file=discord.File(str(p)),
@@ -429,6 +448,18 @@ class DiscordGateway:
                 tools._mark_artifact_delivered(p)
             log.info("discord.send_file", path=str(p))
             return True
+        except discord.HTTPException as e:
+            # Surface Discord-specific errors (rate limits, permission issues,
+            # file too large for this server's boost level) to the user.
+            err_msg = str(e)
+            log.warning("discord.send_file_http_error", path=str(path), error=err_msg, status=getattr(e, 'status', None))
+            try:
+                await message.channel.send(
+                    f"Couldn't upload {Path(path).name} to Discord ({err_msg[:200]})."
+                )
+            except Exception:
+                pass
+            return False
         except Exception as e:
             log.warning("discord.send_file_failed", path=str(path), error=str(e))
             return False

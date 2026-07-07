@@ -869,6 +869,12 @@ async def _xai_video(
 ) -> str:
     backend = stack.backend("video")
     assert isinstance(backend, XAIBackend)
+    # Validate resolution early — xAI only accepts "480p" or "720p". An
+    # invalid value returns an opaque 400 that's hard to debug downstream.
+    valid_resolutions = {"480p", "720p"}
+    if resolution and resolution not in valid_resolutions:
+        log.warning("video.invalid_resolution", resolution=resolution)
+        resolution = "480p"  # fall back rather than 400
     try:
         token = await backend.bearer_fresh()
     except Exception:

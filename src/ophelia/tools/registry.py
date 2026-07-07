@@ -235,8 +235,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                     "resolution": {
                         "type": "string",
-                        "enum": ["480p", "720p", "1080p"],
-                        "description": "1080p only on grok-imagine-video-1.5 image-to-video.",
+                        "enum": ["480p", "720p"],
+                        "description": "480p (standard, cheaper) or 720p (higher quality). Default 720p.",
                     },
                 },
                 "required": ["prompt"],
@@ -988,11 +988,12 @@ class ToolRegistry:
         aspect_ratio: str | None = None,
         resolution: str | None = None,
     ) -> str:
-        # Guests get 1:1 + low resolution only. Keeps the experience (she can
-        # make a short clip) without spending full-quality tokens on strangers.
+        # Guests get 1:1 + 480p only. Keeps the experience (she can make a
+        # short clip) without spending full-quality tokens on strangers.
+        # Note: xAI only accepts "480p" or "720p" — "low" is not a valid value.
         if not self._is_owner:
             aspect_ratio = "1:1"
-            resolution = "low"
+            resolution = "480p"
         result = await generate_video(
             self.settings,
             self.stack,

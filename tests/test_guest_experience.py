@@ -124,8 +124,10 @@ async def test_owner_generate_image_keeps_requested_aspect(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_guest_generate_video_forced_to_1_1_low_res(monkeypatch):
-    """A guest requesting 16:9 + high res must actually produce 1:1 + low."""
+async def test_guest_generate_video_forced_to_1_1_480p(monkeypatch):
+    """A guest requesting 16:9 + 720p must actually produce 1:1 + 480p.
+    xAI only accepts '480p' or '720p' — 'low' is not a valid value and
+    would cause a 400 error."""
     captured: dict = {}
 
     async def fake_generate_video(settings, stack, prompt, *, duration_seconds, artifacts_dir, image, aspect_ratio, resolution):
@@ -140,9 +142,9 @@ async def test_guest_generate_video_forced_to_1_1_low_res(monkeypatch):
     monkeypatch.setattr(ToolRegistry, "_finalize_media_tool_result", fake_finalize)
     reg = _registry()
     reg._is_owner = False  # guest turn
-    await reg._generate_video("waves", aspect_ratio="16:9", resolution="high")
+    await reg._generate_video("waves", aspect_ratio="16:9", resolution="720p")
     assert captured["aspect_ratio"] == "1:1"
-    assert captured["resolution"] == "low"
+    assert captured["resolution"] == "480p"
 
 
 @pytest.mark.asyncio

@@ -379,3 +379,128 @@ async def test_generate_video_image_not_found_falls_back_to_txt2vid(tmp_path):
 
     body = captured["body"]
     assert "image" not in body, "missing image must be dropped, not sent"
+
+
+@pytest.mark.asyncio
+async def test_invalid_resolution_falls_back_to_480p(tmp_path):
+    """An invalid resolution value (e.g. 'low', 'high', '1080p') must fall
+    back to '480p' rather than sending the bad value to xAI and getting a 400."""
+    backend = _fake_xai_backend()
+    stack = _fake_stack(backend)
+    settings = _settings(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"request_id": "req-1"}
+
+    async def fake_post(url, headers=None, json=None, **_):
+        captured["body"] = json
+        return _FakeResp()
+
+    with patch("ophelia.providers.media.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.post = AsyncMock(side_effect=fake_post)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client_cls.return_value = client
+
+        class _PollResp:
+            status_code = 200
+
+            def json(self):
+                return {"status": "done", "video": {"url": "https://x.ai/v.mp4"}}
+
+        class _DownloadResp:
+            status_code = 200
+            content = b"mp4"
+
+            def raise_for_status(self):
+                pass
+
+        client.get = AsyncMock(side_effect=[_PollResp(), _DownloadResp()])
+
+        with patch("ophelia.providers.media.get_model_gate") as gate_cls:
+            gate = MagicMock()
+            sess = AsyncMock()
+            sess.__aenter__ = AsyncMock(return_value=None)
+            sess.__aexit__ = AsyncMock(return_value=None)
+            gate.session = MagicMock(return_value=sess)
+            gate_cls.return_value = gate
+
+            await media_mod.generate_video(
+                settings,
+                stack,
+                "test",
+                duration_seconds=6,
+                artifacts_dir=tmp_path / "out",
+                resolution="low",  # invalid — must fall back to 480p
+            )
+
+    body = captured["body"]
+    assert body["resolution"] == "480p", "invalid resolution must fall back to 480p"
+
+
+@pytest.mark.asyncio
+async def test_valid_480p_resolution_passes_through(tmp_path):
+    """A valid '480p' resolution must be passed through unchanged."""
+    backend = _fake_xai_backend()
+    stack = _fake_stack(backend)
+    settings = _settings(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"request_id": "req-1"}
+
+    async def fake_post(url, headers=None, json=None, **_):
+        captured["body"] = json
+        return _FakeResp()
+
+    with patch("ophelia.providers.media.httpx.AsyncClient") as client_cls:
+        client = AsyncMock()
+        client.post = AsyncMock(side_effect=fake_post)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client_cls.return_value = client
+
+        class _PollResp:
+            status_code = 200
+
+            def json(self):
+                return {"status": "done", "video": {"url": "https://x.ai/v.mp4"}}
+
+        class _DownloadResp:
+            status_code = 200
+            content = b"mp4"
+
+            def raise_for_status(self):
+                pass
+
+        client.get = AsyncMock(side_effect=[_PollResp(), _DownloadResp()])
+
+        with patch("ophelia.providers.media.get_model_gate") as gate_cls:
+            gate = MagicMock()
+            sess = AsyncMock()
+            sess.__aenter__ = AsyncMock(return_value=None)
+            sess.__aexit__ = AsyncMock(return_value=None)
+            gate.session = MagicMock(return_value=sess)
+            gate_cls.return_value = gate
+
+            await media_mod.generate_video(
+                settings,
+                stack,
+                "test",
+                duration_seconds=6,
+                artifacts_dir=tmp_path / "out",
+                resolution="480p",
+            )
+
+    body = captured["body"]
+    assert body["resolution"] == "480p"

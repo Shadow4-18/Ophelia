@@ -268,10 +268,10 @@ class AgentLoop:
             "Identity-shaping tools (editing your soul, saving lessons, goals, "
             "databases, memory search) are disabled for guests — just talk, and "
             "you can still make images and short videos to share.\n"
-            "Guest media is constrained: images and videos are 1:1 and lower "
-            "resolution. Don't promise a guest a wide or high-res image — just "
-            "make what you can and offer to make a better one if they ever talk "
-            "to your owner about it."
+            "Guest media is constrained: images and videos are 1:1, and videos "
+            "are 480p (standard quality). Don't promise a guest a wide or "
+            "high-res video — just make what you can and offer to make a "
+            "better one if they ever talk to your owner about it."
         )
         return build_system_context(
             soul=load_soul(),
