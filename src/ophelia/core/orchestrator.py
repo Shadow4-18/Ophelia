@@ -475,8 +475,12 @@ class Orchestrator:
         await self.hub.broadcast_proactive_media(paths, caption=caption)
 
     async def _notify_inner(self, text: str) -> None:
+        from ophelia.channels.proactive_filter import is_outreach_junk
+
+        if is_outreach_junk(text):
+            return
         await self.hub.mirror_inner_thought(text)
-        if self.settings.inner_mirror_telegram:
+        if self.settings.inner_mirror_telegram or self.signals.inner_mirror:
             await self.hub.broadcast_proactive(text)
 
     async def _notify_inner_mirror(self, text: str) -> None:

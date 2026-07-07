@@ -2,7 +2,7 @@
 
 Consciousness ticks, inner-mirror, and the send_message tool can emit status
 placeholders like SKIP or "(no response)" that should stay internal — not ping
-the owner every 90 seconds.
+the owner every 90 seconds on every configured gateway.
 """
 
 from __future__ import annotations
@@ -21,9 +21,16 @@ _JUNK_EXACT = frozenset(
     }
 )
 
-# Channel-tagged status lines echoed from cross-channel memory context.
-_CHANNEL_STATUS = re.compile(
-    r"^\[(?:consciousness|inner|cli|saw|spontaneous)\]\s*(\(no response\)|no response)?\s*$",
+# Channel-tagged lines copied from cross-channel memory — never user-facing outreach.
+_CHANNEL_TAG = re.compile(
+    r"^\[(?:consciousness|inner|cli|saw|spontaneous)\]", re.IGNORECASE
+)
+
+# System/meta diagnostics the model emits when confused by tick loops.
+_META_KEYWORDS = re.compile(
+    r"\b(?:duplicate(?:\s+\w+){0,3}\s+prompt|duplicate block|"
+    r"cycling the same|looping without|no owner engagement|"
+    r"holding stillness|holding still)\b",
     re.IGNORECASE,
 )
 
@@ -36,7 +43,16 @@ def is_outreach_junk(text: str) -> bool:
     low = t.lower()
     if low in _JUNK_EXACT:
         return True
-    if _CHANNEL_STATUS.match(t):
+    if _CHANNEL_TAG.match(t):
+        return True
+    if _META_KEYWORDS.search(t):
+        return True
+    # Bare channel status: "[consciousness] (no response)" etc.
+    if re.match(
+        r"^\[(?:consciousness|inner)\]\s*(\(no response\)|no response)?\s*$",
+        t,
+        re.IGNORECASE,
+    ):
         return True
     return False
 

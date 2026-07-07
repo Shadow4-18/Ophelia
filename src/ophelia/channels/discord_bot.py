@@ -463,6 +463,11 @@ class DiscordGateway:
             await self._bot.close()
 
     async def send_proactive(self, text: str) -> None:
+        from ophelia.channels.proactive_filter import is_outreach_junk
+
+        if is_outreach_junk(text):
+            log.debug("discord.proactive_suppressed", preview=(text or "")[:80])
+            return
         if not self._bot:
             return
         allowed = self.settings.allowed_discord_users()

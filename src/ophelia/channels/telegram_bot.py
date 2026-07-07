@@ -1151,6 +1151,11 @@ class TelegramGateway:
         return []
 
     async def send_proactive(self, text: str) -> None:
+        from ophelia.channels.proactive_filter import is_outreach_junk
+
+        if is_outreach_junk(text):
+            log.debug("telegram.proactive_suppressed", preview=(text or "")[:80])
+            return
         if not self._app:
             log.warning(
                 "telegram.notify_skipped",
