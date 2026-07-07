@@ -527,10 +527,12 @@ class ConsciousnessLoop:
                     + " Brief outward_message only if worth disturbing user."
                 ),
             )
-            outward = outward or result[:2000]
-
-            # Forward any media the agent produced during this autonomous turn.
-            tools = getattr(self.agent, "tools", None)
+            outreach_tools = getattr(self.agent, "tools", None)
+            already_sent = bool(
+                outreach_tools and outreach_tools.proactive_delivered_this_turn()
+            )
+            outward = outward or ("" if already_sent else result[:2000])
+            tools = outreach_tools
             consume = getattr(tools, "consume_pending_artifacts", None)
             if callable(consume) and self.notify_media:
                 media_paths = consume()

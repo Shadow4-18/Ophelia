@@ -366,6 +366,17 @@ class AgentLoop:
                 prefix = f"[{m['channel']}] "
             messages.append({"role": m["role"], "content": prefix + content})
         if not seen_current_user_turn:
+            # If the caller stored this user turn before building (legacy order),
+            # history already ends with it — don't append a second copy.
+            last = history[-1] if history else None
+            if (
+                last
+                and last.get("role") == "user"
+                and (last.get("channel") or channel) == channel
+                and (last.get("content") or "") == user_text
+            ):
+                seen_current_user_turn = True
+        if not seen_current_user_turn:
             messages.append({"role": "user", "content": user_text})
         return messages
 
@@ -387,10 +398,11 @@ class AgentLoop:
         system_extra: str = "",
         is_owner: bool = True,
     ) -> str:
-        await self._store(channel, "user", user_text, is_owner=is_owner)
+        self.tools.begin_turn_artifacts()
         messages = await self._build_messages(
             channel, user_text, system_extra=system_extra, is_owner=is_owner
         )
+        await self._store(channel, "user", user_text, is_owner=is_owner)
         text = await self._complete(
             messages, store_channel=channel, role="chat", is_owner=is_owner
         )
@@ -535,11 +547,11 @@ class AgentLoop:
             "and finish it — don't restart from scratch. The tool results from your "
             "previous rounds are included below."
         )
-        await self.memory.append_message(
-            channel, "user", cont_prompt, metadata={"type": "autonomous_continuation"}
-        )
         messages = await self._build_messages(
             channel, cont_prompt, system_extra=system_extra, current_is_tick=True
+        )
+        await self.memory.append_message(
+            channel, "user", cont_prompt, metadata={"type": "autonomous_continuation"}
         )
         # Inject the stashed assistant/tool turns so the model continues.
         resumed_tail = [

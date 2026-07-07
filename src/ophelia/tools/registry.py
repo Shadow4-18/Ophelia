@@ -727,6 +727,7 @@ class ToolRegistry:
         self._mcp_ready = False
         # Per-turn reply callback (chat) and always-on proactive fallback (consciousness).
         self._message_sender: Callable[[str], Awaitable[None]] | None = None
+        self._proactive_messages_sent: int = 0
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
         # Per-turn media callback: sends a file (audio/video/image/doc) to the
         # current chat. Returns True on success. When unset (e.g. autonomous
@@ -791,6 +792,11 @@ class ToolRegistry:
     def begin_turn_artifacts(self) -> None:
         """Reset per-turn delivery tracking (pending should already be empty)."""
         self._delivered_artifacts.clear()
+        self._proactive_messages_sent = 0
+
+    def proactive_delivered_this_turn(self) -> bool:
+        """True if send_message already pushed to the owner this turn."""
+        return self._proactive_messages_sent > 0
 
     def is_artifact_delivered(self, path: Path) -> bool:
         try:
@@ -899,12 +905,15 @@ class ToolRegistry:
             return "No channel available to send to right now."
         if is_outreach_junk(text):
             return "Suppressed empty/status message — nothing sent."
+        using_proactive = self._message_sender is None
         sent = 0
         for chunk in split_messages(text):
             if is_outreach_junk(chunk):
                 continue
             await sender(chunk)
             sent += 1
+        if using_proactive:
+            self._proactive_messages_sent += sent
         if not sent:
             return "Suppressed empty/status message — nothing sent."
         return f"Sent {sent} message(s) to the user. Continue with your turn."
