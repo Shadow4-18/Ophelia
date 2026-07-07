@@ -74,9 +74,14 @@ class ChannelHub:
             )
 
     async def broadcast_proactive(self, text: str) -> None:
-        from ophelia.channels.message_split import split_messages
+        from ophelia.channels.proactive_filter import is_outreach_junk, proactive_chunks
 
-        chunks = split_messages(text)
+        if is_outreach_junk(text):
+            log.debug("hub.proactive_suppressed", reason="junk", preview=(text or "")[:80])
+            return
+        chunks = proactive_chunks(text)
+        if not chunks:
+            return
         for gw in self._gateways:
             if not gw.is_configured():
                 continue
@@ -167,6 +172,10 @@ class ChannelHub:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def mirror_inner_thought(self, text: str) -> None:
+        from ophelia.channels.proactive_filter import is_outreach_junk
+
+        if is_outreach_junk(text):
+            return
         for gw in self._gateways:
             mirror = getattr(gw, "mirror_inner_thought", None)
             if callable(mirror):

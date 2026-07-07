@@ -551,6 +551,11 @@ class ConsciousnessLoop:
             await self.signals.mark_action()
 
         if action in ("message", "act", "explore") and outward:
+            from ophelia.channels.proactive_filter import is_outreach_junk
+
+            if is_outreach_junk(outward):
+                log.debug("consciousness.outreach_suppressed", preview=outward[:80])
+                return
             allowed, reason = self.governor.allow_outreach()
             if self.life and self.life.should_minimize_outreach():
                 allowed, reason = False, "owner_asleep_or_work"

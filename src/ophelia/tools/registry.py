@@ -892,14 +892,21 @@ class ToolRegistry:
 
     async def _send_message(self, text: str) -> str:
         from ophelia.channels.message_split import split_messages
+        from ophelia.channels.proactive_filter import is_outreach_junk
 
         sender = self._message_sender or self.proactive_sender
         if not sender:
             return "No channel available to send to right now."
+        if is_outreach_junk(text):
+            return "Suppressed empty/status message — nothing sent."
         sent = 0
         for chunk in split_messages(text):
+            if is_outreach_junk(chunk):
+                continue
             await sender(chunk)
             sent += 1
+        if not sent:
+            return "Suppressed empty/status message — nothing sent."
         return f"Sent {sent} message(s) to the user. Continue with your turn."
 
     async def ensure_mcp(self) -> None:

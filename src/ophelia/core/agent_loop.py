@@ -451,7 +451,7 @@ class AgentLoop:
         return await self._complete(
             messages,
             store_channel=channel,
-            use_tools=allow_tools,
+            use_tools=False,
             role="consciousness",
         )
 

@@ -52,10 +52,14 @@ class InnerMonologue:
 
         if self.notify:
             preview = thought[:500]
-            try:
-                await self.notify(preview)
-            except Exception as e:
-                log.warning("inner.notify_failed", error=str(e))
+            if preview.strip():
+                from ophelia.channels.proactive_filter import is_outreach_junk
+
+                if not is_outreach_junk(preview):
+                    try:
+                        await self.notify(preview)
+                    except Exception as e:
+                        log.warning("inner.notify_failed", error=str(e))
 
     def tail(self, lines: int = 40) -> str:
         if not self.log_path.is_file():
