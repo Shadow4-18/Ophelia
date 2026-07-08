@@ -151,19 +151,22 @@ class DreamLoop:
         mood_shift = str(parsed.get("mood_shift") or "").strip()
         forget = str(parsed.get("memory_to_forget") or "").strip()
 
-        saved_lessons = 0
+        saved_lessons: list[str] = []
         if isinstance(lessons, list):
             for les in lessons:
                 if isinstance(les, str) and les.strip():
-                    await self.memory.add_lesson(les.strip(), context=f"dream:{dream[:200]}")
-                    saved_lessons += 1
+                    lesson = les.strip()
+                    await self.memory.add_lesson(lesson, context=f"dream:{dream[:200]}")
+                    saved_lessons.append(lesson)
 
         if dream and self.inner:
+            parts = [f"Dream: {dream}"]
+            if saved_lessons:
+                parts.append("Lessons:\n" + "\n".join(f"- {les}" for les in saved_lessons))
+            if mood_shift and mood_shift.lower() not in ("none", "n/a", ""):
+                parts.append(f"Mood shift: {mood_shift}")
             try:
-                await self.inner.write(
-                    f"Dream: {dream}\nLessons: {saved_lessons}. Mood shift: {mood_shift}.",
-                    kind="dream",
-                )
+                await self.inner.write("\n".join(parts), kind="dream")
             except Exception:
                 pass
         if dream:

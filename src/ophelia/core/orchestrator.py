@@ -481,7 +481,9 @@ class Orchestrator:
             return
         await self.hub.mirror_inner_thought(text)
         if self.settings.inner_mirror_telegram or self.signals.inner_mirror:
-            await self.hub.broadcast_proactive(text)
+            preview = text[:500]
+            if preview.strip():
+                await self.hub.broadcast_proactive(preview)
 
     async def _notify_inner_mirror(self, text: str) -> None:
         await self._notify_inner(text)
