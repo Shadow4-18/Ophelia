@@ -4,6 +4,7 @@ Continuous consciousness — drives, goals, vision loop, initiative limits.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -113,17 +114,23 @@ class ConsciousnessLoop:
         # sleep -> wake transition and surface a dream reference on wake.
         self._was_sleep_mode: bool | None = None
         self._pending_dream_ref: str | None = None
+        # Continuous mood drift loop — runs independently of the LLM tick so
+        # mood flows smoothly between ticks instead of jumping at tick time.
+        # Pure numerical drift, no LLM call, so it can run every few seconds.
+        self._drift_task: asyncio.Task | None = None
 
     async def run(self) -> None:
         self._running = True
         log.info("consciousness.started", interval_base=self.base_interval)
+        # Start the continuous drift loop alongside the main tick loop.
+        self._drift_task = asyncio.create_task(self._drift_loop())
 
         while self._running and not self.signals.terminate:
             wait = self.psyche.tick_interval_seconds(self.base_interval)
             if self.life is not None:
                 await self.life.refresh()
                 wait = int(wait * self.life.consciousness_interval_multiplier())
-            await _sleep(max(15, wait))
+            await _sleep(max(8, wait))
 
             if self.signals.terminate:
                 continue
@@ -135,7 +142,12 @@ class ConsciousnessLoop:
             self._pause_logged = False
             if self.signals.user_talking or self.signals.agent_thinking:
                 continue
-            if get_model_gate().is_busy():
+            # Concurrency: yield only to local providers (shared GPU) or to
+            # our own role (avoid re-entrancy). Cloud providers have per-role
+            # locks, so chat/vision/image can run alongside consciousness —
+            # this is what enables Neuro-style concurrent sub-minds.
+            gate = get_model_gate()
+            if gate.is_local_busy() or gate.is_role_busy("consciousness"):
                 continue
 
             # Tier B #10: detect sleep -> wake transition and pull a fresh dream
@@ -234,6 +246,29 @@ class ConsciousnessLoop:
                     reason=director_decision.reason[:80],
                 )
                 return
+
+        # Fast inner-tick mode: when nothing is pushing (low pressure, no due
+        # goal, no director demand), skip the expensive LLM call entirely and
+        # just let state drift. The continuous drift loop already nudges mood
+        # every few seconds; this avoids burning a model call on a tick where
+        # she has nothing to say and no urge to act. She stays "alive" in state
+        # without being forced to narrate every cycle.
+        if (
+            not must_consider_acting
+            and not due_goal
+            and (director_decision is None or director_decision.action == "skip")
+            and pressure < 0.15
+        ):
+            self.drives.tick_idle(idle_seconds, interval=60)
+            self.psyche.relax(60)
+            await self.memory.save_drives(self.drives)
+            await self.memory.save_psyche(self.psyche)
+            log.info(
+                "consciousness.fast_tick_skip",
+                pressure=pressure,
+                idle=int(idle_seconds),
+            )
+            return
 
         hint = ""
         if must_consider_acting:
@@ -608,8 +643,42 @@ class ConsciousnessLoop:
                 goal=goal_id or (due_goal.id if due_goal else None),
             )
 
+    async def _drift_loop(self) -> None:
+        """Continuous mood drift loop — runs every few seconds, no LLM call.
+
+        Decoupled from the main consciousness tick (which runs every ~90s and
+        may do an expensive LLM call). This loop just nudges mood toward
+        baseline with small organic noise, so mood flows continuously instead
+        of jumping in discrete chunks at tick time. Purely numerical, cheap,
+        and safe to run while the user is talking or the agent is thinking.
+        """
+        interval = 5.0
+        log.info("consciousness.drift_started", interval=interval)
+        while self._running and not self.signals.terminate:
+            try:
+                await _sleep(interval)
+                if self.signals.terminate:
+                    break
+                # Don't drift while paused — mood should hold its shape.
+                if self.signals.autonomy_paused:
+                    continue
+                self.psyche.drift(interval)
+                # Persist occasionally so a restart picks up recent mood, but
+                # not every 5s (would thrash the store). Every ~30s is enough.
+                if int(self.psyche.updated_at) % 30 < int(interval):
+                    try:
+                        await self.memory.save_psyche(self.psyche)
+                    except Exception as e:
+                        log.debug("consciousness.drift_save_error", error=str(e))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.debug("consciousness.drift_error", error=str(e))
+
     def stop(self) -> None:
         self._running = False
+        if self._drift_task is not None and not self._drift_task.done():
+            self._drift_task.cancel()
 
 
 def _parse_tick_json(raw: str) -> dict | None:

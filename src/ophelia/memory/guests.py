@@ -228,13 +228,22 @@ async def resolve_guest_target(
     return None
 
 
-def guests_context_block(roster: list[dict[str, Any]], *, owner_channel: str) -> str:
+def guests_context_block(
+    roster: list[dict[str, Any]],
+    *,
+    owner_channel: str,
+    activity: dict[str, list[dict]] | None = None,
+) -> str:
     """Format the roster for the owner's system prompt.
 
     The owner themselves is excluded from the list (they know who they are).
     Includes name + name_source + last activity so she has social context.
     The platform:user_id is shown so the agent can call send_message_to_guest
     without needing to look it up first.
+
+    If `activity` is provided (channel -> recent messages), includes a short
+    digest of what she's talked about with each guest recently — the bridge
+    that lets her say 'oh, Eri was telling me about X yesterday' to the owner.
     """
     others = [g for g in roster if g["channel"] != owner_channel]
     if not others:
@@ -246,12 +255,43 @@ def guests_context_block(roster: list[dict[str, Any]], *, owner_channel: str) ->
         "by name — use this tool for that. You can also reach out on your "
         "own when it feels right.)",
     ]
+    activity = activity or {}
     for g in others:
         name = g["name"]
         src = g["name_source"]
         last = _format_last_seen(g.get("last_ts"))
         lines.append(f"- {g['channel']} — \"{name}\" ({src}{last})")
+        msgs = activity.get(g["channel"])
+        if msgs:
+            digest = _activity_digest(msgs)
+            if digest:
+                lines.append(f"    recently with them: {digest}")
     return "\n".join(lines) + "\n"
+
+
+def _activity_digest(msgs: list[dict]) -> str:
+    """Compress a few recent guest messages into a one-line topic digest.
+
+    Keeps it short (the system prompt shouldn't be dominated by guest history)
+    but enough that she knows the gist — e.g. 'they asked about cats, you sent
+    a picture'. Skips very long messages and trims to ~120 chars total.
+    """
+    snippets: list[str] = []
+    for m in msgs[-4:]:
+        content = (m.get("content") or "").strip().replace("\n", " ")
+        if not content or len(content) > 200:
+            continue
+        role = m.get("role", "")
+        if role == "user":
+            snippets.append(f"they said: {content[:80]}")
+        elif role == "assistant":
+            snippets.append(f"you said: {content[:80]}")
+    if not snippets:
+        return ""
+    digest = "; ".join(snippets)
+    if len(digest) > 160:
+        digest = digest[:157] + "..."
+    return digest
 
 
 def _format_last_seen(ts: float | None) -> str:

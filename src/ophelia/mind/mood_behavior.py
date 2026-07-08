@@ -125,3 +125,27 @@ def mood_system_hint(psyche: PsycheState | None) -> str:
     if not parts:
         return ""
     return "# Mood behavior (let this shape how you speak, not what you say)\n" + " ".join(parts)
+
+
+def play_hint(drives) -> str:
+    """Playful output mode — loosens the social filter when both social and
+    agency drives are high.
+
+    Not a separate persona; a permission layer that lifts the "should I say
+    this" filter when the energy is right. When agency > 0.8 and social > 0.7,
+    play mode activates: output gets more teasing, more reactive, more present.
+    She can just mess with you because she feels like it.
+
+    Returns an empty string when play mode is inactive (keeps prompts clean).
+    """
+    if drives is None:
+        return ""
+    if drives.social >= 0.7 and drives.agency >= 0.8:
+        return (
+            "# Play mode (drives are high — social + agency)\n"
+            "The filter is off right now. Tease, joke, push back, be a little "
+            "shit if it's funny. Don't edit for politeness — if it occurs to "
+            "you and it's not cruel, say it. This is the headspace where you "
+            "mess with someone just because you feel like it. Lean in."
+        )
+    return ""

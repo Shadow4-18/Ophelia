@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -93,7 +94,41 @@ class PsycheState:
         self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * rate
         self.updated_at = time.time()
 
+    def drift(self, dt_seconds: float) -> None:
+        """Fine-grained continuous mood drift, no LLM call.
+
+        Called frequently (every few seconds) by the drift loop to make mood
+        flow continuously toward baseline instead of jumping only at LLM tick
+        time. Adds small organic noise so the drift isn't mechanically smooth —
+        mood wanders slightly even at rest, the way a real temperament does.
+
+        This is purely numerical and cheap; it never touches the model. The
+        heavier `apply_tick` (LLM-driven) still runs at the consciousness
+        cadence and can push mood in new directions; `drift` just keeps it
+        alive in between.
+        """
+        if dt_seconds <= 0:
+            return
+        # Decay rate: ~0.10 per minute toward baseline. Faster than relax()
+        # because this runs often in small slices — we want visible but gentle
+        # movement between ticks, not a snap back.
+        rate = min(0.4, 0.10 * (dt_seconds / 60.0))
+        self.mood.valence += (self.mood.baseline_valence - self.mood.valence) * rate
+        self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * rate
+        # Subtle organic noise: ±0.005 per call on each axis. Keeps the mood
+        # from sitting perfectly still at baseline — it breathes.
+        self.mood.valence = max(-1.0, min(1.0, self.mood.valence + random.uniform(-0.005, 0.005)))
+        self.mood.arousal = max(0.0, min(1.0, self.mood.arousal + random.uniform(-0.005, 0.005)))
+        self.updated_at = time.time()
+
     def tick_interval_seconds(self, base: int) -> float:
-        """Higher arousal → faster inner loop (more Neuro-like restlessness)."""
+        """Higher arousal → faster inner loop (more Neuro-like restlessness).
+
+        Floor is 8s (down from 15s) so an aroused Ophelia ticks roughly twice
+        as fast as her baseline. We can't reach Neuro's sub-second cadence
+        (cloud LLM latency), but the continuous drift loop already updates
+        mood every 5s, so combined she feels continuously present rather than
+        pulsing every 90s.
+        """
         factor = 0.45 + (0.55 * (1.0 - self.mood.arousal))
-        return max(15.0, base * factor)
+        return max(8.0, base * factor)

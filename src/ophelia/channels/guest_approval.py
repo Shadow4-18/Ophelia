@@ -138,6 +138,29 @@ def append_user_to_allowlist(
     return True
 
 
+def remove_user_from_allowlist(
+    settings, platform: str, user_id: int, env_path: Path | None = None
+) -> bool:
+    """Remove a user ID from the platform allowlist: update the live Settings
+    string AND persist it to ~/.ophelia/.env so it survives restarts.
+    Returns True if the list actually changed (user was present and removed)."""
+    info = _PLATFORM_FIELDS.get(platform)
+    if not info:
+        return False
+    field, env_key, aliases = info
+    current = getattr(settings, field, "") or ""
+    ids = [x.strip() for x in current.split(",") if x.strip()]
+    sid = str(user_id)
+    if sid not in ids:
+        return False
+    ids.remove(sid)
+    new_val = ",".join(ids)
+    setattr(settings, field, new_val)
+    _persist_env_var(env_key, new_val, aliases, env_path=env_path)
+    log.info("guest_approvals.removed_from_allowlist", platform=platform, user_id=user_id)
+    return True
+
+
 def _persist_env_var(
     key: str, value: str, aliases: tuple[str, ...], env_path: Path | None = None
 ) -> None:

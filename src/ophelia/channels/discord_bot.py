@@ -317,6 +317,21 @@ class DiscordGateway:
                 send_to_guest=gw._send_to_guest,
             )
 
+        @bot.command(name="revoke")
+        async def cmd_revoke(ctx, guest: str = "") -> None:
+            """Instantly block a guest: !revoke <guest>"""
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            if not guest:
+                await ctx.send("Usage: !revoke <guest>")
+                return
+            await gw.session.cmd_revoke(
+                [guest],
+                lambda t: ctx.send(t[:2000]),
+                guest_approvals=gw._guest_approvals,
+            )
+
         @bot.event
         async def on_message(message) -> None:
             if message.author.bot:

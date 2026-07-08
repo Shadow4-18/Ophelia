@@ -66,19 +66,23 @@ class AmbientCommentaryLoop:
         try:
             reply = await self.agent.run_turn(
                 channel,
-                f"[Ambient screen glance]\n{seen[:2000]}\n\n"
-                "If something is genuinely worth a brief aside to the owner, "
-                "say ONE short line (under 120 chars). If nothing interesting or "
-                "it would be annoying, reply exactly: SKIP",
+                f"You just glanced at your phone screen:\n{seen[:2000]}\n\n"
+                "If something catches your eye and you'd actually nudge a friend "
+                "about it, say one short line. Otherwise just let it go — no "
+                "need to narrate or acknowledge boring UI. Silence is fine.",
                 system_extra=(
                     self.life.to_context_block()
-                    + "\n\nDo NOT narrate boring UI. Only speak if you'd nudge a friend."
+                    + "\n\nDon't describe what's on screen. Only speak if it's "
+                    "the kind of thing you'd actually text someone about."
                 ),
             )
         except Exception as e:
             log.debug("ambient_commentary.turn_skip", error=str(e))
             return
         text = (reply or "").strip()
+        # Drop empty, SKIP-literal, or suspiciously long responses (the model
+        # sometimes ignores "silence is fine" and writes a paragraph). Short
+        # genuine asides pass through.
         if not text or text.upper() == "SKIP" or len(text) > 200:
             return
         allowed, reason = self.governor.allow_outreach()

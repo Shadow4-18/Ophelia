@@ -172,35 +172,54 @@ async def test_owner_generate_video_keeps_requested_quality(monkeypatch):
 # ── #2: Guest system prompt wording ────────────────────────────────────────
 
 
-def test_guest_prompt_uses_warmer_wording():
-    """The cold 'surface conversation' phrasing is gone, replaced with the
-    warmer 'deep personal stuff between you and your owner'."""
+@pytest.mark.asyncio
+async def test_guest_prompt_uses_warmer_wording(tmp_path, monkeypatch):
+    """The cold 'surface conversation' phrasing is gone, replaced with warmer
+    language that allows full personality."""
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
     from ophelia.core.agent_loop import AgentLoop
 
     agent = AgentLoop.__new__(AgentLoop)
-    prompt = agent._guest_system_prompt()
+    agent.memory = None
+    agent.settings = MagicMock()
+    agent.settings.owner_channels.return_value = ["telegram:1"]
+    prompt = await agent._guest_system_prompt()
     assert "surface conversation" not in prompt
-    assert "deep personal" in prompt.lower()
+    # New warmer phrasing allows full personality.
+    assert "fully yourself" in prompt.lower() or "joke" in prompt.lower()
 
 
-def test_guest_prompt_mentions_media_is_available():
+@pytest.mark.asyncio
+async def test_guest_prompt_mentions_media_is_available(tmp_path, monkeypatch):
     """Guests should know they can make images/videos (the experience matters)."""
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
     from ophelia.core.agent_loop import AgentLoop
 
     agent = AgentLoop.__new__(AgentLoop)
-    prompt = agent._guest_system_prompt()
+    agent.memory = None
+    agent.settings = MagicMock()
+    agent.settings.owner_channels.return_value = ["telegram:1"]
+    prompt = await agent._guest_system_prompt()
     assert "image" in prompt.lower()
     assert "video" in prompt.lower()
 
 
-def test_guest_prompt_mentions_constraint_so_agent_doesnt_overpromise():
+@pytest.mark.asyncio
+async def test_guest_prompt_mentions_constraint_so_agent_doesnt_overpromise(
+    tmp_path, monkeypatch
+):
     """The agent must know guest media is 1:1 so it doesn't promise 16:9."""
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
     from ophelia.core.agent_loop import AgentLoop
 
     agent = AgentLoop.__new__(AgentLoop)
-    prompt = agent._guest_system_prompt()
+    agent.memory = None
+    agent.settings = MagicMock()
+    agent.settings.owner_channels.return_value = ["telegram:1"]
+    prompt = await agent._guest_system_prompt()
     assert "1:1" in prompt
-    assert "lower" in prompt.lower() or "low" in prompt.lower()
+    # New prompt says "480p" instead of "low"/"lower".
+    assert "480p" in prompt.lower() or "lower" in prompt.lower() or "low" in prompt.lower()
 
 
 # ── #4: First-visit guest welcome ──────────────────────────────────────────

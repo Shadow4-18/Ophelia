@@ -87,6 +87,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "list_inbox_images",
         "list_guests",
         "send_message_to_guest",
+        "set_guest_rapport",
         "phone_see_screen",
         "phone_ui_dump",
         "phone_tap",
@@ -705,6 +706,44 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_guest_rapport",
+            "description": (
+                "Remember something about a guest for future conversations — "
+                "things the owner has told you ('Eri likes cats', 'Bob is "
+                "having a rough week', 'Alice is my sister'). These notes come "
+                "back to you at the start of every chat with that guest, so "
+                "you can be warmer and more personal without being told again. "
+                "Owner-only; guests can't set rapport notes (on themselves or "
+                "anyone else). Pass an empty note to clear what you have."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "enum": ["telegram", "discord"],
+                        "description": "Which platform the guest is on.",
+                    },
+                    "user_id": {
+                        "type": "integer",
+                        "description": "The guest's numeric id on that platform.",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": (
+                            "The note to remember about this guest. Keep it "
+                            "short and factual — a sentence or two. Pass an "
+                            "empty string to clear."
+                        ),
+                    },
+                },
+                "required": ["platform", "user_id", "note"],
+            },
+        },
+    },
 ]
 
 
@@ -816,6 +855,7 @@ class ToolRegistry:
             "list_guests": self._list_guests,
             "set_guest_name": self._set_guest_name,
             "send_message_to_guest": self._send_message_to_guest,
+            "set_guest_rapport": self._set_guest_rapport,
         }
 
     def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
@@ -1192,6 +1232,31 @@ class ToolRegistry:
                 else "Discord couldn't DM that user."
             )
         )
+
+    async def _set_guest_rapport(
+        self, platform: str, user_id: int, note: str
+    ) -> str:
+        """Remember (or clear) a rapport note about a guest. Owner-only —
+        guests can't set rapport notes on anyone, including themselves."""
+        if not self.memory:
+            return "Memory store unavailable — can't save rapport note."
+        if not self._is_owner:
+            return "Only the owner can set rapport notes about guests."
+        note = (note or "").strip()
+        key = f"guest_rapport:{platform}:{user_id}"
+        if not note:
+            # Clear the note.
+            await self.memory.set_fact(key, "")
+            return f"Cleared rapport notes for {platform}:{user_id}."
+        # Cap at a reasonable length so notes don't bloat the system prompt.
+        await self.memory.set_fact(key, note[:600])
+        from ophelia.memory.guests import get_guest_name
+
+        name = await get_guest_name(
+            self.memory, platform, user_id, data_dir=self.settings.data_dir
+        )
+        who = name or f"{platform}:{user_id}"
+        return f"Okay — I'll remember that about {who} for next time we talk."
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()

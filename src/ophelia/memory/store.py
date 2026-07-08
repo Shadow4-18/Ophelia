@@ -460,6 +460,44 @@ class MemoryStore:
             for row in reversed(rows)
         ]
 
+    async def recent_guest_activity(
+        self, channels: list[str], per_channel: int = 4
+    ) -> dict[str, list[dict]]:
+        """Recent messages from each guest channel, for the owner's activity digest.
+
+        Returns {channel: [{role, content, created_at}, ...]} for each channel
+        that has any messages. This is the bridge that lets the owner's Ophelia
+        know what she's been talking about with each guest — without exposing
+        guest content to guests themselves.
+        """
+        if not channels:
+            return {}
+        out: dict[str, list[dict]] = {}
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            for channel in channels:
+                cursor = await db.execute(
+                    """
+                    SELECT role, content, created_at
+                    FROM guest_messages
+                    WHERE channel = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (channel, per_channel),
+                )
+                rows = await cursor.fetchall()
+                if rows:
+                    out[channel] = [
+                        {
+                            "role": row["role"],
+                            "content": row["content"],
+                            "created_at": row["created_at"],
+                        }
+                        for row in reversed(rows)
+                    ]
+        return out
+
     async def record_humor_outbound(self, text: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

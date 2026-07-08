@@ -464,6 +464,16 @@ class TelegramGateway:
             send_to_guest=self._send_to_guest,
         )
 
+    async def cmd_revoke(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Instantly revoke a guest's access."""
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        await self.session.cmd_revoke(
+            list(context.args or []),
+            lambda t: self._reply_text(update, t),
+            guest_approvals=self._guest_approvals,
+        )
+
     async def _send_to_guest(self, platform: str, user_id: int, message: str) -> bool:
         """Send a DM to a specific user on the given platform. Returns True on
         success. Only Telegram is supported here (Discord has its own)."""
@@ -1040,6 +1050,7 @@ class TelegramGateway:
         app.add_handler(CommandHandler("game", self.cmd_game))
         app.add_handler(CommandHandler("tell", self.cmd_tell))
         app.add_handler(CommandHandler("suggest", self.cmd_suggest))
+        app.add_handler(CommandHandler("revoke", self.cmd_revoke))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
@@ -1094,6 +1105,7 @@ class TelegramGateway:
                     BotCommand("models", "per-role provider/model routing"),
                     BotCommand("tell", "relay an exact message to a guest"),
                     BotCommand("suggest", "nudge her to reach out to a guest"),
+                    BotCommand("revoke", "instantly block a guest"),
                     BotCommand("help", "list commands"),
                 ]
             )

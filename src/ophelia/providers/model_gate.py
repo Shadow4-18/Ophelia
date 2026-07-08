@@ -48,6 +48,25 @@ class ModelGate:
             return True
         return any(lock.locked() for lock in self._role_locks.values())
 
+    def is_local_busy(self) -> bool:
+        """True only when a local provider (ollama, shared GPU) is active.
+
+        Cloud providers (xai, openai, compat) have per-role locks and can run
+        concurrently — chat, consciousness, vision, image, video can overlap.
+        Consciousness should yield to local-busy (shared GPU serialization)
+        but NOT to cloud-busy (per-role concurrency is safe and desired).
+        """
+        return self._local_lock.locked()
+
+    def is_role_busy(self, role: str) -> bool:
+        """True when a specific role's lock is held (re-entrancy guard).
+
+        Use this instead of is_busy() when a loop only needs to avoid
+        overlapping with its OWN role, not with every other concurrent role.
+        """
+        lock = self._role_locks.get(role)
+        return lock is not None and lock.locked()
+
     def active_label(self) -> str | None:
         if self._local_active:
             return self._local_active

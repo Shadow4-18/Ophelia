@@ -500,6 +500,7 @@ class ChannelSession:
             "/continue — resume an unfinished tool chain\n"
             "/tell <guest> <message> — relay an exact message to a guest\n"
             "/suggest <guest> <topic> — nudge her to reach out to a guest in her own words\n"
+            "/revoke <guest> — instantly block a guest from messaging you\n"
             "/help — this list"
         )
 
@@ -625,3 +626,45 @@ class ChannelSession:
                 )
                 + f" Draft was:\n\n{outbound}"
             )
+
+    async def cmd_revoke(
+        self, args: list[str], reply: ReplyFn, *, guest_approvals
+    ) -> None:
+        """Instantly revoke a guest's access: remove from allowlist + mark denied.
+
+        The owner's kill switch — no need to edit .env and restart. The guest
+        is immediately locked out on their next message. `guest_approvals` is
+        the GuestApprovals instance from the gateway.
+        """
+        from ophelia.channels.guest_approval import remove_user_from_allowlist
+        from ophelia.memory.guests import resolve_guest_target
+
+        if not args:
+            await reply("Usage: /revoke <guest>")
+            return
+        target_query = args[0].strip()
+        resolved = await resolve_guest_target(
+            self.agent.settings, self.memory, target_query
+        )
+        if not resolved:
+            # Even if they're not currently in the allowlist (already revoked?),
+            # allow revoking by raw channel form so the owner can be sure.
+            if ":" in target_query:
+                platform, _, id_s = target_query.partition(":")
+                if id_s.isdigit():
+                    resolved = (platform.lower(), int(id_s))
+            if not resolved:
+                await reply(
+                    f"Couldn't resolve '{target_query}'. Use a channel like "
+                    "'telegram:111', a numeric id, or the guest's name."
+                )
+                return
+        platform, user_id = resolved
+        # Don't let the owner revoke themselves.
+        if self.agent.settings.is_owner_channel(f"{platform}:{user_id}"):
+            await reply("That's you — can't revoke the owner.")
+            return
+        removed = remove_user_from_allowlist(self.agent.settings, platform, user_id)
+        guest_approvals.set_status(platform, user_id, "denied")
+        action = "removed from allowlist and blocked" if removed else "blocked (wasn't in allowlist)"
+        await reply(f"{platform}:{user_id} — {action}. They can't message you anymore.")
