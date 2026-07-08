@@ -104,6 +104,47 @@ class ChannelSession:
             self._chat_logger = ChatLogger.from_settings(self.agent.settings)
         return self._chat_logger
 
+    async def log_outgoing(
+        self,
+        *,
+        channel: str,
+        text: str = "",
+        media_path: Path | str | None = None,
+        media_kind: str | None = None,
+        role: str = "assistant",
+    ) -> None:
+        """Log an outbound message that DIDN'T come from a handle_chat reply.
+
+        Proactive messages (consciousness ticks), guest DMs sent via
+        send_message_to_guest / /tell, spontaneous voice notes, and
+        proactive media all go through the gateway's send_proactive /
+        send_to_user paths — which bypass handle_chat entirely. Without
+        this, those sends are invisible to the chat log (the logging
+        server), so the owner can't see what Ophelia said on her own
+        initiative or to guests. This closes that gap.
+        """
+        logger = self._logger()
+        if not logger:
+            return
+        settings = self.agent.settings
+        is_owner = settings.is_owner_channel(channel)
+        sender_id = _sender_id(channel)
+        entry = {
+            "channel": channel,
+            "direction": "out",
+            "text": text or None,
+            "media_path": media_path,
+            "media_kind": media_kind,
+            "sender_id": sender_id,
+            "is_owner": is_owner,
+            "role": role,
+            "log_context": None,
+        }
+        await logger.log(
+            **{k: v for k, v in entry.items() if k != "log_context"}
+        )
+        await self._emit_log_hook(entry)
+
     def voice_enabled(self, channel: str, default: bool = False) -> bool:
         return self._voice_reply.get(channel, default)
 

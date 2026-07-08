@@ -529,6 +529,10 @@ class DiscordGateway:
             try:
                 user = await self._bot.fetch_user(uid)
                 await user.send(text[:2000])
+                await self.session.log_outgoing(
+                    channel=f"discord:{uid}",
+                    text=text,
+                )
             except Exception as e:
                 log.warning("discord.notify_failed", user=uid, error=str(e))
 
@@ -552,6 +556,10 @@ class DiscordGateway:
                 user=user_id,
                 chars=len(message),
                 preview=message[:80],
+            )
+            await self.session.log_outgoing(
+                channel=f"discord:{user_id}",
+                text=message,
             )
             return True
         except Exception as e:
@@ -580,6 +588,13 @@ class DiscordGateway:
                 user = await self._bot.fetch_user(uid)
                 await user.send(content=cap, file=discord.File(str(p)))
                 log.info("discord.notify_media_sent", user=uid, path=str(p))
+                await self.session.log_outgoing(
+                    channel=f"discord:{uid}",
+                    text=cap or f"[media sent: {p.name}]",
+                    media_path=p,
+                    media_kind="file",
+                    role="media",
+                )
             except Exception as e:
                 log.warning("discord.notify_media_failed", user=uid, error=str(e))
 
@@ -648,5 +663,12 @@ class DiscordGateway:
                 user = await self._bot.fetch_user(uid)
                 await user.send(file=discord.File(str(audio_path)))
                 log.info("discord.notify_voice_sent", user=uid, path=str(audio_path))
+                await self.session.log_outgoing(
+                    channel=f"discord:{uid}",
+                    text=f"[voice note: {audio_path.name}]",
+                    media_path=audio_path,
+                    media_kind="audio",
+                    role="media",
+                )
             except Exception as e:
                 log.warning("discord.notify_voice_failed", user=uid, error=str(e))

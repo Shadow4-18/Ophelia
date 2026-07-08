@@ -501,6 +501,10 @@ class TelegramGateway:
                 chars=len(message),
                 preview=message[:80],
             )
+            await self.session.log_outgoing(
+                channel=f"telegram:{user_id}",
+                text=message,
+            )
             return True
         except Exception as e:
             err = str(e)
@@ -1211,6 +1215,10 @@ class TelegramGateway:
             try:
                 await self._app.bot.send_message(chat_id=uid, text=text[:4000])
                 log.info("telegram.notify_sent", user=uid, chars=len(text))
+                await self.session.log_outgoing(
+                    channel=f"telegram:{uid}",
+                    text=text,
+                )
             except Exception as e:
                 err = str(e)
                 hint = ""
@@ -1273,6 +1281,13 @@ class TelegramGateway:
                             chat_id=uid, audio=InputFile(audio)
                         )
                 log.info("telegram.proactive_voice_sent", user=uid)
+                await self.session.log_outgoing(
+                    channel=f"telegram:{uid}",
+                    text=f"[voice note: {audio_path.name}]",
+                    media_path=audio_path,
+                    media_kind="audio",
+                    role="media",
+                )
             except Exception as e:
                 log.warning("telegram.proactive_voice_failed", user=uid, error=str(e))
 
@@ -1306,5 +1321,12 @@ class TelegramGateway:
                             chat_id=uid, audio=InputFile(f), caption=cap or None
                         )
                 log.info("telegram.notify_media_sent", user=uid, kind=kind, path=str(p))
+                await self.session.log_outgoing(
+                    channel=f"telegram:{uid}",
+                    text=cap or f"[media sent: {p.name}]",
+                    media_path=p,
+                    media_kind=kind,
+                    role="media",
+                )
             except Exception as e:
                 log.warning("telegram.notify_media_failed", user=uid, error=str(e))
