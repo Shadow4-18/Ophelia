@@ -305,7 +305,10 @@ class AgentLoop:
                 guest_channels, per_channel=4
             )
             return guests_context_block(
-                roster, owner_channel=channel, activity=activity
+                roster,
+                owner_channel=channel,
+                activity=activity,
+                owner_channels=self.settings.owner_channels(),
             )
         except Exception as e:
             log.warning("agent.guests_context_failed", error=str(e))

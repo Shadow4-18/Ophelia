@@ -735,6 +735,7 @@ async def test_send_message_to_guest_calls_guest_sender(tmp_path):
 
     settings = MagicMock()
     settings.data_dir = tmp_path
+    settings.is_owner_channel.return_value = False  # telegram:222 is a guest, not the owner
     store = MemoryStore(tmp_path / "test.db")
     await store.init()
 
@@ -764,6 +765,7 @@ async def test_send_message_to_guest_reports_failure(tmp_path):
 
     settings = MagicMock()
     settings.data_dir = tmp_path
+    settings.is_owner_channel.return_value = False  # telegram:222 is a guest, not the owner
     store = MemoryStore(tmp_path / "test.db")
     await store.init()
 
@@ -790,6 +792,7 @@ async def test_send_message_to_guest_no_sender_wired(tmp_path):
 
     settings = MagicMock()
     settings.data_dir = tmp_path
+    settings.is_owner_channel.return_value = False  # telegram:222 is a guest
     store = MemoryStore(tmp_path / "test.db")
     await store.init()
 

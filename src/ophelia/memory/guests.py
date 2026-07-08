@@ -233,6 +233,7 @@ def guests_context_block(
     *,
     owner_channel: str,
     activity: dict[str, list[dict]] | None = None,
+    owner_channels: set[str] | None = None,
 ) -> str:
     """Format the roster for the owner's system prompt.
 
@@ -244,16 +245,26 @@ def guests_context_block(
     If `activity` is provided (channel -> recent messages), includes a short
     digest of what she's talked about with each guest recently — the bridge
     that lets her say 'oh, Eri was telling me about X yesterday' to the owner.
+
+    `owner_channels` (if given) is the full set of owner channels across all
+    platforms — used to exclude the owner's entries on every platform, not
+    just the one they're messaging from. Without this, an owner who is first
+    on both Telegram and Discord would see their own Discord entry listed as
+    a 'guest' and might accidentally send a message to themselves.
     """
-    others = [g for g in roster if g["channel"] != owner_channel]
+    exclude = {owner_channel.lower()} if owner_channel else set()
+    if owner_channels:
+        exclude |= {c.lower() for c in owner_channels}
+    others = [g for g in roster if g["channel"].lower() not in exclude]
     if not others:
         return ""
     lines = [
         "# Guests you know",
         "(To message a guest, call send_message_to_guest with their platform "
-        "and user_id. The owner may ask you to 'tell' or 'message' someone "
-        "by name — use this tool for that. You can also reach out on your "
-        "own when it feels right.)",
+        "and user_id — the exact platform:user_id shown below. The owner may "
+        "ask you to 'tell' or 'message' someone by name; match the name to "
+        "the entry below and send to THAT platform:user_id, never to the "
+        "owner's own id. You can also reach out on your own when it feels right.)",
     ]
     activity = activity or {}
     for g in others:

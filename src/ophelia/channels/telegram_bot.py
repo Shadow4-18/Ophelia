@@ -352,6 +352,12 @@ class TelegramGateway:
                         await self._app.bot.send_audio(chat_id=chat_id, audio=InputFile(f), caption=cap)
                     else:
                         await self._app.bot.send_document(chat_id=chat_id, document=InputFile(f), caption=cap)
+                log.info(
+                    "telegram.replay_media_sent",
+                    chat_id=chat_id,
+                    kind=kind or "file",
+                    path=str(path),
+                )
                 return True
             except Exception as e:
                 log.warning("telegram.replay_media_failed", error=str(e))
@@ -489,6 +495,12 @@ class TelegramGateway:
             return False
         try:
             await self._app.bot.send_message(chat_id=user_id, text=message[:4000])
+            log.info(
+                "telegram.dm_sent",
+                user=user_id,
+                chars=len(message),
+                preview=message[:80],
+            )
             return True
         except Exception as e:
             err = str(e)
@@ -981,6 +993,12 @@ class TelegramGateway:
                         await context.bot.send_audio(chat_id=chat.id, audio=InputFile(f), caption=cap)
                     else:
                         await context.bot.send_document(chat_id=chat.id, document=InputFile(f), caption=cap)
+                log.info(
+                    "telegram.chat_media_sent",
+                    chat_id=chat.id,
+                    kind=kind or "file",
+                    path=str(path),
+                )
                 return True
             except Exception as e:
                 log.warning("telegram.continue_media_failed", error=str(e))

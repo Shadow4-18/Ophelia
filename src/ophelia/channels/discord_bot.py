@@ -492,6 +492,11 @@ class DiscordGateway:
                 content=caption[:2000] if caption else None,
                 file=discord.File(str(p)),
             )
+            log.info(
+                "discord.dm_media_sent",
+                user=getattr(user, "id", None),
+                path=str(p),
+            )
             return True
         except Exception as e:
             log.warning("discord.send_file_to_user_failed", path=str(path), error=str(e))
@@ -542,6 +547,12 @@ class DiscordGateway:
         try:
             user = await self._bot.fetch_user(user_id)
             await user.send(message[:2000])
+            log.info(
+                "discord.dm_sent",
+                user=user_id,
+                chars=len(message),
+                preview=message[:80],
+            )
             return True
         except Exception as e:
             log.warning("discord.send_to_user_failed", user=user_id, error=str(e))

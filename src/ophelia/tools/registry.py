@@ -684,7 +684,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "Friday', 'message your friend about the game'. Also use "
                 "it on your own initiative when you want to reach out to a "
                 "guest you know. The message is sent as you (Ophelia), in "
-                "your voice. Owner-only."
+                "your voice. Owner-only.\n\n"
+                "IMPORTANT: Get the exact platform and user_id from the "
+                "'Guests you know' list in your context — never guess and "
+                "never use the owner's own id (you can't DM the owner, "
+                "they're already in the conversation with you). If you "
+                "don't see the person in the guest list, tell the owner "
+                "you don't have that guest's contact instead of guessing."
             ),
             "parameters": {
                 "type": "object",
@@ -1229,11 +1235,35 @@ class ToolRegistry:
         message = (message or "").strip()
         if not message:
             return "Message can't be empty."
+        # Refuse to send a DM to the owner — this is almost always a mistake
+        # (the model picked the owner's own id from the roster instead of the
+        # intended guest). The owner is already in the conversation; they don't
+        # need a DM to themselves. Surface the error so she can correct herself.
+        target_channel = f"{platform}:{user_id}"
+        if self.settings.is_owner_channel(target_channel):
+            log.warning(
+                "tool.send_message_to_guest_owner_blocked",
+                platform=platform,
+                user=user_id,
+            )
+            return (
+                f"{target_channel} is the owner — that's who you're talking to "
+                f"right now. You almost certainly meant to send to a guest. "
+                f"Check the 'Guests you know' list in your context for the right "
+                f"platform:user_id and try again."
+            )
         if not self.guest_sender:
             return (
                 "Can't send a DM right now — no cross-platform sender wired. "
                 "This usually means the hub isn't running."
             )
+        log.info(
+            "tool.send_message_to_guest",
+            platform=platform,
+            user=user_id,
+            chars=len(message),
+            preview=message[:80],
+        )
         try:
             ok = await self.guest_sender(platform, user_id, message[:4000])
         except Exception as e:
@@ -1250,7 +1280,13 @@ class ToolRegistry:
                     data_dir=self.settings.data_dir,
                 )
             who = name or f"{platform}:{user_id}"
-            return f"Sent to {who}."
+            log.info(
+                "tool.send_message_to_guest_sent",
+                platform=platform,
+                user=user_id,
+                who=who,
+            )
+            return f"Sent to {who} ({platform}:{user_id})."
         return (
             f"Failed to send to {platform}:{user_id}. "
             + (
