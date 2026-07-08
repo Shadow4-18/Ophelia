@@ -88,6 +88,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "list_guests",
         "send_message_to_guest",
         "set_guest_rapport",
+        "whats_changed",
         "phone_see_screen",
         "phone_ui_dump",
         "phone_tap",
@@ -744,6 +745,32 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "whats_changed",
+            "description": (
+                "Check what has been recently changed or added to your own "
+                "codebase. Returns recent git commits (hash, message, date) "
+                "so you can see what updates the owner has pulled. Use this "
+                "when you want to understand what's new in your framework, "
+                "why a tool behaves differently, or what the owner means by "
+                "'the updates'. Owner-only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30,
+                        "description": "How many recent commits to show (default 10).",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -856,6 +883,7 @@ class ToolRegistry:
             "set_guest_name": self._set_guest_name,
             "send_message_to_guest": self._send_message_to_guest,
             "set_guest_rapport": self._set_guest_rapport,
+            "whats_changed": self._whats_changed,
         }
 
     def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
@@ -1257,6 +1285,61 @@ class ToolRegistry:
         )
         who = name or f"{platform}:{user_id}"
         return f"Okay — I'll remember that about {who} for next time we talk."
+
+    async def _whats_changed(self, count: int = 10) -> str:
+        """Show recent git commits so she can see what's been updated in her
+        own framework. Finds the repo root from the package location, so it
+        works regardless of cwd — no need for phone_shell or run_code."""
+        import asyncio
+        from pathlib import Path
+
+        try:
+            import ophelia
+
+            # src/ophelia/__init__.py -> repo root is two levels up.
+            repo = Path(ophelia.__file__).resolve().parent.parent.parent
+        except Exception:
+            return "Couldn't locate the Ophelia package to find the repo root."
+
+        if not (repo / ".git").is_dir():
+            return f"This isn't a git checkout (no .git at {repo}). Can't show commits."
+
+        try:
+            n = max(1, min(30, int(count)))
+            proc = await asyncio.create_subprocess_exec(
+                "git", "log", f"-{n}", "--format=%h|%ad|%s", "--date=short",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except TimeoutError:
+            return "git log timed out."
+        except Exception as e:
+            return f"git log failed: {e}"
+
+        if proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip()
+            return f"git log failed (exit {proc.returncode}): {err}"
+
+        lines = stdout.decode(errors="replace").strip().splitlines()
+        if not lines:
+            return "No commits found."
+
+        out = ["# Recent changes to your framework"]
+        for line in lines:
+            parts = line.split("|", 2)
+            if len(parts) == 3:
+                h, date, msg = parts
+                out.append(f"- `{h}` ({date}) {msg}")
+            else:
+                out.append(f"- {line}")
+        out.append(
+            "\n(These are commits the owner has pulled. If something behaves "
+            "differently, the answer is probably here. Ask the owner if you "
+            "want more detail on any of them.)"
+        )
+        return "\n".join(out)
 
     async def _sqlite_list_databases(self) -> str:
         dbs = list_ophelia_databases()
