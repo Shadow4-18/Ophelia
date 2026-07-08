@@ -182,19 +182,19 @@ def _load_approvals(path: Path) -> dict[str, dict[str, Any]]:
     return {}
 
 
-def resolve_guest_target(
+async def resolve_guest_target(
     settings: Settings, memory: MemoryStore, query: str
 ) -> tuple[str, int] | None:
     """Resolve a free-form guest reference to (platform, user_id).
 
-    Tries: exact 'platform:id' match, bare numeric id (on enabled platforms),
-    or name match (case-insensitive) against the resolved roster. Returns None
-    if nothing matches unambiguously.
+    Tries in order:
+    1. Exact 'platform:id' match (e.g. 'telegram:111').
+    2. Bare numeric id — binds to the first enabled platform that has it.
+    3. Name match against the full roster: owner-set names (memory store),
+       self-set names (memory store), and approval display names
+       (pending_guests.json). Case-insensitive, must be unambiguous.
 
-    This is a SYNC helper that does a best-effort match against approval
-    display names and channel strings without hitting the DB — used for the
-    /tell and /suggest commands where we want fast feedback. Name resolution
-    via the memory store is done separately by the agent via tools.
+    Returns None if nothing matches unambiguously.
     """
     q = query.strip()
     if not q:
@@ -214,20 +214,15 @@ def resolve_guest_target(
         if settings.discord_enabled and uid in (settings._allowed_discord_users_ordered()):
             return "discord", uid
         return None
-    # Name match against approval display names (sync, no DB)
-    approvals = _load_approvals(settings.data_dir / "pending_guests.json")
+    # Name match — build the full roster (with resolved names from memory)
+    # and match case-insensitively. Must be unambiguous.
+    roster = await list_guests(settings, memory)
     q_lower = q.lower()
     matches: list[tuple[str, int]] = []
-    for key, rec in approvals.items():
-        if ":" not in key:
-            continue
-        platform, _, id_s = key.partition(":")
-        display = (rec.get("display_name") or "").lower()
-        if display and display == q_lower:
-            try:
-                matches.append((platform.lower(), int(id_s)))
-            except ValueError:
-                continue
+    for g in roster:
+        name = (g.get("name") or "").lower()
+        if name and name == q_lower:
+            matches.append((g["platform"], g["user_id"]))
     if len(matches) == 1:
         return matches[0]
     return None
@@ -238,11 +233,19 @@ def guests_context_block(roster: list[dict[str, Any]], *, owner_channel: str) ->
 
     The owner themselves is excluded from the list (they know who they are).
     Includes name + name_source + last activity so she has social context.
+    The platform:user_id is shown so the agent can call send_message_to_guest
+    without needing to look it up first.
     """
     others = [g for g in roster if g["channel"] != owner_channel]
     if not others:
         return ""
-    lines = ["# Guests you know"]
+    lines = [
+        "# Guests you know",
+        "(To message a guest, call send_message_to_guest with their platform "
+        "and user_id. The owner may ask you to 'tell' or 'message' someone "
+        "by name — use this tool for that. You can also reach out on your "
+        "own when it feels right.)",
+    ]
     for g in others:
         name = g["name"]
         src = g["name_source"]

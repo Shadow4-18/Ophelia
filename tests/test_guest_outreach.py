@@ -225,8 +225,10 @@ async def test_list_guests_returns_roster_with_names(monkeypatch, tmp_path):
 # ── #4: resolve_guest_target ─────────────────────────────────────────────
 
 
-def test_resolve_target_channel_form(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_resolve_target_channel_form(monkeypatch, tmp_path):
     from ophelia.memory.guests import resolve_guest_target
+    from ophelia.memory.store import MemoryStore
 
     settings = _settings_with(
         monkeypatch,
@@ -234,12 +236,16 @@ def test_resolve_target_channel_form(monkeypatch, tmp_path):
         TELEGRAM_BOT_TOKEN="t",
         TELEGRAM_ALLOWED_USER_IDS="111",
     )
-    resolved = resolve_guest_target(settings, MagicMock(), "telegram:111")
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    resolved = await resolve_guest_target(settings, store, "telegram:111")
     assert resolved == ("telegram", 111)
 
 
-def test_resolve_target_bare_numeric_id(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_resolve_target_bare_numeric_id(monkeypatch, tmp_path):
     from ophelia.memory.guests import resolve_guest_target
+    from ophelia.memory.store import MemoryStore
 
     settings = _settings_with(
         monkeypatch,
@@ -247,12 +253,58 @@ def test_resolve_target_bare_numeric_id(monkeypatch, tmp_path):
         TELEGRAM_BOT_TOKEN="t",
         TELEGRAM_ALLOWED_USER_IDS="111",
     )
-    resolved = resolve_guest_target(settings, MagicMock(), "111")
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    resolved = await resolve_guest_target(settings, store, "111")
     assert resolved == ("telegram", 111)
 
 
-def test_resolve_target_by_display_name(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_resolve_target_by_owner_set_name(monkeypatch, tmp_path):
+    """Name resolution must check the memory store for owner-set names —
+    not just pending_guests.json display names."""
+    from ophelia.memory.guests import resolve_guest_target, set_guest_name
+    from ophelia.memory.store import MemoryStore
+
+    settings = _settings_with(
+        monkeypatch,
+        tmp_path,
+        TELEGRAM_BOT_TOKEN="t",
+        TELEGRAM_ALLOWED_USER_IDS="111,222",
+    )
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    # Owner sets a name for guest 222
+    await set_guest_name(store, "telegram", 222, "Bob", by_owner=True)
+    resolved = await resolve_guest_target(settings, store, "Bob")
+    assert resolved == ("telegram", 222)
+
+
+@pytest.mark.asyncio
+async def test_resolve_target_by_self_set_name(monkeypatch, tmp_path):
+    """Name resolution must also find self-set names in the memory store."""
+    from ophelia.memory.guests import resolve_guest_target, set_guest_name
+    from ophelia.memory.store import MemoryStore
+
+    settings = _settings_with(
+        monkeypatch,
+        tmp_path,
+        TELEGRAM_BOT_TOKEN="t",
+        TELEGRAM_ALLOWED_USER_IDS="111,222",
+    )
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    await set_guest_name(store, "telegram", 222, "Alice", by_owner=False)
+    resolved = await resolve_guest_target(settings, store, "Alice")
+    assert resolved == ("telegram", 222)
+
+
+@pytest.mark.asyncio
+async def test_resolve_target_by_approval_display_name(monkeypatch, tmp_path):
+    """Name resolution falls back to approval display names when no
+    owner/self name is set."""
     from ophelia.memory.guests import resolve_guest_target
+    from ophelia.memory.store import MemoryStore
 
     settings = _settings_with(
         monkeypatch,
@@ -262,14 +314,18 @@ def test_resolve_target_by_display_name(monkeypatch, tmp_path):
     )
     _seed_approvals(
         tmp_path,
-        {"telegram:222": {"display_name": "Alice", "status": "approved"}},
+        {"telegram:222": {"display_name": "Carol", "status": "approved"}},
     )
-    resolved = resolve_guest_target(settings, MagicMock(), "Alice")
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    resolved = await resolve_guest_target(settings, store, "Carol")
     assert resolved == ("telegram", 222)
 
 
-def test_resolve_target_unknown_returns_none(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_resolve_target_unknown_returns_none(monkeypatch, tmp_path):
     from ophelia.memory.guests import resolve_guest_target
+    from ophelia.memory.store import MemoryStore
 
     settings = _settings_with(
         monkeypatch,
@@ -277,7 +333,9 @@ def test_resolve_target_unknown_returns_none(monkeypatch, tmp_path):
         TELEGRAM_BOT_TOKEN="t",
         TELEGRAM_ALLOWED_USER_IDS="111",
     )
-    assert resolve_guest_target(settings, MagicMock(), "nobody") is None
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+    assert await resolve_guest_target(settings, store, "nobody") is None
 
 
 # ── #5: guests_context_block ─────────────────────────────────────────────
@@ -345,6 +403,7 @@ async def test_tell_relays_exact_message(monkeypatch, tmp_path):
     session = ChannelSession.__new__(ChannelSession)
     session.agent = agent
     session.memory = store
+    session.hub = None
 
     sent: list[tuple] = []
 
@@ -381,6 +440,7 @@ async def test_tell_unknown_guest_errors(monkeypatch, tmp_path):
     session = ChannelSession.__new__(ChannelSession)
     session.agent = agent
     session.memory = store
+    session.hub = None
 
     sent: list[tuple] = []
 
@@ -413,6 +473,7 @@ async def test_tell_no_args_shows_usage(monkeypatch, tmp_path):
     session = ChannelSession.__new__(ChannelSession)
     session.agent = agent
     session.memory = store
+    session.hub = None
 
     async def _send(*a):
         return True
@@ -454,6 +515,7 @@ async def test_suggest_composes_and_ccs_owner(monkeypatch, tmp_path):
     session = ChannelSession.__new__(ChannelSession)
     session.agent = agent
     session.memory = store
+    session.hub = None
 
     sent: list[tuple] = []
 
@@ -498,6 +560,7 @@ async def test_suggest_empty_composition_errors(monkeypatch, tmp_path):
     session = ChannelSession.__new__(ChannelSession)
     session.agent = agent
     session.memory = store
+    session.hub = None
 
     async def _send(*a):
         return True
@@ -645,3 +708,186 @@ def test_set_guest_name_tool_parameters():
     params = tool["function"]["parameters"]["properties"]
     assert set(params.keys()) == {"platform", "user_id", "name"}
     assert tool["function"]["parameters"]["required"] == ["platform", "user_id", "name"]
+
+
+# ── #12: send_message_to_guest tool (natural-language messaging) ─────────
+
+
+def test_send_message_to_guest_tool_definition_exists():
+    from ophelia.tools.registry import TOOL_DEFINITIONS
+
+    names = [t["function"]["name"] for t in TOOL_DEFINITIONS]
+    assert "send_message_to_guest" in names
+
+
+def test_send_message_to_guest_denied_for_guests():
+    """send_message_to_guest is owner-only — guests can't message other guests."""
+    from ophelia.tools.registry import GUEST_DENIED_TOOLS
+
+    assert "send_message_to_guest" in GUEST_DENIED_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_guest_calls_guest_sender(tmp_path):
+    """The tool must call guest_sender(platform, user_id, message) and report success."""
+    from ophelia.memory.store import MemoryStore
+    from ophelia.tools.registry import ToolRegistry
+
+    settings = MagicMock()
+    settings.data_dir = tmp_path
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+
+    reg = ToolRegistry.__new__(ToolRegistry)
+    reg.settings = settings
+    reg.memory = store
+    reg._is_owner = True
+
+    sent: list[tuple] = []
+
+    async def _guest_sender(platform, uid, msg):
+        sent.append((platform, uid, msg))
+        return True
+
+    reg.guest_sender = _guest_sender
+
+    result = await reg._send_message_to_guest("telegram", 222, "hey Bob")
+    assert "Sent to" in result
+    assert sent == [("telegram", 222, "hey Bob")]
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_guest_reports_failure(tmp_path):
+    """When guest_sender returns False, the tool must report the failure clearly."""
+    from ophelia.memory.store import MemoryStore
+    from ophelia.tools.registry import ToolRegistry
+
+    settings = MagicMock()
+    settings.data_dir = tmp_path
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+
+    reg = ToolRegistry.__new__(ToolRegistry)
+    reg.settings = settings
+    reg.memory = store
+    reg._is_owner = True
+
+    async def _fail_sender(platform, uid, msg):
+        return False
+
+    reg.guest_sender = _fail_sender
+
+    result = await reg._send_message_to_guest("telegram", 222, "hey")
+    assert "Failed" in result
+    assert "/start" in result  # Telegram-specific hint
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_guest_no_sender_wired(tmp_path):
+    """When no guest_sender is wired (e.g. CLI mode), report gracefully."""
+    from ophelia.memory.store import MemoryStore
+    from ophelia.tools.registry import ToolRegistry
+
+    settings = MagicMock()
+    settings.data_dir = tmp_path
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+
+    reg = ToolRegistry.__new__(ToolRegistry)
+    reg.settings = settings
+    reg.memory = store
+    reg._is_owner = True
+    reg.guest_sender = None
+
+    result = await reg._send_message_to_guest("telegram", 222, "hey")
+    assert "no cross-platform sender" in result.lower()
+
+
+# ── #13: Cross-platform hub routing ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_hub_send_to_user_routes_to_correct_gateway():
+    """ChannelHub.send_to_user must find the gateway matching the platform
+    and delegate to its send_to_user method."""
+    from ophelia.channels.hub import ChannelHub
+
+    hub = ChannelHub.__new__(ChannelHub)
+
+    tg = MagicMock()
+    tg.platform = "telegram"
+    tg.is_configured = MagicMock(return_value=True)
+    tg.send_to_user = AsyncMock(return_value=True)
+
+    dc = MagicMock()
+    dc.platform = "discord"
+    dc.is_configured = MagicMock(return_value=True)
+    dc.send_to_user = AsyncMock(return_value=True)
+
+    hub._gateways = [tg, dc]
+
+    # Telegram target → telegram gateway
+    await hub.send_to_user("telegram", 111, "hi")
+    tg.send_to_user.assert_awaited_once_with(111, "hi")
+    dc.send_to_user.assert_not_awaited()
+
+    # Discord target → discord gateway
+    await hub.send_to_user("discord", 222, "hi")
+    dc.send_to_user.assert_awaited_once_with(222, "hi")
+
+
+@pytest.mark.asyncio
+async def test_hub_send_to_user_no_matching_gateway():
+    """Returns False when no gateway matches the requested platform."""
+    from ophelia.channels.hub import ChannelHub
+
+    hub = ChannelHub.__new__(ChannelHub)
+    tg = MagicMock()
+    tg.platform = "telegram"
+    tg.is_configured = MagicMock(return_value=True)
+    hub._gateways = [tg]
+
+    result = await hub.send_to_user("discord", 222, "hi")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_cmd_tell_uses_hub_for_cross_platform(monkeypatch, tmp_path):
+    """When the session has a hub, /tell must route through it so a Telegram
+    owner can message a Discord guest (and vice versa)."""
+    from ophelia.channels.session import ChannelSession
+    from ophelia.memory.store import MemoryStore
+
+    settings = _settings_with(
+        monkeypatch,
+        tmp_path,
+        TELEGRAM_BOT_TOKEN="t",
+        TELEGRAM_ALLOWED_USER_IDS="111",
+        DISCORD_BOT_TOKEN="d",
+        DISCORD_ALLOWED_USER_IDS="222",
+    )
+    _seed_approvals(
+        tmp_path,
+        {"discord:222": {"display_name": "Bob", "status": "approved"}},
+    )
+    store = MemoryStore(tmp_path / "test.db")
+    await store.init()
+
+    agent = MagicMock()
+    agent.settings = settings
+    session = ChannelSession.__new__(ChannelSession)
+    session.agent = agent
+    session.memory = store
+    session.hub = None
+    session.hub = MagicMock()
+    session.hub.send_to_user = AsyncMock(return_value=True)
+
+    replies: list[str] = []
+
+    async def _reply(t):
+        replies.append(t)
+
+    # Owner on Telegram messages a Discord guest by display name
+    await session.cmd_tell(["Bob", "hi from TG"], _reply, send_to_guest=AsyncMock(return_value=False))
+    session.hub.send_to_user.assert_awaited_once_with("discord", 222, "hi from TG")
+    assert any("Sent to discord:222" in r for r in replies)

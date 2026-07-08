@@ -138,6 +138,8 @@ class Orchestrator:
         )
         # send_message tool fallback: consciousness/autonomous turns reach the user.
         self.tools.proactive_sender = self.hub.broadcast_proactive
+        # send_message_to_guest tool: cross-platform DM to a specific user.
+        self.tools.guest_sender = self.hub.send_to_user
         self.inner = (
             InnerMonologue(mirror_telegram=settings.inner_mirror_telegram)
             if settings.inner_log_enabled

@@ -86,6 +86,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "recall_memory",
         "list_inbox_images",
         "list_guests",
+        "send_message_to_guest",
         "phone_see_screen",
         "phone_ui_dump",
         "phone_tap",
@@ -669,6 +670,41 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_message_to_guest",
+            "description": (
+                "Send a message to a guest on their platform (Telegram or "
+                "Discord). Use this when the owner asks you to message "
+                "someone, tell someone something, or reach out to a guest "
+                "by name — 'tell Bob I'll be late', 'let Alice know about "
+                "Friday', 'message your friend about the game'. Also use "
+                "it on your own initiative when you want to reach out to a "
+                "guest you know. The message is sent as you (Ophelia), in "
+                "your voice. Owner-only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "enum": ["telegram", "discord"],
+                        "description": "Which platform the guest is on.",
+                    },
+                    "user_id": {
+                        "type": "integer",
+                        "description": "The guest's numeric id on that platform.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The message to send, in your voice.",
+                    },
+                },
+                "required": ["platform", "user_id", "message"],
+            },
+        },
+    },
 ]
 
 
@@ -729,6 +765,10 @@ class ToolRegistry:
         self._message_sender: Callable[[str], Awaitable[None]] | None = None
         self._proactive_messages_sent: int = 0
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
+        # Cross-platform DM sender: (platform, user_id, message) -> bool.
+        # Set by the orchestrator to hub.send_to_user so the agent can message
+        # a specific guest on any platform during natural conversation.
+        self.guest_sender: Callable[[str, int, str], Awaitable[bool]] | None = None
         # Per-turn media callback: sends a file (audio/video/image/doc) to the
         # current chat. Returns True on success. When unset (e.g. autonomous
         # turns), files are queued to _pending_artifacts for deferred delivery.
@@ -775,6 +815,7 @@ class ToolRegistry:
             "phone_game_open": self._phone_game_open,
             "list_guests": self._list_guests,
             "set_guest_name": self._set_guest_name,
+            "send_message_to_guest": self._send_message_to_guest,
         }
 
     def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
@@ -1109,6 +1150,47 @@ class ToolRegistry:
             by_owner = False
         return await set_guest_name(
             self.memory, platform, user_id, name[:60], by_owner=by_owner
+        )
+
+    async def _send_message_to_guest(
+        self, platform: str, user_id: int, message: str
+    ) -> str:
+        """Send a DM to a specific guest on their platform. Used when the owner
+        asks Ophelia in natural conversation to message someone ('tell Bob
+        I'll be late'), or when she decides on her own to reach out."""
+        message = (message or "").strip()
+        if not message:
+            return "Message can't be empty."
+        if not self.guest_sender:
+            return (
+                "Can't send a DM right now — no cross-platform sender wired. "
+                "This usually means the hub isn't running."
+            )
+        try:
+            ok = await self.guest_sender(platform, user_id, message[:4000])
+        except Exception as e:
+            log.warning("tool.send_message_to_guest_failed",
+                        platform=platform, user=user_id, error=str(e))
+            return f"Failed to send to {platform}:{user_id}: {e}"
+        if ok:
+            from ophelia.memory.guests import get_guest_name
+
+            name = None
+            if self.memory:
+                name = await get_guest_name(
+                    self.memory, platform, user_id,
+                    data_dir=self.settings.data_dir,
+                )
+            who = name or f"{platform}:{user_id}"
+            return f"Sent to {who}."
+        return (
+            f"Failed to send to {platform}:{user_id}. "
+            + (
+                "The guest may not have messaged the bot yet "
+                "(they need to /start it first on Telegram)."
+                if platform == "telegram"
+                else "Discord couldn't DM that user."
+            )
         )
 
     async def _sqlite_list_databases(self) -> str:

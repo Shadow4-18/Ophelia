@@ -518,6 +518,10 @@ class DiscordGateway:
         if platform != "discord":
             log.warning("discord.send_to_guest_unsupported_platform", platform=platform)
             return False
+        return await self.send_to_user(user_id, message)
+
+    async def send_to_user(self, user_id: int, message: str) -> bool:
+        """Send a DM to a specific Discord user by id. Returns True on success."""
         if not self._bot:
             return False
         try:
@@ -525,7 +529,7 @@ class DiscordGateway:
             await user.send(message[:2000])
             return True
         except Exception as e:
-            log.warning("discord.send_to_guest_failed", user=user_id, error=str(e))
+            log.warning("discord.send_to_user_failed", user=user_id, error=str(e))
             return False
 
     async def send_proactive_media(self, path, *, caption: str = "") -> None:

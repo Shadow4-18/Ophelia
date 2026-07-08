@@ -470,19 +470,26 @@ class TelegramGateway:
         if platform != "telegram":
             log.warning("telegram.send_to_guest_unsupported_platform", platform=platform)
             return False
+        return await self.send_to_user(user_id, message)
+
+    async def send_to_user(self, user_id: int, message: str) -> bool:
+        """Send a DM to a specific Telegram user by chat id. Returns True on
+        success. The user must have /start'd the bot first."""
         if not self._app:
             return False
         try:
             await self._app.bot.send_message(chat_id=user_id, text=message[:4000])
             return True
         except Exception as e:
+            err = str(e)
+            hint = None
+            if "can't initiate conversation" in err.lower() or "forbidden" in err.lower():
+                hint = "send /start to your bot in Telegram first"
             log.warning(
-                "telegram.send_to_guest_failed",
+                "telegram.send_to_user_failed",
                 user=user_id,
-                error=str(e),
-                hint="send /start to your bot in Telegram first"
-                if "can't initiate conversation" in str(e).lower()
-                else None,
+                error=err,
+                hint=hint,
             )
             return False
 

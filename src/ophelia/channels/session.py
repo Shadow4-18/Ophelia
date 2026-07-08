@@ -78,6 +78,10 @@ class ChannelSession:
         self.drives = drives
         self.games = games
         self.vision = vision
+        # Set by ChannelHub after construction so /tell, /suggest, and the
+        # send_message_to_guest tool can route cross-platform DMs through the
+        # correct gateway. None when running without a hub (e.g. CLI mode).
+        self.hub: Any = None
         self._voice_reply: dict[str, bool] = {}
         self._chat_logger: ChatLogger | None = None
         self._log_hooks: list[LogHookFn] = []
@@ -499,14 +503,26 @@ class ChannelSession:
             "/help — this list"
         )
 
+    async def _send_to_user(self, platform: str, user_id: int, message: str,
+                            gateway_sender: SendToGuestFn | None = None) -> bool:
+        """Send a DM to a user on any platform. Uses the hub (which knows all
+        gateways) when available; falls back to the single-platform
+        gateway_sender passed by the calling command handler."""
+        if self.hub is not None:
+            return await self.hub.send_to_user(platform, user_id, message)
+        if gateway_sender is not None:
+            return await gateway_sender(platform, user_id, message)
+        log.warning("session.send_to_user_no_route", platform=platform, user=user_id)
+        return False
+
     async def cmd_tell(
         self, args: list[str], reply: ReplyFn, *, send_to_guest: SendToGuestFn
     ) -> None:
         """Relay an exact message from the owner to a specific guest.
 
-        No agent turn, no model — pure relay. `send_to_guest` is provided by
-        the gateway (Telegram/Discord) and knows how to DM a user on its
-        platform. Returns confirmation (or an error) to the owner via `reply`.
+        No agent turn, no model — pure relay. Routes through the hub when
+        available so the owner can message guests on any platform; falls back
+        to the calling gateway's sender otherwise.
         """
         from ophelia.memory.guests import resolve_guest_target
 
@@ -518,20 +534,28 @@ class ChannelSession:
         if not message:
             await reply("Usage: /tell <guest> <message>")
             return
-        resolved = resolve_guest_target(self.agent.settings, self.memory, target_query)
+        resolved = await resolve_guest_target(self.agent.settings, self.memory, target_query)
         if not resolved:
             await reply(
                 f"Couldn't resolve '{target_query}' to a known guest. "
-                "Use a channel like 'telegram:111', a numeric id, or an exact "
-                "approval display name."
+                "Use a channel like 'telegram:111', a numeric id, or the "
+                "guest's name (as you've named them or as they introduced themselves)."
             )
             return
         platform, user_id = resolved
-        ok = await send_to_guest(platform, user_id, message)
+        ok = await self._send_to_user(platform, user_id, message, send_to_guest)
         if ok:
             await reply(f"Sent to {platform}:{user_id}.")
         else:
-            await reply(f"Failed to send to {platform}:{user_id} (see logs).")
+            await reply(
+                f"Failed to send to {platform}:{user_id}. "
+                + (
+                    "The guest may not have messaged the bot yet "
+                    "(they need to /start it first on Telegram)."
+                    if platform == "telegram"
+                    else "Discord couldn't DM that user."
+                )
+            )
 
     async def cmd_suggest(
         self, args: list[str], reply: ReplyFn, *, send_to_guest: SendToGuestFn
@@ -553,12 +577,12 @@ class ChannelSession:
         if not topic:
             await reply("Usage: /suggest <guest> <topic>")
             return
-        resolved = resolve_guest_target(self.agent.settings, self.memory, target_query)
+        resolved = await resolve_guest_target(self.agent.settings, self.memory, target_query)
         if not resolved:
             await reply(
                 f"Couldn't resolve '{target_query}' to a known guest. "
-                "Use a channel like 'telegram:111', a numeric id, or an exact "
-                "approval display name."
+                "Use a channel like 'telegram:111', a numeric id, or the "
+                "guest's name (as you've named them or as they introduced themselves)."
             )
             return
         platform, user_id = resolved
@@ -586,9 +610,18 @@ class ChannelSession:
         if not outbound:
             await reply("She didn't produce a message — try rephrasing the topic.")
             return
-        ok = await send_to_guest(platform, user_id, outbound)
+        ok = await self._send_to_user(platform, user_id, outbound, send_to_guest)
         if ok:
             # CC the owner a copy (per user preference).
             await reply(f"To {name} ({platform}:{user_id}):\n\n{outbound}")
         else:
-            await reply(f"Failed to send to {platform}:{user_id}. Draft was:\n\n{outbound}")
+            await reply(
+                f"Failed to send to {platform}:{user_id}. "
+                + (
+                    "The guest may not have messaged the bot yet "
+                    "(they need to /start it first on Telegram)."
+                    if platform == "telegram"
+                    else "Discord couldn't DM that user."
+                )
+                + f" Draft was:\n\n{outbound}"
+            )

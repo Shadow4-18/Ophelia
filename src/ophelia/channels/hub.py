@@ -36,6 +36,9 @@ class ChannelHub:
         self.session = ChannelSession(
             agent, signals, memory, drives, games=games, vision=vision
         )
+        # Give the session a back-reference so /tell, /suggest, and the
+        # send_message_to_guest tool can route cross-platform DMs.
+        self.session.hub = self
         self._gateways: list[ChatGateway] = []
 
         if settings.telegram_enabled:
@@ -62,6 +65,22 @@ class ChannelHub:
 
     def configured_names(self) -> list[str]:
         return [g.platform for g in self._gateways if g.is_configured()]
+
+    async def send_to_user(self, platform: str, user_id: int, message: str) -> bool:
+        """Send a DM to a specific user on the given platform.
+
+        Routes to the correct gateway by platform name. Returns True on
+        success, False if the platform isn't configured or the send failed.
+        Used by /tell, /suggest, and the send_message_to_guest tool so the
+        owner can message guests on any platform from any platform.
+        """
+        for gw in self._gateways:
+            if gw.platform == platform and gw.is_configured():
+                sender = getattr(gw, "send_to_user", None)
+                if callable(sender):
+                    return await sender(user_id, message)
+        log.warning("hub.send_to_user_no_gateway", platform=platform)
+        return False
 
     def require_any(self) -> None:
         active = [g for g in self._gateways if g.is_configured()]
