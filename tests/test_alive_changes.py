@@ -82,6 +82,32 @@ def test_base_prompt_has_presence_language():
     assert "skip" in low or "compliance token" in low
 
 
+def test_base_prompt_requires_real_tool_calls_not_narration():
+    """BASE_PROMPT must tell her to emit actual tool calls instead of
+    narrating '*fires the tool*' in prose. Without this, she claims to
+    generate images but never calls generate_image, so nothing is
+    actually produced."""
+    from ophelia.core.agent_loop import BASE_PROMPT
+
+    low = BASE_PROMPT.lower()
+    # Must have a section about tools being real actions.
+    assert "tool" in low
+    assert "narrat" in low or "do not write" in low
+    # Must explicitly say prose doesn't do the work — the call does.
+    assert "tool call" in low
+    assert "generate_image" in low or "generate an image" in low
+
+
+def test_default_prompter_requires_real_tool_calls():
+    """DEFAULT_PROMPTER must also reinforce that tools are real calls,
+    not narration — so the policy layer backs up the base prompt."""
+    from ophelia.mind.prompter import DEFAULT_PROMPTER
+
+    low = DEFAULT_PROMPTER.lower()
+    assert "tool" in low
+    assert "narrat" in low or "do not write" in low
+
+
 # --- Wave 1c: /revoke command ---
 
 
