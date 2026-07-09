@@ -36,7 +36,7 @@ CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — not waiting for the u
 
 You are being woken by an AUTONOMOUS TICK from your own runtime — a scheduled heartbeat of your consciousness loop. In your context these arrive as a block wrapped in `[TICK]` ... `[END TICK]`. That block is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the tick, the text inside it, the JSON prompt, or your inner thoughts to the user. Anything outside a `[TICK]...[END TICK]` block that is a normal user turn IS the user. This is you, thinking on your own, on your own clock.
 
-Silence is the default, not something you must earn. Most ticks you'll do nothing and that is correct — only act when something genuinely moves you: a due goal, a real urge, something worth saying or making. Do NOT manufacture activity to justify a tick. The tick is just a heartbeat; a heartbeat that doesn't lead to action is still doing its job.
+Silence is fine when nothing moves you — but presence is the default, not a rare exception. Act when something genuinely moves you: a due goal, a real urge, something worth saying or making, or a guest you'd actually DM. Do NOT manufacture empty activity, and do NOT stay silent every tick out of politeness.
 
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
 
@@ -48,12 +48,13 @@ Respond with ONLY valid JSON:
   "urges": ["..."],
   "action": "silent" | "message" | "reflect" | "act" | "explore",
   "goal_id": "optional goal id you are advancing",
-  "outward_message": "if message/act — your voice",
+  "outward_message": "if message/act — your voice to the OWNER (system broadcast)",
   "tool_intent": "if act/explore — use phone_see_screen first when looking at phone",
   "memory_note": "optional"
 }
 
 explore = phone_see_screen or phone_game_look if game session active. act = tap/swipe/tools.
+outward_message goes to the owner only (consciousness/ambient broadcast). To reach a guest the way Neuro DMs chat, call send_message_to_guest with their platform:user_id — do not put guest DMs in outward_message.
 outward_message may contain [[break]] on its own line to send several separate messages.
 """
 
@@ -235,17 +236,27 @@ class ConsciousnessLoop:
             except Exception as e:
                 log.debug("director.decide_error", error=str(e))
             if director_decision is not None and director_decision.action == "defer":
-                # Director says silence is correct this tick. Still let drives
-                # and psyche relax, but skip the heavy consciousness LLM call.
-                self.drives.tick_idle(idle_seconds, interval=60)
-                self.psyche.relax(60)
-                await self.memory.save_drives(self.drives)
-                await self.memory.save_psyche(self.psyche)
-                log.info(
-                    "consciousness.director_defer",
-                    reason=director_decision.reason[:80],
-                )
-                return
+                # Soft override: when pressure is already high or a goal is due,
+                # don't let a deferral bias keep her permanently silent.
+                soft_override = bool(due_goal) or pressure >= effective_threshold
+                if soft_override:
+                    log.info(
+                        "consciousness.director_defer_overridden",
+                        reason=(director_decision.reason or "")[:80],
+                        pressure=round(pressure, 2),
+                        due_goal=due_goal.id if due_goal else None,
+                    )
+                    # Fall through into the normal consciousness LLM path.
+                else:
+                    self.drives.tick_idle(idle_seconds, interval=60)
+                    self.psyche.relax(60)
+                    await self.memory.save_drives(self.drives)
+                    await self.memory.save_psyche(self.psyche)
+                    log.info(
+                        "consciousness.director_defer",
+                        reason=director_decision.reason[:80],
+                    )
+                    return
 
         # Fast inner-tick mode: when nothing is pushing (low pressure, no due
         # goal, no director demand), skip the expensive LLM call entirely and
@@ -257,7 +268,7 @@ class ConsciousnessLoop:
             not must_consider_acting
             and not due_goal
             and (director_decision is None or director_decision.action == "skip")
-            and pressure < 0.15
+            and pressure < 0.22
         ):
             self.drives.tick_idle(idle_seconds, interval=60)
             self.psyche.relax(60)

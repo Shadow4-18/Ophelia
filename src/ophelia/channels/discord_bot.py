@@ -513,7 +513,34 @@ class DiscordGateway:
         if self._bot and not self._bot.is_closed():
             await self._bot.close()
 
-    async def send_proactive(self, text: str) -> None:
+    def _proactive_recipients(self, *, owners_only: bool = True) -> list[int]:
+        """Who gets spontaneous Discord DMs.
+
+        owners_only=True (default): only owner Discord IDs from
+        settings.owner_channels(). Guests stay allowlisted for chat and
+        intentional DMs (send_to_user), but system consciousness/ambient
+        pings are owner-directed.
+        """
+        if owners_only:
+            out: list[int] = []
+            for chan in self.settings.owner_channels():
+                if not chan.startswith("discord:"):
+                    continue
+                _, _, uid_s = chan.partition(":")
+                try:
+                    out.append(int(uid_s))
+                except ValueError:
+                    continue
+            if out:
+                return sorted(set(out))
+            allowed = self.settings.allowed_discord_users()
+            if allowed:
+                return [sorted(allowed)[0]]
+            return []
+        allowed = self.settings.allowed_discord_users()
+        return sorted(allowed) if allowed else []
+
+    async def send_proactive(self, text: str, *, owners_only: bool = True) -> None:
         from ophelia.channels.proactive_filter import is_outreach_junk
 
         if is_outreach_junk(text):
@@ -521,14 +548,20 @@ class DiscordGateway:
             return
         if not self._bot:
             return
-        allowed = self.settings.allowed_discord_users()
-        if not allowed:
+        recipients = self._proactive_recipients(owners_only=owners_only)
+        if not recipients:
             log.warning("discord.notify_skipped", reason="no DISCORD_ALLOWED_USER_IDS")
             return
-        for uid in allowed:
+        for uid in recipients:
             try:
                 user = await self._bot.fetch_user(uid)
                 await user.send(text[:2000])
+                log.info(
+                    "discord.notify_sent",
+                    user=uid,
+                    chars=len(text),
+                    owners_only=owners_only,
+                )
                 await self.session.log_outgoing(
                     channel=f"discord:{uid}",
                     text=text,
@@ -566,8 +599,10 @@ class DiscordGateway:
             log.warning("discord.send_to_user_failed", user=user_id, error=str(e))
             return False
 
-    async def send_proactive_media(self, path, *, caption: str = "") -> None:
-        """Send a generated media file (image/video/audio/doc) to all recipients.
+    async def send_proactive_media(
+        self, path, *, caption: str = "", owners_only: bool = True
+    ) -> None:
+        """Send a generated media file (image/video/audio/doc) to recipients.
 
         Tier C #11: Discord parity — captioned media like Telegram. Discord
         attaches the file with the caption as the message content.
@@ -579,11 +614,11 @@ class DiscordGateway:
         p = Path(path).expanduser()
         if not p.is_file():
             return
-        allowed = self.settings.allowed_discord_users()
-        if not allowed:
+        recipients = self._proactive_recipients(owners_only=owners_only)
+        if not recipients:
             return
         cap = (caption or "")[:2000] or None
-        for uid in allowed:
+        for uid in recipients:
             try:
                 user = await self._bot.fetch_user(uid)
                 await user.send(content=cap, file=discord.File(str(p)))
@@ -598,7 +633,7 @@ class DiscordGateway:
             except Exception as e:
                 log.warning("discord.notify_media_failed", user=uid, error=str(e))
 
-    async def send_proactive_voice(self, text: str) -> None:
+    async def send_proactive_voice(self, text: str, *, owners_only: bool = True) -> None:
         """Tier C #11: Discord parity — spontaneous voice notes.
 
         Synthesizes the text via the configured TTS backend (Kokoro / ElevenLabs
@@ -611,8 +646,8 @@ class DiscordGateway:
         from ophelia.media.voice import resolve_tts_provider, synthesize
         from ophelia.mind.mood_behavior import mood_knobs
 
-        allowed = self.settings.allowed_discord_users()
-        if not allowed:
+        recipients = self._proactive_recipients(owners_only=owners_only)
+        if not recipients:
             return
 
         # Voice mind rewrite (Tier A #4) + mood-derived speed, same as Telegram.
@@ -636,7 +671,7 @@ class DiscordGateway:
                     bearer = await xai.bearer_fresh()
                 except Exception as e:
                     log.warning("discord.voice_auth_failed", error=str(e))
-                    await self.send_proactive(text)
+                    await self.send_proactive(text, owners_only=owners_only)
                     return
         out = self.settings.data_dir / "discord_media" / f"spontaneous_{int(time.time())}.mp3"
         speed = None
@@ -653,16 +688,21 @@ class DiscordGateway:
             )
         except Exception as e:
             log.warning("discord.proactive_voice_tts_failed", error=str(e))
-            await self.send_proactive(text)
+            await self.send_proactive(text, owners_only=owners_only)
             return
 
         import discord
 
-        for uid in allowed:
+        for uid in recipients:
             try:
                 user = await self._bot.fetch_user(uid)
                 await user.send(file=discord.File(str(audio_path)))
-                log.info("discord.notify_voice_sent", user=uid, path=str(audio_path))
+                log.info(
+                    "discord.notify_voice_sent",
+                    user=uid,
+                    path=str(audio_path),
+                    owners_only=owners_only,
+                )
                 await self.session.log_outgoing(
                     channel=f"discord:{uid}",
                     text=f"[voice note: {audio_path.name}]",

@@ -1,4 +1,5 @@
 # Ophelia prompter — tendencies, not rules
+<!-- ophelia-prompter-version: 2 -->
 
 Edit and copy to `~/.ophelia/PROMPTER.md`. Loaded every session with SOUL.
 

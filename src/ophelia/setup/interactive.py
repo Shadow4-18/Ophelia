@@ -35,10 +35,10 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         idx = radiolist(
             "What do you want to configure?",
             [
-                "AI provider (Ollama / cloud)",
+                "AI setup (profiles — Local / Grok / DeepSeek / …)",
                 "Chat channels (Telegram / Discord)",
                 "Web search (DeepSeek/OpenAI have no built-in search)",
-                "Image generation (backends + NSFW)",
+                "Image generation (SFW + NSFW backends)",
                 "Voice / TTS (ElevenLabs, Kokoro local, OpenAI, xAI)",
                 "Persona (SOUL.md)",
                 "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
@@ -89,28 +89,46 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
 
 
 def _section_provider(on_phone: bool) -> None:
-    current = read_env_key("OPHELIA_PROVIDER") or "ollama"
-    options = [
-        ("ollama", "Ollama (local — recommended)"),
-        ("auto", "Auto (Ollama if up, else cloud)"),
-        ("xai-oauth", "SuperGrok / xAI OAuth"),
-        ("xai", "xAI API key"),
-        ("deepseek", "DeepSeek API key (cheap — V4 Flash)"),
-        ("openai", "OpenAI API key"),
-        ("compat", "OpenAI-compatible endpoint (LM Studio, etc.)"),
+    """Simplified AI setup: pick a profile, then optional advanced routing.
+
+    Most users only need a profile (Local / Grok API / Grok OAuth / DeepSeek /
+    OpenAI / Compat). Per-role overrides and fallback chains stay behind
+    'Advanced' so the menu isn't a 6-role matrix by default.
+    """
+    current = (read_env_key("OPHELIA_PROVIDER") or "ollama").strip().lower()
+    profiles = [
+        ("ollama", "Local (Ollama) — free, offline, recommended"),
+        ("xai", "Grok via API key — images + video + chat"),
+        ("xai-oauth", "Grok via SuperGrok OAuth"),
+        ("deepseek", "DeepSeek — cheap cloud chat"),
+        ("openai", "OpenAI — GPT + DALL-E"),
+        ("compat", "Custom OpenAI-compatible endpoint"),
+        ("auto", "Auto — Ollama if up, else cloud"),
+        ("__advanced__", "Advanced — per-role routing / fallbacks only"),
     ]
-    labels = [label for _, label in options]
-    default = next((i for i, (k, _) in enumerate(options) if k == current), 0)
+    labels = [label for _, label in profiles]
+    default = next((i for i, (k, _) in enumerate(profiles) if k == current), 0)
 
     pick = radiolist(
-        "Choose AI provider",
+        "AI setup — pick a profile",
         labels,
         selected=default,
-        description="Local-first: Ollama is free and works offline. DeepSeek V4 Flash is very cheap for cloud.",
+        description=(
+            "One pick sets chat + sensible defaults. Image backends and NSFW "
+            "are under 'Image generation'. Advanced is for power users only."
+        ),
     )
     if pick < 0:
         return
-    provider = options[pick][0]
+
+    choice = profiles[pick][0]
+    if choice == "__advanced__":
+        provider = current if current != "auto" else "ollama"
+        _maybe_configure_models(provider, on_phone=on_phone)
+        _maybe_configure_fallback()
+        return
+
+    provider = choice
     updates: dict[str, str | None] = {"OPHELIA_PROVIDER": provider}
 
     if provider in ("ollama", "auto"):
@@ -121,11 +139,20 @@ def _section_provider(on_phone: bool) -> None:
             updates["OLLAMA_MODEL"] = model
         if on_phone:
             updates.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+        # Sensible media defaults for local-first: Grok for image/video when
+        # an API key exists later; otherwise Pollinations stays the free fallback.
+        if not read_env_key("OPHELIA_PROVIDER_IMAGE"):
+            updates["OPHELIA_PROVIDER_IMAGE"] = "auto"
+        if not read_env_key("OPHELIA_PROVIDER_VIDEO"):
+            updates["OPHELIA_PROVIDER_VIDEO"] = "auto"
     elif provider == "xai-oauth":
         if not _configure_xai_oauth():
             return
+        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "xai-oauth")
+        updates.setdefault("OPHELIA_PROVIDER_VIDEO", "xai-oauth")
+        updates.setdefault("XAI_IMAGE_MODEL", "grok-imagine-image")
+        updates.setdefault("XAI_VIDEO_MODEL", "grok-imagine-video")
     elif provider == "xai":
-        # Recognize GROK_API_KEY (alias used by some Discord bots) as the default.
         existing_key = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
         key = prompt_text("XAI_API_KEY", secret=True, default=existing_key)
         if key:
@@ -133,10 +160,16 @@ def _section_provider(on_phone: bool) -> None:
         elif not existing_key:
             print(
                 "\n  [WARN] No API key set. xai mode uses the API key ONLY — it will NOT\n"
-                "         fall back to your SuperGrok OAuth token (different tier, may\n"
-                "         not access the same models). Set XAI_API_KEY in ~/.ophelia/.env\n"
-                "         or switch to OPHELIA_PROVIDER=xai-oauth."
+                "         fall back to your SuperGrok OAuth token. Set XAI_API_KEY or\n"
+                "         switch to the Grok OAuth profile."
             )
+        xai_model = _pick_xai_model()
+        if xai_model:
+            updates["XAI_MODEL"] = xai_model
+        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "xai")
+        updates.setdefault("OPHELIA_PROVIDER_VIDEO", "xai")
+        updates.setdefault("XAI_IMAGE_MODEL", "grok-imagine-image")
+        updates.setdefault("XAI_VIDEO_MODEL", "grok-imagine-video")
     elif provider == "deepseek":
         key = prompt_text(
             "DEEPSEEK_API_KEY",
@@ -149,10 +182,19 @@ def _section_provider(on_phone: bool) -> None:
         ds_model = _pick_deepseek_model()
         if ds_model:
             updates["DEEPSEEK_MODEL"] = ds_model
+        # DeepSeek has no image/video — leave media on auto (Pollinations / xAI).
+        if not read_env_key("OPHELIA_PROVIDER_IMAGE"):
+            updates["OPHELIA_PROVIDER_IMAGE"] = "auto"
+        if not read_env_key("OPHELIA_PROVIDER_VIDEO"):
+            updates["OPHELIA_PROVIDER_VIDEO"] = "auto"
     elif provider == "openai":
         key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
         if key:
             updates["OPENAI_API_KEY"] = key
+        oa_model = _pick_openai_model()
+        if oa_model:
+            updates["OPENAI_MODEL"] = oa_model
+        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "openai")
     elif provider == "compat":
         base = prompt_text(
             "OPHELIA_COMPAT_BASE_URL",
@@ -178,8 +220,21 @@ def _section_provider(on_phone: bool) -> None:
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
 
-    _maybe_configure_models(provider, on_phone=on_phone)
-    _maybe_configure_fallback()
+    # Optional advanced — not forced every time.
+    adv = radiolist(
+        "Anything else?",
+        [
+            "Done — this profile is enough",
+            "Advanced: per-role routing (chat / consciousness / vision / …)",
+            "Advanced: fallback chain if primary fails",
+        ],
+        selected=0,
+        description="Skip unless you need different models per role.",
+    )
+    if adv == 1:
+        _maybe_configure_models(provider, on_phone=on_phone)
+    elif adv == 2:
+        _maybe_configure_fallback()
 
 
 def _oauth_status_lines() -> list[str]:

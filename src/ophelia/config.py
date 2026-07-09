@@ -437,7 +437,7 @@ class Settings(BaseSettings):
     )
 
     # Initiative / will (lower = more spontaneous)
-    initiative_threshold: float = Field(default=0.55, alias="OPHELIA_INITIATIVE_THRESHOLD")
+    initiative_threshold: float = Field(default=0.45, alias="OPHELIA_INITIATIVE_THRESHOLD")
     greet_on_start: bool = Field(
         default=True,
         alias="OPHELIA_GREET_ON_START",
@@ -454,7 +454,7 @@ class Settings(BaseSettings):
             "before the chat LLM runs. Logs decisions to data/director_log.jsonl."
         ),
     )
-    max_spontaneous_per_hour: int = Field(default=4, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
+    max_spontaneous_per_hour: int = Field(default=6, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
     quiet_hours: str = Field(
         default="",
         alias="OPHELIA_QUIET_HOURS",

@@ -192,12 +192,21 @@ class Orchestrator:
             shutil.copy2(example, dest)
 
     def _ensure_prompter_file(self) -> None:
-        dest = OPHELIA_HOME / "PROMPTER.md"
-        if dest.is_file():
-            return
+        from ophelia.mind.prompter import ensure_prompter_current
+
         example = Path(__file__).resolve().parents[3] / "PROMPTER.example.md"
-        if example.is_file():
-            shutil.copy2(example, dest)
+        status = ensure_prompter_current(
+            OPHELIA_HOME / "PROMPTER.md",
+            example=example if example.is_file() else None,
+        )
+        if status.startswith("migrated"):
+            log.info(
+                "prompter.migrated",
+                detail=status,
+                note="stale flowchart/SKIP PROMPTER.md refreshed; backup kept",
+            )
+        elif status == "created":
+            log.info("prompter.created", path=str(OPHELIA_HOME / "PROMPTER.md"))
 
     def _ensure_games_file(self) -> None:
         if not self.settings.games_enabled:

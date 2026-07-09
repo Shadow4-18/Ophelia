@@ -92,7 +92,15 @@ class ChannelHub:
                 "Or use: ophelia ui / ophelia chat (no bot needed)"
             )
 
-    async def broadcast_proactive(self, text: str) -> None:
+    async def broadcast_proactive(self, text: str, *, owners_only: bool = True) -> None:
+        """Send spontaneous text to chat platforms.
+
+        By default owners_only=True — consciousness ticks, ambient asides,
+        alarms, and inner-mirror previews are for the owner, not a broadcast
+        to every guest on the allowlist. Intentional guest outreach uses
+        send_to_user / send_message_to_guest instead (Neuro-style DMs).
+        Pass owners_only=False only when you truly mean every allowlisted user.
+        """
         from ophelia.channels.proactive_filter import is_outreach_junk, proactive_chunks
 
         if is_outreach_junk(text):
@@ -108,7 +116,14 @@ class ChannelHub:
                 try:
                     if i:
                         await asyncio.sleep(1.2)
-                    await gw.send_proactive(chunk)
+                    sender = getattr(gw, "send_proactive", None)
+                    if not callable(sender):
+                        continue
+                    try:
+                        await sender(chunk, owners_only=owners_only)
+                    except TypeError:
+                        # Older gateway signature without owners_only.
+                        await sender(chunk)
                     mirror = getattr(gw, "mirror_consciousness", None)
                     if callable(mirror):
                         try:
@@ -119,7 +134,7 @@ class ChannelHub:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
 
     async def broadcast_proactive_media(
-        self, paths: list, *, caption: str = ""
+        self, paths: list, *, caption: str = "", owners_only: bool = True
     ) -> None:
         """Forward media artifacts produced during an autonomous turn."""
         if not paths:
@@ -132,18 +147,23 @@ class ChannelHub:
                 continue
             for p in paths:
                 try:
-                    await sender(p, caption=caption)
-                except TypeError:
-                    await sender(p)
+                    try:
+                        await sender(p, caption=caption, owners_only=owners_only)
+                    except TypeError:
+                        try:
+                            await sender(p, caption=caption)
+                        except TypeError:
+                            await sender(p)
                 except Exception as e:
                     log.warning("hub.proactive_media_failed", platform=gw.platform, error=str(e))
 
-    async def broadcast_proactive_voice(self, text: str) -> None:
+    async def broadcast_proactive_voice(self, text: str, *, owners_only: bool = True) -> None:
         """Synthesize and send a spontaneous voice note to the owner.
 
         Tier C #11: send to ALL configured gateways (Telegram + Discord),
         not just the first one that succeeds — true parity means Discord
         users get voice notes too, even when Telegram is also configured.
+        Default owners_only=True so guests don't get spontaneous voice.
         """
         sent_any = False
         for gw in self._gateways:
@@ -153,14 +173,17 @@ class ChannelHub:
             if not callable(sender):
                 continue
             try:
-                await sender(text)
+                try:
+                    await sender(text, owners_only=owners_only)
+                except TypeError:
+                    await sender(text)
                 sent_any = True
             except Exception as e:
                 log.warning("hub.proactive_voice_failed", platform=gw.platform, error=str(e))
         if not sent_any:
             # No gateway could send voice — fall back to text so the message
             # isn't lost entirely.
-            await self.broadcast_proactive(text)
+            await self.broadcast_proactive(text, owners_only=owners_only)
 
     async def prepare(self) -> None:
         """Start gateway APIs (e.g. Telegram bot) before consciousness outreach."""

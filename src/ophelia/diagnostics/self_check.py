@@ -344,6 +344,45 @@ async def _check_providers(
             hint=hint,
             required=required,
         )
+    _check_image_nsfw_routing(report, stack)
+
+
+def _check_image_nsfw_routing(report: SelfCheckReport, stack: ProviderStack) -> None:
+    """Surface SFW vs NSFW image backends so misroutes are obvious in check."""
+    settings = stack.settings
+    sfw = stack.image_provider_for(nsfw=False)
+    nsfw_allowed = bool(settings.image_nsfw_allowed)
+    if nsfw_allowed:
+        nsfw = stack.image_provider_for(nsfw=True)
+        detail = (
+            f"SFW={sfw} | NSFW={nsfw} (allowed=true, "
+            f"OPHELIA_IMAGE_NSFW_PROVIDER={settings.image_nsfw_provider})"
+        )
+        censored = {"xai", "xai-oauth", "openai"}
+        ok = nsfw not in censored
+        hint = ""
+        if not ok:
+            hint = (
+                "NSFW is allowed but resolved to a censored backend. "
+                "Set OPHELIA_IMAGE_NSFW_PROVIDER=pollinations (or a1111/comfyui/…)."
+            )
+        report.add(
+            category="providers",
+            name="Image NSFW routing",
+            ok=ok,
+            detail=detail,
+            hint=hint,
+            required=False,
+        )
+    else:
+        report.add(
+            category="providers",
+            name="Image NSFW routing",
+            ok=True,
+            detail=f"SFW={sfw} | NSFW disabled (OPHELIA_IMAGE_NSFW_ALLOWED=false)",
+            hint="ophelia setup → Image generation to enable NSFW backends",
+            required=False,
+        )
 
 
 async def _check_ollama_version(report: SelfCheckReport, settings: Settings) -> None:

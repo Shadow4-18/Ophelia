@@ -171,7 +171,7 @@ class TelegramGateway:
                 raw = c.split(":", 1)[1]
                 if raw.isdigit():
                     ids.append(int(raw))
-        return ids or self._proactive_recipients()
+        return ids or self._proactive_recipients(owners_only=True)
 
     async def _admit_chat(
         self,
@@ -1183,7 +1183,35 @@ class TelegramGateway:
     async def stop(self) -> None:
         pass
 
-    def _proactive_recipients(self) -> list[int]:
+    def _proactive_recipients(self, *, owners_only: bool = True) -> list[int]:
+        """Who gets spontaneous outreach.
+
+        owners_only=True (default): only owner Telegram IDs from
+        settings.owner_channels(). Guests stay on the allowlist for chat,
+        but system consciousness/ambient pings are owner-directed — like
+        Neuro talking to her streamer, not blasting every chatter.
+        Intentional guest DMs use send_to_user instead.
+        """
+        if owners_only:
+            out: list[int] = []
+            for chan in self.settings.owner_channels():
+                if not chan.startswith("telegram:"):
+                    continue
+                _, _, uid_s = chan.partition(":")
+                try:
+                    out.append(int(uid_s))
+                except ValueError:
+                    continue
+            if out:
+                return sorted(set(out))
+            # Misconfigured owner_channels — fall back to first allowlisted
+            # user so the ping isn't silently lost.
+            allowed = self.settings.allowed_telegram_users()
+            if allowed:
+                return [sorted(allowed)[0]]
+            if self.signals.last_telegram_user_id is not None:
+                return [self.signals.last_telegram_user_id]
+            return []
         allowed = self.settings.allowed_telegram_users()
         if allowed:
             return sorted(allowed)
@@ -1191,7 +1219,7 @@ class TelegramGateway:
             return [self.signals.last_telegram_user_id]
         return []
 
-    async def send_proactive(self, text: str) -> None:
+    async def send_proactive(self, text: str, *, owners_only: bool = True) -> None:
         from ophelia.channels.proactive_filter import is_outreach_junk
 
         if is_outreach_junk(text):
@@ -1203,7 +1231,7 @@ class TelegramGateway:
                 reason="bot not ready — Telegram still starting",
             )
             return
-        recipients = self._proactive_recipients()
+        recipients = self._proactive_recipients(owners_only=owners_only)
         if not recipients:
             log.warning(
                 "telegram.notify_skipped",
@@ -1214,7 +1242,7 @@ class TelegramGateway:
         for uid in recipients:
             try:
                 await self._app.bot.send_message(chat_id=uid, text=text[:4000])
-                log.info("telegram.notify_sent", user=uid, chars=len(text))
+                log.info("telegram.notify_sent", user=uid, chars=len(text), owners_only=owners_only)
                 await self.session.log_outgoing(
                     channel=f"telegram:{uid}",
                     text=text,
@@ -1231,11 +1259,11 @@ class TelegramGateway:
                     hint=hint or None,
                 )
 
-    async def send_proactive_voice(self, text: str) -> None:
+    async def send_proactive_voice(self, text: str, *, owners_only: bool = True) -> None:
         """Spontaneous voice note to owner (Kokoro / configured TTS)."""
         if not self._app or not text.strip():
             return
-        recipients = self._proactive_recipients()
+        recipients = self._proactive_recipients(owners_only=owners_only)
         if not recipients:
             return
         # Tier A #4: voice mind rewrites for speech first (pauses, breath,
@@ -1267,7 +1295,7 @@ class TelegramGateway:
             )
         except Exception as e:
             log.warning("telegram.proactive_voice_tts_failed", error=str(e))
-            await self.send_proactive(text)
+            await self.send_proactive(text, owners_only=owners_only)
             return
         for uid in recipients:
             try:
@@ -1280,7 +1308,11 @@ class TelegramGateway:
                         await self._app.bot.send_audio(
                             chat_id=uid, audio=InputFile(audio)
                         )
-                log.info("telegram.proactive_voice_sent", user=uid)
+                log.info(
+                    "telegram.proactive_voice_sent",
+                    user=uid,
+                    owners_only=owners_only,
+                )
                 await self.session.log_outgoing(
                     channel=f"telegram:{uid}",
                     text=f"[voice note: {audio_path.name}]",
@@ -1291,8 +1323,10 @@ class TelegramGateway:
             except Exception as e:
                 log.warning("telegram.proactive_voice_failed", user=uid, error=str(e))
 
-    async def send_proactive_media(self, path, *, caption: str = "") -> None:
-        """Send a generated media file (image/video/audio) to all recipients."""
+    async def send_proactive_media(
+        self, path, *, caption: str = "", owners_only: bool = True
+    ) -> None:
+        """Send a generated media file (image/video/audio) to recipients."""
         if not self._app:
             return
         from pathlib import Path as _P
@@ -1304,7 +1338,7 @@ class TelegramGateway:
         if not kind:
             return
         cap = (caption or "")[:900]
-        recipients = self._proactive_recipients()
+        recipients = self._proactive_recipients(owners_only=owners_only)
         for uid in recipients:
             try:
                 with p.open("rb") as f:

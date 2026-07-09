@@ -67,7 +67,7 @@ Given a snapshot of her state (mood, drives, pressure, recent activity, owner st
 
 - "speak"  — full reply is warranted. Something genuine needs saying.
 - "react"  — a fast one-liner reaction suffices (quip, acknowledgement, emotional beat). Don't reach for a full turn.
-- "defer"  — stay silent this turn. Pressure still builds. Most ticks should land here.
+- "defer"  — stay silent this turn. Pressure still builds. Use when nothing is moving her.
 - "skip"   — explicit no-op, slight pressure relief (e.g. she just acted, or the moment passed).
 
 Also pick an urgency bucket:
@@ -85,7 +85,7 @@ Output ONLY valid JSON:
   "reason": "why this decision (logged for tuning, not shown to user)"
 }
 
-Silence is correct by default. Only escalate to speak/react when something genuinely moves her — a due goal with real pressure, an owner message, an urge that's been building, something worth saying. Don't manufacture activity.
+Presence over paralysis. Prefer speak/react when pressure is near or above threshold, a goal is due, the owner is active, or an urge has been building. Defer when the moment is empty — not as a habit. Don't manufacture empty chatter, but don't default to silence either.
 """
 
 
