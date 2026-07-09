@@ -131,7 +131,7 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
-    model = stack.image_model_for(provider)
+    model = stack.image_model_for(provider, nsfw=nsfw)
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
 

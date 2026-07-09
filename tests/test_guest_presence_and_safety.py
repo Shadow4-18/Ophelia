@@ -92,10 +92,40 @@ def test_image_nsfw_check_reports_routing() -> None:
     stack.image_provider_for.side_effect = lambda nsfw=False: (
         "pollinations" if nsfw else "xai"
     )
+    stack.image_model_for.return_value = "flux"
     report = SelfCheckReport(platform="test", ophelia_home="/tmp")
     _check_image_nsfw_routing(report, stack)
     items = [i for i in report.results if i.name == "Image NSFW routing"]
     assert len(items) == 1
     assert items[0].ok
-    assert "NSFW=pollinations" in items[0].detail
+    assert "NSFW=pollinations/flux" in items[0].detail
     assert isinstance(items[0], CheckResult)
+
+
+def test_image_nsfw_model_override() -> None:
+    from ophelia.config import Settings
+    from ophelia.providers.router import ProviderStack
+
+    s = Settings.model_construct(
+        provider="xai",
+        provider_image="xai",
+        xai_image_model="grok-imagine-image",
+        image_nsfw_allowed=True,
+        image_nsfw_provider="pollinations",
+        image_nsfw_model="flux-realism",
+        pollinations_image_model="flux",
+    )
+    stack = ProviderStack(s)
+    assert stack.image_provider_for(nsfw=False) == "xai"
+    assert stack.image_model_for("xai", nsfw=False) == "grok-imagine-image"
+    assert stack.image_provider_for(nsfw=True) == "pollinations"
+    assert stack.image_model_for("pollinations", nsfw=True) == "flux-realism"
+    assert stack.image_model_for("pollinations", nsfw=False) == "flux"
+
+
+def test_advanced_roles_menu_excludes_image() -> None:
+    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "setup" / "interactive.py"
+    body = src.read_text(encoding="utf-8")
+    assert 'role_order = ["chat", "consciousness", "curator", "vision", "video"]' in body
+    assert "SFW backend + model" in body
+    assert "NSFW backend + model" in body

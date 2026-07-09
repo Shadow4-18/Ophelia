@@ -698,7 +698,7 @@ _ROLE_LABELS = {
     "consciousness": "Consciousness (background ticks)",
     "curator": "Memory curator",
     "vision": "Vision (photo understanding)",
-    "image": "Image generation",
+    # Image SFW/NSFW lives under the dedicated Image generation menu — not here.
     "video": "Video generation",
 }
 
@@ -776,15 +776,13 @@ def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
     pick = radiolist(
         "Configure specific providers/models for each role?",
         [
-            "Yes — pick provider + model per role (chat, vision, image, video, ...)",
+            "Yes — pick provider + model per role (chat, vision, video, ...)",
             "Skip — keep current / default settings",
         ],
         selected=1,
         description=(
-            "Ophelia uses six roles, each with its own provider and model:\n"
-            "  chat, consciousness, curator, vision, image, video.\n"
-            "You can point each role at a different provider (e.g. image on xAI\n"
-            "  API key while chat stays on OAuth) and pick its model independently."
+            "Ophelia uses separate roles for chat, consciousness, curator,\n"
+            "  vision, and video. Image SFW/NSFW is under 'Image generation'."
         ),
     )
     if pick != 0:
@@ -864,7 +862,8 @@ def _maybe_configure_fallback() -> None:
 
 def _models_menu(provider: str, *, on_phone: bool) -> None:
     role_defs = _PROVIDER_ROLE_DEFS[provider]
-    role_order = ["chat", "consciousness", "curator", "vision", "image", "video"]
+    # Image is configured in the dedicated Image generation (SFW + NSFW) menu.
+    role_order = ["chat", "consciousness", "curator", "vision", "video"]
     available_roles = [r for r in role_order if role_defs.get(r) is not None]
 
     while True:
@@ -877,8 +876,8 @@ def _models_menu(provider: str, *, on_phone: bool) -> None:
             selected=0,
             description=(
                 "Pick a role to choose its provider AND model.\n"
-                "Each role can use a different backend — e.g. image gen on xAI\n"
-                "  API key while chat stays on OAuth. 'auto' inherits the primary."
+                "Image SFW/NSFW backends are under Setup → Image generation,\n"
+                "  not here (avoids a second conflicting image picker)."
             ),
         )
         if pick < 0 or pick == len(items) - 1:
@@ -1266,52 +1265,118 @@ _IMAGE_BACKEND_OPTIONS = [
     ("a1111", "Automatic1111 / SDWebUI (local, uncensored, LoRAs — best local quality)"),
     ("comfyui", "ComfyUI (local, uncensored — most control)"),
     ("ollama", "Ollama image model (local)"),
-    ("xai-oauth", "xAI Grok Imagine (OAuth) — censored"),
-    ("xai", "xAI Grok Imagine (API key) — censored"),
-    ("openai", "OpenAI DALL-E — censored"),
+    ("xai-oauth", "xAI Grok Imagine (OAuth) — censored / SFW only"),
+    ("xai", "xAI Grok Imagine (API key) — censored / SFW only"),
+    ("openai", "OpenAI DALL-E — censored / SFW only"),
     ("fal", "fal.ai (fast cloud — NSFW-tolerant flux/sdxl)"),
     ("replicate", "Replicate (cloud — many NSFW-allowed models)"),
     ("civitai", "Civitai (NSFW checkpoints/LoRAs, generation API)"),
     ("modelslab", "ModelsLab (hosted SD — explicit/adult models)"),
 ]
 
+_NSFW_BACKEND_OPTIONS = [
+    ("auto", "Auto (first configured uncensored backend)"),
+    ("pollinations", "Pollinations (free, no API key)"),
+    ("a1111", "Automatic1111 / SDWebUI (local)"),
+    ("comfyui", "ComfyUI (local)"),
+    ("ollama", "Ollama image model (local)"),
+    ("fal", "fal.ai"),
+    ("replicate", "Replicate"),
+    ("civitai", "Civitai"),
+    ("modelslab", "ModelsLab"),
+]
 
-def _section_image_backends() -> None:
-    """Pick the image-generation backend and configure its credentials.
+# Provider -> (env_key, default, hint, presets)
+_IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
+    "pollinations": (
+        "POLLINATIONS_IMAGE_MODEL",
+        "flux",
+        "flux, turbo, sdxl, flux-realism, ...",
+        ["flux", "turbo", "sdxl", "flux-realism"],
+    ),
+    "a1111": (
+        "A1111_IMAGE_MODEL",
+        "",
+        "Checkpoint name (blank = webUI default)",
+        [],
+    ),
+    "comfyui": (
+        "COMFYUI_IMAGE_MODEL",
+        "",
+        "Checkpoint filename (blank = default graph)",
+        [],
+    ),
+    "ollama": (
+        "OLLAMA_IMAGE_MODEL",
+        "",
+        "ollama pull flux (or another image-capable model)",
+        ["flux"],
+    ),
+    "xai": (
+        "XAI_IMAGE_MODEL",
+        "grok-imagine-image",
+        "Grok Imagine model id",
+        ["grok-imagine-image", "grok-2-image", "grok-image"],
+    ),
+    "xai-oauth": (
+        "XAI_IMAGE_MODEL",
+        "grok-imagine-image",
+        "Grok Imagine model id",
+        ["grok-imagine-image", "grok-2-image", "grok-image"],
+    ),
+    "openai": (
+        "OPENAI_IMAGE_MODEL",
+        "dall-e-3",
+        "DALL-E / gpt-image model",
+        ["dall-e-3", "dall-e-2", "gpt-image-1"],
+    ),
+    "fal": (
+        "FAL_IMAGE_MODEL",
+        "fal-ai/fast-sdxl",
+        "fal-ai/fast-sdxl, fal-ai/flux/dev, ...",
+        ["fal-ai/fast-sdxl", "fal-ai/flux/dev", "fal-ai/flux/schnell"],
+    ),
+    "replicate": (
+        "REPLICATE_IMAGE_MODEL",
+        "stability-ai/sdxl",
+        "owner/model or owner/model:version",
+        ["stability-ai/sdxl"],
+    ),
+    "civitai": (
+        "CIVITAI_IMAGE_MODEL",
+        "",
+        "URN (blank = engine default flux)",
+        [],
+    ),
+    "modelslab": (
+        "MODELSLAB_IMAGE_MODEL",
+        "flux",
+        "flux, sdxl, ...",
+        ["flux", "sdxl"],
+    ),
+}
 
-    Several backends are NSFW-capable (pollinations, a1111, comfyui, fal,
-    replicate, civitai, modelslab, ollama). xAI/OpenAI are NOT — explicit
-    prompts are auto-routed away from them when the NSFW tier is enabled.
-    """
-    current = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
-    labels = [label for _, label in _IMAGE_BACKEND_OPTIONS]
-    default = next(
-        (i for i, (k, _) in enumerate(_IMAGE_BACKEND_OPTIONS) if k == current), 0
+
+def _image_status_lines() -> list[str]:
+    """Short SFW / NSFW summary for the image hub description."""
+    sfw = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
+    nsfw_on = (read_env_key("OPHELIA_IMAGE_NSFW_ALLOWED") or "").lower() in (
+        "1", "true", "yes", "on",
     )
-    pick = radiolist(
-        "Choose image generation backend",
-        labels,
-        selected=default,
-        description=(
-            "Backends marked 'censored' (xAI/OpenAI) refuse explicit prompts.\n"
-            "  For NSFW, pick an uncensored backend AND enable the NSFW tier below.\n"
-            "  Pollinations is free and needs no key — image gen works out of the box."
-        ),
-    )
-    if pick < 0:
-        return
-    provider = _IMAGE_BACKEND_OPTIONS[pick][0]
-    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_IMAGE": provider}
+    nsfw_p = (read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto").strip().lower()
+    nsfw_m = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip()
+    lines = [f"SFW backend: {sfw}"]
+    if nsfw_on:
+        extra = f" model={nsfw_m}" if nsfw_m else ""
+        lines.append(f"NSFW: ON → {nsfw_p}{extra}")
+    else:
+        lines.append("NSFW: OFF (explicit requests refused)")
+    return lines
 
-    if provider == "pollinations":
-        m = prompt_text(
-            "POLLINATIONS_IMAGE_MODEL",
-            default=read_env_key("POLLINATIONS_IMAGE_MODEL") or "flux",
-            hint="flux, turbo, sdxl, flux-realism, ...",
-        )
-        if m:
-            updates["POLLINATIONS_IMAGE_MODEL"] = m
-    elif provider == "a1111":
+
+def _configure_image_credentials(provider: str, updates: dict[str, str | None]) -> None:
+    """Prompt for URL/API keys needed by an image backend (not the model)."""
+    if provider == "a1111":
         base = prompt_text(
             "A1111_BASE_URL",
             default=read_env_key("A1111_BASE_URL") or "http://127.0.0.1:7860",
@@ -1325,22 +1390,12 @@ def _section_image_backends() -> None:
         )
         if key:
             updates["A1111_API_KEY"] = key
-        ckpt = prompt_text(
-            "A1111_IMAGE_MODEL (optional checkpoint name, blank = webUI default)",
-            default=read_env_key("A1111_IMAGE_MODEL") or "",
-        )
-        updates["A1111_IMAGE_MODEL"] = ckpt or None
     elif provider == "comfyui":
         base = prompt_text(
             "COMFYUI_BASE_URL",
             default=read_env_key("COMFYUI_BASE_URL") or "http://127.0.0.1:8188",
         )
         updates["COMFYUI_BASE_URL"] = base
-        ckpt = prompt_text(
-            "COMFYUI_IMAGE_MODEL (optional checkpoint filename, blank = default graph)",
-            default=read_env_key("COMFYUI_IMAGE_MODEL") or "",
-        )
-        updates["COMFYUI_IMAGE_MODEL"] = ckpt or None
     elif provider == "fal":
         key = prompt_text(
             "FAL_API_KEY (get one at https://fal.ai/dashboard/keys)",
@@ -1349,13 +1404,6 @@ def _section_image_backends() -> None:
         )
         if key:
             updates["FAL_API_KEY"] = key
-        m = prompt_text(
-            "FAL_IMAGE_MODEL",
-            default=read_env_key("FAL_IMAGE_MODEL") or "fal-ai/fast-sdxl",
-            hint="fal-ai/fast-sdxl, fal-ai/flux/dev, fal-ai/flux/schnell, ...",
-        )
-        if m:
-            updates["FAL_IMAGE_MODEL"] = m
     elif provider == "replicate":
         key = prompt_text(
             "REPLICATE_API_KEY (get one at https://replicate.com/account/api-tokens)",
@@ -1364,13 +1412,6 @@ def _section_image_backends() -> None:
         )
         if key:
             updates["REPLICATE_API_KEY"] = key
-        m = prompt_text(
-            "REPLICATE_IMAGE_MODEL",
-            default=read_env_key("REPLICATE_IMAGE_MODEL") or "stability-ai/sdxl",
-            hint="owner/model or owner/model:version — e.g. stability-ai/sdxl",
-        )
-        if m:
-            updates["REPLICATE_IMAGE_MODEL"] = m
     elif provider == "civitai":
         key = prompt_text(
             "CIVITAI_API_KEY (account -> API keys)",
@@ -1379,12 +1420,6 @@ def _section_image_backends() -> None:
         )
         if key:
             updates["CIVITAI_API_KEY"] = key
-        m = prompt_text(
-            "CIVITAI_IMAGE_MODEL (optional URN, blank = engine default flux)",
-            default=read_env_key("CIVITAI_IMAGE_MODEL") or "",
-            hint="urn:air:sdxl:checkpoint:civitai:101055@128078",
-        )
-        updates["CIVITAI_IMAGE_MODEL"] = m or None
     elif provider == "modelslab":
         key = prompt_text(
             "MODELSLAB_API_KEY (https://modelslab.com/dashboard/api-keys)",
@@ -1393,49 +1428,233 @@ def _section_image_backends() -> None:
         )
         if key:
             updates["MODELSLAB_API_KEY"] = key
-        m = prompt_text(
-            "MODELSLAB_IMAGE_MODEL",
-            default=read_env_key("MODELSLAB_IMAGE_MODEL") or "flux",
-            hint="flux, sdxl, ...",
-        )
-        if m:
-            updates["MODELSLAB_IMAGE_MODEL"] = m
-    elif provider == "ollama":
-        m = prompt_text(
-            "OLLAMA_IMAGE_MODEL",
-            default=read_env_key("OLLAMA_IMAGE_MODEL") or "",
-            hint="ollama pull flux (or another image-capable model)",
-        )
-        updates["OLLAMA_IMAGE_MODEL"] = m or None
+    elif provider == "xai":
+        existing = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
+        if not existing:
+            key = prompt_text("XAI_API_KEY", secret=True, default="")
+            if key:
+                updates["XAI_API_KEY"] = key
+    elif provider == "openai":
+        if not read_env_key("OPENAI_API_KEY"):
+            key = prompt_text("OPENAI_API_KEY", secret=True, default="")
+            if key:
+                updates["OPENAI_API_KEY"] = key
 
-    # NSFW content tier
+
+def _pick_image_model(
+    provider: str,
+    *,
+    title: str,
+    store_env: str | None = None,
+    allow_clear: bool = False,
+) -> str | None:
+    """Pick a model for an image backend.
+
+    store_env: if set, write the choice there (NSFW override). Otherwise write
+    to the provider's normal model env (SFW path).
+    Returns the chosen model string, or None if cancelled / cleared.
+    """
+    if provider == "auto":
+        return None
+    preset = _IMAGE_MODEL_PRESETS.get(provider)
+    if not preset:
+        return None
+    env_key, default, hint, presets = preset
+    target_env = store_env or env_key
+    current = read_env_key(target_env) or ("" if store_env else default)
+    choices: list[str] = []
+    if current:
+        choices.append(current)
+    for p in presets:
+        if p and p not in choices:
+            choices.append(p)
+    if allow_clear:
+        choices.append("(clear — use provider default model)")
+    choices.append("Type a model name manually...")
+    selected = 0
+    if current:
+        selected = next((i for i, c in enumerate(choices) if c == current), 0)
+    pick = radiolist(
+        title,
+        choices,
+        selected=selected,
+        description=f"Backend: {provider}\n  {hint}",
+    )
+    if pick < 0:
+        return None
+    chosen = choices[pick]
+    if chosen == "(clear — use provider default model)":
+        write_env_updates({target_env: None})
+        print(f"\n  Cleared {target_env}")
+        return None
+    if chosen == "Type a model name manually...":
+        typed = prompt_text(target_env, default=current or default, hint=hint)
+        if typed is None:
+            return None
+        chosen = typed.strip()
+        if not chosen:
+            write_env_updates({target_env: None})
+            return None
+    write_env_updates({target_env: chosen})
+    print(f"\n  Saved {target_env}={chosen}")
+    return chosen
+
+
+def _section_image_backends() -> None:
+    """Image generation hub: separate SFW and NSFW backend + model picks.
+
+    SFW → OPHELIA_PROVIDER_IMAGE + that backend's model env.
+    NSFW → OPHELIA_IMAGE_NSFW_ALLOWED / _PROVIDER / _MODEL (model is an
+    override so SFW and NSFW can differ even on the same backend).
+    """
+    while True:
+        status = "\n".join(_image_status_lines())
+        pick = radiolist(
+            "Image generation — SFW + NSFW",
+            [
+                "SFW backend + model (normal images)",
+                "NSFW backend + model (explicit images)",
+                "Show current routing",
+                "Done",
+            ],
+            selected=0,
+            description=(
+                status
+                + "\n\nPick SFW and NSFW separately. Explicit requests never go to "
+                "xAI/OpenAI — they use the NSFW backend."
+            ),
+        )
+        if pick < 0 or pick == 3:
+            return
+        if pick == 0:
+            _configure_sfw_image()
+        elif pick == 1:
+            _configure_nsfw_image()
+        elif pick == 2:
+            _show_image_routing()
+            pause()
+
+
+def _configure_sfw_image() -> None:
+    current = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
+    labels = [label for _, label in _IMAGE_BACKEND_OPTIONS]
+    default = next(
+        (i for i, (k, _) in enumerate(_IMAGE_BACKEND_OPTIONS) if k == current), 0
+    )
+    pick = radiolist(
+        "SFW image backend",
+        labels,
+        selected=default,
+        description=(
+            "Used for normal (non-explicit) generate_image calls.\n"
+            "  Censored backends (xAI/OpenAI) are fine here — NSFW is separate."
+        ),
+    )
+    if pick < 0:
+        return
+    provider = _IMAGE_BACKEND_OPTIONS[pick][0]
+    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_IMAGE": provider}
+    _configure_image_credentials(provider, updates)
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    if provider != "auto":
+        _pick_image_model(
+            provider,
+            title=f"SFW model — {provider}",
+        )
+    print(f"  SFW image backend: {provider}")
+
+
+def _configure_nsfw_image() -> None:
     nsfw_now = (read_env_key("OPHELIA_IMAGE_NSFW_ALLOWED") or "").lower() in (
         "1", "true", "yes", "on",
     )
     pick_n = radiolist(
-        "Enable NSFW content tier? (allows explicit prompts; routes them to an "
-        "uncensored backend — never xAI/OpenAI)",
-        ["No (refuse explicit image requests)", "Yes (allow, route to uncensored)"],
+        "Enable NSFW content tier?",
+        [
+            "No — refuse explicit image requests",
+            "Yes — allow, route to a separate uncensored backend + model",
+        ],
         selected=1 if nsfw_now else 0,
+        description=(
+            "When ON, generate_image(nsfw=true) uses the NSFW backend/model.\n"
+            "  Never routes to xAI/OpenAI (those refuse NSFW and may flag accounts)."
+        ),
     )
-    want_nsfw = pick_n == 1
-    updates["OPHELIA_IMAGE_NSFW_ALLOWED"] = "true" if want_nsfw else "false"
-    if want_nsfw:
-        nsfw_prov = prompt_text(
-            "OPHELIA_IMAGE_NSFW_PROVIDER (auto = first configured uncensored)",
-            default=read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto",
+    if pick_n < 0:
+        return
+    if pick_n == 0:
+        write_env_updates(
+            {
+                "OPHELIA_IMAGE_NSFW_ALLOWED": "false",
+                "OPHELIA_IMAGE_NSFW_PROVIDER": None,
+                "OPHELIA_IMAGE_NSFW_MODEL": None,
+            }
         )
-        updates["OPHELIA_IMAGE_NSFW_PROVIDER"] = nsfw_prov or "auto"
+        print("\n  NSFW tier: OFF")
+        return
 
+    current = (read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto").strip().lower()
+    labels = [label for _, label in _NSFW_BACKEND_OPTIONS]
+    default = next(
+        (i for i, (k, _) in enumerate(_NSFW_BACKEND_OPTIONS) if k == current), 0
+    )
+    pick = radiolist(
+        "NSFW image backend",
+        labels,
+        selected=default,
+        description="Uncensored backends only. Auto picks the first one that is configured.",
+    )
+    if pick < 0:
+        return
+    provider = _NSFW_BACKEND_OPTIONS[pick][0]
+    updates: dict[str, str | None] = {
+        "OPHELIA_IMAGE_NSFW_ALLOWED": "true",
+        "OPHELIA_IMAGE_NSFW_PROVIDER": provider,
+    }
+    if provider != "auto":
+        _configure_image_credentials(provider, updates)
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
-    print(f"  Active image backend: {provider}")
-    if want_nsfw:
-        s = Settings()
-        print(f"  NSFW tier: ON -> explicit requests route to "
-              f"{s.image_nsfw_provider_resolved()}")
+
+    if provider != "auto":
+        _pick_image_model(
+            provider,
+            title=f"NSFW model — {provider}",
+            store_env="OPHELIA_IMAGE_NSFW_MODEL",
+            allow_clear=True,
+        )
     else:
-        print("  NSFW tier: OFF (explicit image requests will be refused)")
+        # Still allow a model override that applies to whatever auto resolves to.
+        override = prompt_text(
+            "OPHELIA_IMAGE_NSFW_MODEL (optional override; blank = provider default)",
+            default=read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "",
+        )
+        write_env_updates(
+            {"OPHELIA_IMAGE_NSFW_MODEL": override.strip() or None}
+        )
+
+    s = Settings()
+    resolved = s.image_nsfw_provider_resolved()
+    model = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip() or "(provider default)"
+    print(f"  NSFW tier: ON → {resolved} / {model}")
+
+
+def _show_image_routing() -> None:
+    s = Settings()
+    from ophelia.providers.router import build_provider_stack
+
+    stack = build_provider_stack(s)
+    sfw_p = stack.image_provider_for(nsfw=False)
+    sfw_m = stack.image_model_for(sfw_p, nsfw=False)
+    print("\n  Current image routing:")
+    print(f"    SFW  → {sfw_p} / {sfw_m}")
+    if s.image_nsfw_allowed:
+        nsfw_p = stack.image_provider_for(nsfw=True)
+        nsfw_m = stack.image_model_for(nsfw_p, nsfw=True)
+        print(f"    NSFW → {nsfw_p} / {nsfw_m}")
+    else:
+        print("    NSFW → disabled")
 
 
 def _section_tts() -> None:

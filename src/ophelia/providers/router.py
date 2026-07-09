@@ -604,7 +604,16 @@ class ProviderStack:
             return self.settings.image_nsfw_provider_resolved()
         return self.name("image")
 
-    def image_model_for(self, provider: str) -> str:
+    def image_model_for(self, provider: str, *, nsfw: bool = False) -> str:
+        """Resolve the image model for a provider.
+
+        When nsfw=True and OPHELIA_IMAGE_NSFW_MODEL is set, that override wins
+        so SFW and NSFW can use different models even on the same backend.
+        """
+        if nsfw:
+            override = (self.settings.image_nsfw_model or "").strip()
+            if override:
+                return override
         if provider in ("xai-oauth", "xai"):
             return self.settings.xai_image_model
         if provider == "openai":

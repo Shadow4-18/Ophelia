@@ -192,6 +192,15 @@ class Settings(BaseSettings):
             "civitai > fal > replicate > ollama)."
         ),
     )
+    image_nsfw_model: str | None = Field(
+        default=None,
+        alias="OPHELIA_IMAGE_NSFW_MODEL",
+        description=(
+            "Optional model override for explicit images. When set, NSFW "
+            "requests use this model on the NSFW provider instead of that "
+            "provider's normal image-model env (e.g. POLLINATIONS_IMAGE_MODEL)."
+        ),
+    )
 
     # Pollinations — free, no API key, lax on NSFW (safe=false).
     pollinations_base_url: str = Field(

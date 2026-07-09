@@ -354,8 +354,9 @@ def _check_image_nsfw_routing(report: SelfCheckReport, stack: ProviderStack) -> 
     nsfw_allowed = bool(settings.image_nsfw_allowed)
     if nsfw_allowed:
         nsfw = stack.image_provider_for(nsfw=True)
+        nsfw_model = stack.image_model_for(nsfw, nsfw=True)
         detail = (
-            f"SFW={sfw} | NSFW={nsfw} (allowed=true, "
+            f"SFW={sfw} | NSFW={nsfw}/{nsfw_model} (allowed=true, "
             f"OPHELIA_IMAGE_NSFW_PROVIDER={settings.image_nsfw_provider})"
         )
         censored = {"xai", "xai-oauth", "openai"}
