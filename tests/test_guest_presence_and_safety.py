@@ -129,3 +129,19 @@ def test_advanced_roles_menu_excludes_image() -> None:
     assert 'role_order = ["chat", "consciousness", "curator", "vision", "video"]' in body
     assert "SFW backend + model" in body
     assert "NSFW backend + model" in body
+
+
+def test_fallback_and_nsfw_use_radiolist_not_free_text() -> None:
+    """Backup + NSFW model picks must be selectable lists, not type-first."""
+    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "setup" / "interactive.py"
+    body = src.read_text(encoding="utf-8")
+    assert "def _pick_fallback_model(" in body
+    assert "Shared fallback model (optional)" in body
+    # NSFW auto path must call _pick_image_model, not prompt_text for the model.
+    nsfw_fn = body.split("def _configure_nsfw_image()")[1].split("def _show_image_routing")[0]
+    assert "_pick_image_model(" in nsfw_fn
+    assert "OPHELIA_IMAGE_NSFW_MODEL (optional override" not in nsfw_fn
+    # Old free-text fallback prompt must be gone.
+    assert 'prompt_text(\n        "OPHELIA_FALLBACK_MODEL' not in body
+    assert 'prompt_text(\n            "OPHELIA_FALLBACK_MODEL (optional' not in body
+

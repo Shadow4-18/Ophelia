@@ -844,20 +844,76 @@ def _maybe_configure_fallback() -> None:
     ordered = [available[i] for i in sorted(chosen)]
     updates: dict[str, str | None] = {"OPHELIA_FALLBACK_PROVIDERS": ",".join(ordered)}
 
-    # Optional: a single model to use on every fallback (e.g. always deepseek-v4-flash).
-    fb_model = prompt_text(
-        "OPHELIA_FALLBACK_MODEL (optional — same model on every fallback)",
-        default=read_env_key("OPHELIA_FALLBACK_MODEL") or "",
-        hint="Leave blank to use each fallback provider's own default model",
-    )
-    if fb_model:
-        updates["OPHELIA_FALLBACK_MODEL"] = fb_model
-    else:
-        updates["OPHELIA_FALLBACK_MODEL"] = None
+    # Optional shared model — pick from presets of the chosen fallbacks.
+    fb_model = _pick_fallback_model(ordered)
+    updates["OPHELIA_FALLBACK_MODEL"] = fb_model
 
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
     print(f"  Fallback chain: {' -> '.join(ordered)}")
+    if fb_model:
+        print(f"  Shared fallback model: {fb_model}")
+    else:
+        print("  Shared fallback model: (each provider's own default)")
+
+
+def _pick_fallback_model(providers: list[str]) -> str | None:
+    """Radiolist of chat-model presets from the chosen fallback providers.
+
+    Returns the model id to store in OPHELIA_FALLBACK_MODEL, or None to clear
+    (each fallback uses its own default).
+    """
+    current = (read_env_key("OPHELIA_FALLBACK_MODEL") or "").strip()
+    presets: list[str] = []
+    for p in providers:
+        role = _PROVIDER_ROLE_DEFS.get(p, {}).get("chat") or {}
+        for m in role.get("presets") or []:
+            if m and m not in presets:
+                presets.append(m)
+        default = (role.get("default") or "").strip()
+        if default and default not in presets:
+            presets.insert(0, default)
+        if p == "ollama":
+            for m in _list_ollama_model_names()[:8]:
+                if m and m not in presets:
+                    presets.append(m)
+
+    choices: list[str] = [
+        "(each provider's own default — no shared override)",
+    ]
+    if current and current not in choices:
+        choices.append(current)
+    for m in presets:
+        if m not in choices:
+            choices.append(m)
+    choices.append("Type a model name manually...")
+
+    selected = 0
+    if current:
+        selected = next((i for i, c in enumerate(choices) if c == current), 0)
+    pick = radiolist(
+        "Shared fallback model (optional)",
+        choices,
+        selected=selected,
+        description=(
+            "Same model id used on every fallback provider when set.\n"
+            "  Leave on 'own default' unless you want one cheap model everywhere.\n"
+            "  Presets come from: " + ", ".join(providers)
+        ),
+    )
+    if pick < 0:
+        return current or None
+    chosen = choices[pick]
+    if chosen.startswith("(each provider"):
+        return None
+    if chosen == "Type a model name manually...":
+        typed = prompt_text(
+            "OPHELIA_FALLBACK_MODEL",
+            default=current,
+            hint="Only if the model you want isn't in the list above",
+        )
+        return (typed or "").strip() or None
+    return chosen
 
 
 def _models_menu(provider: str, *, on_phone: bool) -> None:
@@ -1292,19 +1348,36 @@ _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
         "POLLINATIONS_IMAGE_MODEL",
         "flux",
         "flux, turbo, sdxl, flux-realism, ...",
-        ["flux", "turbo", "sdxl", "flux-realism"],
+        [
+            "flux",
+            "flux-realism",
+            "flux-anime",
+            "flux-cablyai",
+            "turbo",
+            "sdxl",
+            "kontext",
+        ],
     ),
     "a1111": (
         "A1111_IMAGE_MODEL",
         "",
-        "Checkpoint name (blank = webUI default)",
-        [],
+        "Checkpoint name as shown in SDWebUI (blank = webUI default)",
+        [
+            "sd_xl_base_1.0.safetensors",
+            "v1-5-pruned-emaonly.safetensors",
+            "dreamshaper_8.safetensors",
+            "realisticVisionV51_v51VAE.safetensors",
+        ],
     ),
     "comfyui": (
         "COMFYUI_IMAGE_MODEL",
         "",
-        "Checkpoint filename (blank = default graph)",
-        [],
+        "Checkpoint filename under ComfyUI/models/checkpoints",
+        [
+            "sd_xl_base_1.0.safetensors",
+            "v1-5-pruned-emaonly.safetensors",
+            "flux1-dev-fp8.safetensors",
+        ],
     ),
     "ollama": (
         "OLLAMA_IMAGE_MODEL",
@@ -1334,13 +1407,23 @@ _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
         "FAL_IMAGE_MODEL",
         "fal-ai/fast-sdxl",
         "fal-ai/fast-sdxl, fal-ai/flux/dev, ...",
-        ["fal-ai/fast-sdxl", "fal-ai/flux/dev", "fal-ai/flux/schnell"],
+        [
+            "fal-ai/fast-sdxl",
+            "fal-ai/flux/dev",
+            "fal-ai/flux/schnell",
+            "fal-ai/flux-pro",
+            "fal-ai/stable-diffusion-v35-large",
+        ],
     ),
     "replicate": (
         "REPLICATE_IMAGE_MODEL",
         "stability-ai/sdxl",
         "owner/model or owner/model:version",
-        ["stability-ai/sdxl"],
+        [
+            "stability-ai/sdxl",
+            "black-forest-labs/flux-schnell",
+            "black-forest-labs/flux-dev",
+        ],
     ),
     "civitai": (
         "CIVITAI_IMAGE_MODEL",
@@ -1352,7 +1435,7 @@ _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
         "MODELSLAB_IMAGE_MODEL",
         "flux",
         "flux, sdxl, ...",
-        ["flux", "sdxl"],
+        ["flux", "sdxl", "realistic-vision", "anything-v5"],
     ),
 }
 
@@ -1625,13 +1708,16 @@ def _configure_nsfw_image() -> None:
             allow_clear=True,
         )
     else:
-        # Still allow a model override that applies to whatever auto resolves to.
-        override = prompt_text(
-            "OPHELIA_IMAGE_NSFW_MODEL (optional override; blank = provider default)",
-            default=read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "",
-        )
-        write_env_updates(
-            {"OPHELIA_IMAGE_NSFW_MODEL": override.strip() or None}
+        # Auto backend — still pick a model from the resolved uncensored
+        # provider's presets (or common NSFW presets), never free-text-first.
+        s = Settings()
+        resolved = s.image_nsfw_provider_resolved()
+        print(f"\n  Auto NSFW backend currently resolves to: {resolved}")
+        _pick_image_model(
+            resolved,
+            title=f"NSFW model — auto → {resolved}",
+            store_env="OPHELIA_IMAGE_NSFW_MODEL",
+            allow_clear=True,
         )
 
     s = Settings()
