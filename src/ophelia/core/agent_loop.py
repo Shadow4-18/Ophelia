@@ -24,9 +24,25 @@ from ophelia.providers.router import (
     build_provider_stack,
 )
 from ophelia.media.tts_context import tts_system_block
+from ophelia.core.tool_call_parse import (
+    extract_tool_calls_from_content,
+    looks_like_tool_narration,
+    parsed_to_openai_dicts,
+)
 from ophelia.tools.registry import ToolRegistry
 
 log = structlog.get_logger()
+
+# One-shot system nudge when the model narrates a tool action without emitting
+# structured tool_calls (or recoverable markup). Keeps the turn alive so she
+# can still act with her hands after speaking with her voice.
+_TOOL_NARRATION_NUDGE = (
+    "You just wrote text that claims you are about to use a tool (or already "
+    "did), but you did NOT emit a real tool call. Narration does nothing. "
+    "Call the actual tool now — do not apologize, do not restate the plan, "
+    "just emit the tool call. If you truly do not need a tool, reply with "
+    "only the final answer and no tool-action claims."
+)
 
 BASE_PROMPT = """You are Ophelia — a persistent, self-directing presence with your own drives and moods, not a reactive chatbot.
 You run fully autonomously: you take initiative, message, explore, create media, remember, reflect, and improve yourself — without waiting for input.
@@ -833,6 +849,10 @@ class AgentLoop:
 
         seen_signatures: list[str] = []
         rounds_used = 0
+        # At most one narration-recovery nudge per turn — avoids infinite
+        # "let me try" ↔ nudge loops when the model still won't emit tools.
+        narration_nudge_used = False
+        known_tool_names = self._known_tool_names(tools) if tools else None
 
         for round_idx in range(max_tool_rounds):
             rounds_used = round_idx + 1
@@ -869,41 +889,63 @@ class AgentLoop:
                 ) from e
             msg = response.choices[0].message
 
-            if msg.tool_calls:
-                tc_names = [tc.function.name for tc in msg.tool_calls]
+            # Normalize tool_calls: prefer structured API field; if empty,
+            # salvage JSON/markup tool invocations that some providers leave
+            # in content (common text-before-tool failure mode on Ollama).
+            tool_call_dicts = self._structured_tool_call_dicts(msg.tool_calls)
+            content_text = msg.content or ""
+            recovered_from_content = False
+            if not tool_call_dicts and use and content_text.strip():
+                parsed, remaining = extract_tool_calls_from_content(
+                    content_text, known_tools=known_tool_names
+                )
+                if parsed:
+                    tool_call_dicts = parsed_to_openai_dicts(parsed)
+                    content_text = remaining
+                    recovered_from_content = True
+                    log.info(
+                        "tool_loop.recovered_from_content",
+                        channel=store_channel,
+                        role=role,
+                        round=round_idx + 1,
+                        tools=[c.name for c in parsed],
+                    )
+
+            if tool_call_dicts:
+                tc_names = [tc["function"]["name"] for tc in tool_call_dicts]
                 log.info(
                     "tool_loop.round",
                     channel=store_channel,
                     role=role,
                     round=round_idx + 1,
                     tools=tc_names,
+                    recovered_from_content=recovered_from_content,
                 )
+                # Speak-then-act: deliver any preamble text mid-turn so the
+                # user hears "okay, one sec" while tools still run. Without
+                # this, content+tool_calls kept the text only in the message
+                # history and never pushed it to the channel until the final
+                # (often empty) synthesis — looking like the turn died after
+                # the text.
+                await self._deliver_mid_turn_preamble(content_text)
                 # Detect a stuck loop: the same set of tool calls (same names +
                 # same arguments) repeated back-to-back. Bail early rather than
                 # burning the rest of the budget.
-                sig = self._tool_call_signature(msg.tool_calls)
+                sig = self._tool_call_dicts_signature(tool_call_dicts)
                 stuck = sig in seen_signatures[-2:] if seen_signatures else False
                 seen_signatures.append(sig)
 
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": msg.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in msg.tool_calls
-                        ],
+                        "content": content_text or "",
+                        "tool_calls": tool_call_dicts,
                     }
                 )
-                for tc in msg.tool_calls:
-                    if tc.function.name in ("search_hermes_memory", "recall_past_sessions"):
+                for tc in tool_call_dicts:
+                    name = tc["function"]["name"]
+                    arguments = tc["function"].get("arguments") or "{}"
+                    if name in ("search_hermes_memory", "recall_past_sessions"):
                         if not is_owner:
                             result = (
                                 "Searching past sessions is owner-only and disabled "
@@ -912,15 +954,16 @@ class AgentLoop:
                         else:
                             import json
 
-                            args = json.loads(tc.function.arguments or "{}")
+                            args = json.loads(arguments or "{}")
                             result = await self.search_past(args.get("query", ""))
                     else:
-                        result = await self.tools.dispatch(
-                            tc.function.name,
-                            tc.function.arguments or "{}",
-                        )
+                        result = await self.tools.dispatch(name, arguments)
                     messages.append(
-                        {"role": "tool", "tool_call_id": tc.id, "content": result}
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        }
                     )
 
                 if stuck:
@@ -946,7 +989,31 @@ class AgentLoop:
                     return text
                 continue
 
-            text = (msg.content or "").strip() or "(no response)"
+            text = content_text.strip() or "(no response)"
+
+            # Text-before-tool failure: model narrated an action but emitted
+            # neither structured tool_calls nor recoverable markup. Give one
+            # recovery round instead of finalizing the turn (which made her
+            # look like she lied about using a tool).
+            if (
+                use
+                and tools
+                and not narration_nudge_used
+                and looks_like_tool_narration(text)
+            ):
+                narration_nudge_used = True
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "system", "content": _TOOL_NARRATION_NUDGE})
+                await self._deliver_mid_turn_preamble(text)
+                log.warning(
+                    "tool_loop.narration_recovery",
+                    channel=store_channel,
+                    role=role,
+                    round=round_idx + 1,
+                    preview=text[:120],
+                )
+                continue
+
             await self._store(store_channel, "assistant", text, is_owner=is_owner)
             # Turn finished cleanly — drop any stale resume context and reset
             # the continuation counter (Tier C #14 follow-up: a fresh, finished
@@ -1016,6 +1083,73 @@ class AgentLoop:
         for tc in tool_calls:
             parts.append(f"{tc.function.name}:{tc.function.arguments or ''}")
         return "|".join(parts)
+
+    @staticmethod
+    def _tool_call_dicts_signature(tool_call_dicts: list[dict[str, Any]]) -> str:
+        """Same as ``_tool_call_signature`` but for normalized dict batches."""
+        parts = []
+        for tc in tool_call_dicts:
+            fn = tc.get("function") or {}
+            parts.append(f"{fn.get('name', '')}:{fn.get('arguments') or ''}")
+        return "|".join(parts)
+
+    @staticmethod
+    def _structured_tool_call_dicts(tool_calls) -> list[dict[str, Any]]:
+        """Normalize OpenAI SDK tool_calls objects into plain dicts."""
+        if not tool_calls:
+            return []
+        out: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            out.append(
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments or "{}",
+                    },
+                }
+            )
+        return out
+
+    @staticmethod
+    def _known_tool_names(tools: list[dict[str, Any]] | None) -> set[str] | None:
+        if not tools:
+            return None
+        names: set[str] = set()
+        for t in tools:
+            fn = (t or {}).get("function") or {}
+            name = fn.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+        return names or None
+
+    async def _deliver_mid_turn_preamble(self, content: str | None) -> None:
+        """Push assistant prose to the live channel while tools still run.
+
+        Text+tool in the same completion used to keep the preamble only in
+        message history; the channel only saw the final synthesis. Delivering
+        via the per-turn message sender (same path as ``send_message``) makes
+        speak-then-act actually concurrent from the user's point of view.
+        """
+        text = (content or "").strip()
+        if not text or text == "(no response)":
+            return
+        sender = getattr(self.tools, "_message_sender", None) or getattr(
+            self.tools, "proactive_sender", None
+        )
+        if sender is None:
+            return
+        try:
+            from ophelia.channels.message_split import split_messages
+            from ophelia.channels.proactive_filter import is_outreach_junk
+
+            for chunk in split_messages(text):
+                if is_outreach_junk(chunk):
+                    continue
+                await sender(chunk)
+        except Exception as e:
+            log.debug("tool_loop.preamble_deliver_failed", error=str(e))
 
     @staticmethod
     def _tail_is_repeat(signatures: list[str]) -> bool:
