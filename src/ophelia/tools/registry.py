@@ -634,13 +634,30 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "who_am_i_talking_to",
+            "description": (
+                "Return the authoritative identity of the person you're "
+                "talking to RIGHT NOW — their channel (platform:user_id), "
+                "whether they are the owner or a guest, and the full list of "
+                "owner channels. Use this when asked 'who am I?', 'what's my "
+                "id?', 'am I the owner?', or whenever you're unsure. Do NOT "
+                "guess from the guest list or invent IDs — call this instead."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_guests",
             "description": (
                 "List the guests you know — approved users on Telegram/Discord, "
                 "with their resolved name, name source (owner-set / self-set / "
                 "approval display), and last activity. Use this when the owner "
                 "asks about your guests or when you want to address/refer to "
-                "one by name. Owner-only."
+                "one by name. Owner-only. This is NOT how you identify the "
+                "current speaker — use who_am_i_talking_to for that. The "
+                "owner is never in this list."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -889,6 +906,7 @@ class ToolRegistry:
             "phone_game_look": self._phone_game_look,
             "phone_game_open": self._phone_game_open,
             "list_guests": self._list_guests,
+            "who_am_i_talking_to": self._who_am_i_talking_to,
             "set_guest_name": self._set_guest_name,
             "send_message_to_guest": self._send_message_to_guest,
             "set_guest_rapport": self._set_guest_rapport,
@@ -1173,6 +1191,43 @@ class ToolRegistry:
             "Pass any of these as `image` to generate_video for image-to-video."
         )
         return "\n".join(lines)
+
+    async def _who_am_i_talking_to(self) -> str:
+        """Authoritative identity of the current speaker. Available to owner
+        and guests — this is the grounded answer to 'who am I?' so she stops
+        inventing IDs from the guest table or memory fragments."""
+        channel = (getattr(self, "_current_sender_channel", None) or "").strip()
+        if not channel:
+            return (
+                "Current speaker channel is unknown (no active chat turn). "
+                "Can't identify who you're talking to right now."
+            )
+        is_owner = self.settings.is_owner_channel(channel)
+        owners = sorted(self.settings.owner_channels())
+        owner_line = ", ".join(owners) if owners else "(none configured)"
+        role = "OWNER (your creator)" if is_owner else "GUEST (not your owner)"
+        name_line = ""
+        if self.memory and ":" in channel:
+            platform, _, uid_s = channel.partition(":")
+            try:
+                uid = int(uid_s)
+            except ValueError:
+                uid = None
+            if uid is not None:
+                from ophelia.memory.guests import get_guest_name
+
+                name = await get_guest_name(
+                    self.memory, platform, uid, data_dir=self.settings.data_dir
+                )
+                if name:
+                    name_line = f"\n- Known name: {name}"
+        return (
+            f"Current speaker:\n"
+            f"- Channel: {channel}\n"
+            f"- Role: {role}{name_line}\n"
+            f"- All owner channels: {owner_line}\n"
+            "(This is authoritative. Do not invent a different id.)"
+        )
 
     async def _list_guests(self) -> str:
         """List approved guests with resolved names + last activity. Owner-only."""

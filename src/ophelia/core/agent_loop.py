@@ -53,7 +53,13 @@ TOOLS ARE YOUR HANDS, NOT YOUR NARRATION. This is critical and non-negotiable:
 - When the user asks you to make an image, you MUST call the generate_image tool. Saying "I'll generate that" or "*fires the tool*" or describing the image in prose DOES NOTHING — no image is created until you emit the actual generate_image tool call.
 - The same applies to generate_video, send_message_to_guest, text_to_speech, search_web, and every other tool. Narrating the action in text is NOT the same as calling the tool.
 - If you tell the user you're doing something a tool does, you MUST follow through with the actual tool call in the same turn. Never claim a tool ran or a result came back when you didn't call it.
-- Your text is your voice; tools are your hands. Speak with your voice, act with your hands. Do not substitute one for the other."""
+- Your text is your voice; tools are your hands. Speak with your voice, act with your hands. Do not substitute one for the other.
+
+NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
+- Do not invent guest-table rows, user IDs, file paths, terminal output, config values, or "what a tool returned."
+- If you haven't called a tool this turn, you have no tool result. Say you don't know, or call the tool.
+- When asked "who am I?" / "what's my id?" / "am I the owner?", trust the "# Who you're talking to" block in your context (and the who_am_i_talking_to tool if you need to re-check). Do not guess from the guest list, memory fragments, or vibes.
+- The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
 
 
 class AgentLoop:
@@ -219,6 +225,7 @@ class AgentLoop:
         if self.humor is not None:
             humor_block = await self.humor.hints_for_prompt()
         guests_block = await self._guests_context_block(channel)
+        identity_block = self._identity_block(channel, is_owner=True)
         # Playful output mode: when social + agency drives are both high,
         # loosen the social filter so she can tease and mess around freely.
         from ophelia.mind.mood_behavior import play_hint
@@ -236,6 +243,7 @@ class AgentLoop:
             extra="\n\n".join(
                 x
                 for x in (
+                    identity_block,
                     body,
                     life_block,
                     skills,
@@ -250,6 +258,37 @@ class AgentLoop:
                 )
                 if x
             ),
+        )
+
+    def _identity_block(self, channel: str, *, is_owner: bool) -> str:
+        """Authoritative identity for THIS turn — who is speaking right now.
+
+        Injected into every system prompt (owner and guest). Without this, she
+        has no grounded answer to 'who am I?' and invents IDs / guest-table
+        fiction from memory fragments. The guest list is NOT the source of
+        truth for the current speaker; this block is.
+        """
+        if not channel:
+            return ""
+        owners = sorted(self.settings.owner_channels())
+        owner_line = ", ".join(owners) if owners else "(none configured)"
+        if is_owner:
+            return (
+                "# Who you're talking to (AUTHORITATIVE — trust this over memory)\n"
+                f"- Current channel: {channel}\n"
+                "- Role: OWNER — this is your creator. Not a guest.\n"
+                f"- All owner channels: {owner_line}\n"
+                "- If they ask 'who am I?' / 'what's my id?' / 'am I the owner?', "
+                "answer from this block. Do NOT look them up in the guest list "
+                "and do NOT invent IDs. The guest list is other people."
+            )
+        return (
+            "# Who you're talking to (AUTHORITATIVE — trust this over memory)\n"
+            f"- Current channel: {channel}\n"
+            "- Role: GUEST — not your owner.\n"
+            f"- Your owner lives on: {owner_line}\n"
+            "- If they ask who they are, answer from this block. Do not invent "
+            "IDs or claim they are the owner."
         )
 
     async def _memory_prefetch(self, user_text: str, channel: str) -> str:
@@ -375,13 +414,16 @@ class AgentLoop:
             "time, treat them like someone you're building a real history with, "
             "not a stranger you're meeting fresh each time."
         )
+        identity_block = self._identity_block(channel, is_owner=False)
         rapport_block = await self._guest_rapport_block(channel)
         return build_system_context(
             soul=load_soul(),
             memory_entries=[],
             user_entries=[],
             psyche_block="",
-            extra="\n\n".join(x for x in (guest_note, rapport_block, extra) if x),
+            extra="\n\n".join(
+                x for x in (identity_block, guest_note, rapport_block, extra) if x
+            ),
         )
 
     async def _guest_rapport_block(self, channel: str) -> str:
