@@ -175,8 +175,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "delivered — do NOT call send_file afterward. Backends: xAI Grok "
                 "Imagine, OpenAI DALL-E, Ollama (local), Pollinations (free), "
                 "A1111/SDWebUI (local), ComfyUI (local), fal.ai, Replicate, "
-                "Civitai, ModelsLab. Set nsfw=true for explicit prompts (requires "
-                "OPHELIA_IMAGE_NSFW_ALLOWED=true)."
+                "Civitai, ModelsLab. Set nsfw=true ONLY for explicit/sexual "
+                "content the user explicitly requested — nsfw=true routes to an "
+                "uncensored backend, nsfw=false (default) routes to the normal "
+                "image provider (Grok when configured). The result tells you "
+                "which backend actually ran."
             ),
             "parameters": {
                 "type": "object",

@@ -133,39 +133,48 @@ async def generate_image(
 
     model = stack.image_model_for(provider)
     gate = get_model_gate()
+    nsfw_tag = " [nsfw]" if nsfw else ""
 
     async with gate.session("image", model, provider):
         if provider in ("xai-oauth", "xai"):
-            return await _xai_image(settings, stack, prompt, aspect_ratio, model, artifacts_dir)
-        if provider == "openai":
-            return await _openai_image(settings, stack, prompt, model, artifacts_dir)
-        if provider == "ollama":
-            return await _ollama_image(settings, prompt, model, artifacts_dir)
-        if provider == "pollinations":
-            return await _pollinations_image(
+            result = await _xai_image(settings, stack, prompt, aspect_ratio, model, artifacts_dir)
+        elif provider == "openai":
+            result = await _openai_image(settings, stack, prompt, model, artifacts_dir)
+        elif provider == "ollama":
+            result = await _ollama_image(settings, prompt, model, artifacts_dir)
+        elif provider == "pollinations":
+            result = await _pollinations_image(
                 settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
             )
-        if provider == "a1111":
-            return await _a1111_image(settings, prompt, aspect_ratio, model, artifacts_dir)
-        if provider == "comfyui":
-            return await _comfyui_image(settings, prompt, aspect_ratio, model, artifacts_dir)
-        if provider == "fal":
-            return await _fal_image(settings, prompt, aspect_ratio, model, artifacts_dir)
-        if provider == "replicate":
-            return await _replicate_image(settings, prompt, aspect_ratio, model, artifacts_dir)
-        if provider == "civitai":
-            return await _civitai_image(
+        elif provider == "a1111":
+            result = await _a1111_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+        elif provider == "comfyui":
+            result = await _comfyui_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+        elif provider == "fal":
+            result = await _fal_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+        elif provider == "replicate":
+            result = await _replicate_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+        elif provider == "civitai":
+            result = await _civitai_image(
                 settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
             )
-        if provider == "modelslab":
-            return await _modelslab_image(
+        elif provider == "modelslab":
+            result = await _modelslab_image(
                 settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
             )
-        raise RuntimeError(
-            f"Image generation not configured for provider '{provider}'. "
-            "Set OPHELIA_PROVIDER_IMAGE to one of: xai-oauth, xai, openai, ollama, "
-            "pollinations, a1111, comfyui, fal, replicate, civitai, modelslab."
-        )
+        else:
+            raise RuntimeError(
+                f"Image generation not configured for provider '{provider}'. "
+                "Set OPHELIA_PROVIDER_IMAGE to one of: xai-oauth, xai, openai, ollama, "
+                "pollinations, a1111, comfyui, fal, replicate, civitai, modelslab."
+            )
+    # Annotate the result with which backend actually ran, so the agent
+    # (and the owner) can see whether it was Grok, Pollinations, etc. —
+    # prevents the agent from claiming "I used Grok" when the image role
+    # silently fell through to Pollinations because xAI wasn't configured.
+    if result.startswith("Image saved to"):
+        result = f"{result} (backend: {provider}/{model}{nsfw_tag})"
+    return result
 
 
 async def generate_video(
