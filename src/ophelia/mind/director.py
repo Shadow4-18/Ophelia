@@ -105,6 +105,26 @@ class DirectorDecision:
     def is_fast_reaction(self) -> bool:
         return self.action == "react"
 
+    def urgency_burst_cap(self, base: int) -> int:
+        """Burst-length cap implied by this decision's urgency.
+
+        Lives on the decision (not only Director) so consciousness can call
+        ``director_decision.urgency_burst_cap(...)`` without AttributeError.
+        """
+        if self.urgency == "high":
+            return min(base, 200)
+        if self.urgency == "low":
+            return int(base * 1.4)
+        return base
+
+    def urgency_speed_mult(self) -> float:
+        """TTS speed multiplier implied by this decision's urgency."""
+        if self.urgency == "high":
+            return 1.10
+        if self.urgency == "low":
+            return 0.92
+        return 1.0
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
 
@@ -263,18 +283,10 @@ class Director:
         """TTS speed multiplier implied by the last decision's urgency."""
         if self.last is None:
             return 1.0
-        if self.last.urgency == "high":
-            return 1.10
-        if self.last.urgency == "low":
-            return 0.92
-        return 1.0
+        return self.last.urgency_speed_mult()
 
     def urgency_burst_cap(self, base: int) -> int:
         """Burst-length cap implied by the last decision's urgency."""
         if self.last is None:
             return base
-        if self.last.urgency == "high":
-            return min(base, 200)
-        if self.last.urgency == "low":
-            return int(base * 1.4)
-        return base
+        return self.last.urgency_burst_cap(base)

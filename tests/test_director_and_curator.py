@@ -85,12 +85,29 @@ async def test_director_urgency_speed_and_burst(settings):
     d.last = DirectorDecision(urgency="high")
     assert d.urgency_speed_mult() > 1.0
     assert d.urgency_burst_cap(400) <= 200
+    # Consciousness calls these on the decision object directly — must work.
+    assert d.last.urgency_burst_cap(400) <= 200
+    assert d.last.urgency_speed_mult() > 1.0
     d.last = DirectorDecision(urgency="low")
     assert d.urgency_speed_mult() < 1.0
     assert d.urgency_burst_cap(400) > 400
+    assert d.last.urgency_burst_cap(400) > 400
     d.last = None
     assert d.urgency_speed_mult() == 1.0
     assert d.urgency_burst_cap(400) == 400
+
+
+async def test_director_decision_urgency_burst_cap_standalone():
+    """Regression: consciousness.error was
+    'DirectorDecision' object has no attribute 'urgency_burst_cap'."""
+    from ophelia.mind.director import DirectorDecision
+
+    high = DirectorDecision(urgency="high")
+    assert high.urgency_burst_cap(400) == 200
+    low = DirectorDecision(urgency="low")
+    assert low.urgency_burst_cap(400) == int(400 * 1.4)
+    normal = DirectorDecision(urgency="normal")
+    assert normal.urgency_burst_cap(400) == 400
 
 
 # ── MemoryCurator._apply_reconcile_actions ─────────────────────────────────

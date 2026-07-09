@@ -962,16 +962,25 @@ class ToolRegistry:
             return result
 
         delivered_any = False
+        queued_any = False
         for path in artifact_paths:
             if await self._deliver_artifact(path, caption):
                 delivered_any = True
             else:
                 self._queue_artifact(path)
+                queued_any = True
 
-        if delivered_any and "do not call send_file" not in result:
+        if delivered_any and "do not call send_file" not in result.lower():
             result = (
                 f"{result.rstrip()} "
                 "(sent to the user — do not call send_file for this file)"
+            )
+        elif queued_any and "do not call send_file" not in result.lower():
+            # Be honest when live delivery failed — the model used to claim
+            # success from a false "already delivered" short-circuit.
+            result = (
+                f"{result.rstrip()} "
+                "(saved; live delivery pending/failed — you may call send_file)"
             )
         self._record_artifacts_from_text(result)
         return result
@@ -999,7 +1008,14 @@ class ToolRegistry:
         self._pending_artifacts.append(path)
 
     async def _deliver_artifact(self, path: Path, caption: str = "") -> bool:
+        """Try to push ``path`` to the live channel. Returns True only on a
+        confirmed upload this call (or a prior confirmed delivery).
+
+        Callers that append "(sent to the user …)" must treat False as
+        "not delivered" — never invent success from a queue/skip.
+        """
         if self.is_artifact_delivered(path):
+            # Already confirmed earlier this turn — idempotent success.
             return True
         sender = self._media_sender or self.proactive_media_sender
         if sender is None:
