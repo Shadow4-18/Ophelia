@@ -451,7 +451,13 @@ class Orchestrator:
                 )
 
     async def _greet_on_start(self) -> None:
-        """Proactive hello when she comes online — first visible sign of autonomy."""
+        """Proactive hello when she comes online — first visible sign of autonomy.
+
+        Owner-only: the greet is a 'hi, I'm up' for the person who runs her,
+        not a broadcast to everyone on the allowlist (guests don't need a
+        ping every time she restarts). Sends to each owner channel across
+        all configured platforms.
+        """
         await asyncio.sleep(3.0)
         try:
             channel = self.settings.primary_user_channel() or "consciousness"
@@ -460,8 +466,24 @@ class Orchestrator:
                 "[system] You just came online. Greet your user briefly in your own "
                 "voice — one or two sentences. No task questions, just presence.",
             )
-            await self.hub.broadcast_proactive(text)
-            log.info("greet.sent")
+            sent_any = False
+            for owner_channel in self.settings.owner_channels():
+                if ":" not in owner_channel:
+                    continue
+                platform, _, uid_s = owner_channel.partition(":")
+                try:
+                    uid = int(uid_s)
+                except ValueError:
+                    continue
+                ok = await self.hub.send_to_user(platform, uid, text)
+                if ok:
+                    sent_any = True
+                    log.info("greet.sent", channel=owner_channel)
+            if not sent_any:
+                # No owner channel was reachable — fall back to broadcast so
+                # the greet isn't silently lost (e.g. owner id misconfigured).
+                await self.hub.broadcast_proactive(text)
+                log.info("greet.sent", channel="broadcast_fallback")
         except Exception as e:
             log.warning("greet.failed", error=api_error_detail(e))
 
