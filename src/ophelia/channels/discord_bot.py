@@ -452,8 +452,9 @@ class DiscordGateway:
                     "owner to retrieve it."
                 )
                 log.warning("discord.send_file_too_large", path=str(p), size_mb=size // (1024 * 1024))
-                if tools is not None:
-                    tools._mark_artifact_delivered(p)
+                # Do NOT mark delivered — the file never uploaded. Marking here
+                # made later retries / tool results claim "sent to the user"
+                # while Discord never got the attachment.
                 return False
             await message.channel.send(
                 content=caption[:2000] if caption else None,

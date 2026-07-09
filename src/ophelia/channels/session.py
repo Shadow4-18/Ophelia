@@ -170,14 +170,10 @@ class ChannelSession:
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
         self.agent.tools.begin_turn_artifacts()
-        # Let send_message tool push follow-ups mid-turn through this channel.
-        self.agent.tools.set_message_sender(reply)
         self.agent.tools.set_owner(is_owner)
         # Record who's speaking so guest-self-only tools (e.g. set_guest_name)
         # can verify the sender matches the target.
         self.agent.tools._current_sender_channel = channel
-        if media_reply is not None:
-            self.agent.tools.set_media_sender(media_reply)
 
         # Tier B #6: log owner activity so the schedule learner can infer
         # quiet/active windows from observed patterns, not just .env schedule.
@@ -224,9 +220,18 @@ class ChannelSession:
             await self._emit_log_hook(inbound_entry)
 
         # Wrap the reply/media senders so every outbound chunk + media file is
-        # logged too. Generated images appear as "saved to <path>" in the reply
-        # text — extract and log those as outbound media as well.
+        # logged too — including mid-turn send_message / preamble delivery.
+        # Previously set_message_sender(reply) used the raw gateway reply, so
+        # mid-turn text reached Discord/Telegram but never the chat log / dm-*
+        # mirror channels.
         async def _logged_reply(chunk: str) -> None:
+            # Send first, then log — so the dm-* mirror reflects what actually
+            # reached the user, not what we hoped to send.
+            tools = self.agent.tools
+            already_delivered: set[Path] = set()
+            if tools is not None:
+                already_delivered = set(tools._delivered_artifacts)
+            await reply(chunk)
             if logger:
                 out_entry = {
                     "channel": channel,
@@ -241,7 +246,19 @@ class ChannelSession:
                     **{k: v for k, v in out_entry.items() if k != "log_context"}
                 )
                 await self._emit_log_hook(out_entry)
+                # Media auto-delivered mid-turn is already mirrored via
+                # _logged_media. Only log paths newly delivered by the
+                # gateway's text-scan backup (_send_discord_media / Telegram
+                # equivalent) during this reply call.
                 for p in artifact_paths_in_text(chunk):
+                    if tools is None or not tools.is_artifact_delivered(p):
+                        continue
+                    try:
+                        resolved = p.expanduser().resolve()
+                    except (OSError, ValueError):
+                        continue
+                    if resolved in already_delivered:
+                        continue
                     media_entry = {
                         "channel": channel,
                         "direction": "out",
@@ -257,13 +274,14 @@ class ChannelSession:
                         **{k: v for k, v in media_entry.items() if k != "log_context"}
                     )
                     await self._emit_log_hook(media_entry)
-            await reply(chunk)
 
         logged_media_reply: MediaReplyFn | None = None
         if media_reply is not None:
             async def _logged_media(path: Path, caption: str) -> bool:
                 ok = await media_reply(path, caption)
-                if logger:
+                # Only mirror successful uploads — logging on failure made the
+                # dm-* channel show images the user never received.
+                if ok and logger:
                     media_entry = {
                         "channel": channel,
                         "direction": "out",
@@ -281,6 +299,12 @@ class ChannelSession:
                     await self._emit_log_hook(media_entry)
                 return ok
             logged_media_reply = _logged_media
+
+        # Wire mid-turn senders AFTER the logged wrappers exist so send_message
+        # and preamble delivery hit the chat log / Discord mirror too.
+        self.agent.tools.set_message_sender(_logged_reply)
+        if logged_media_reply is not None:
+            self.agent.tools.set_media_sender(logged_media_reply)
 
         try:
             voice_on = self.voice_enabled(channel, settings.voice_reply_default)
