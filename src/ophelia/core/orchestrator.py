@@ -664,6 +664,21 @@ class Orchestrator:
             inner=bool(self.inner),
             games=bool(self.games),
         )
+        # Log the resolved media providers so the owner can see at startup
+        # which backend image/video will use — catches misconfigurations
+        # (e.g. xAI key missing → silent Pollinations fallback) early.
+        try:
+            log.info(
+                "ophelia.media_providers",
+                image=self.stack.name("image"),
+                image_model=self.stack.image_model_for(self.stack.name("image")),
+                video=self.stack.name("video"),
+                video_model=self.stack.model("video"),
+                xai_api_key_set=bool(self.settings.xai_api_key),
+                xai_oauth_available=self.stack.uses_xai_oauth(),
+            )
+        except Exception as e:
+            log.debug("ophelia.media_providers_failed", error=str(e))
         # Clean shutdown on SIGTERM/SIGINT (e.g. systemd, reboot) so psyche/drives flush.
         import signal as _signal
 
