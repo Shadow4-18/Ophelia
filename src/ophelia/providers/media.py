@@ -1037,8 +1037,8 @@ async def _civitai_image(
         extras.append(f"loras={len(lora_map)}")
     if pick_note:
         extras.append(f"picked: {pick_note}")
-    if triggers:
-        extras.append("triggers_injected=" + ", ".join(triggers[:6]))
+    if lora_triggers:
+        extras.append("triggers_injected=" + ", ".join(lora_triggers[:6]))
     log.info("image.saved", provider="civitai", model=str(used), path=str(saved))
     return meta + " [" + "; ".join(extras) + "]"
 
