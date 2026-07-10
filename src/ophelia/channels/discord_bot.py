@@ -600,6 +600,30 @@ class DiscordGateway:
             log.warning("discord.send_to_user_failed", user=user_id, error=str(e))
             return False
 
+    async def send_file_to_user(
+        self, user_id: int, path, *, caption: str = ""
+    ) -> bool:
+        """Send a media file to a specific Discord user by id."""
+        if not self._bot:
+            return False
+        try:
+            user = await self._bot.fetch_user(user_id)
+            ok = await self._send_discord_file_to_user(user, Path(path), caption or "")
+            if ok:
+                await self.session.log_outgoing(
+                    channel=f"discord:{user_id}",
+                    text=caption or f"[media] {Path(path).name}",
+                )
+            return ok
+        except Exception as e:
+            log.warning(
+                "discord.send_file_to_user_failed",
+                user=user_id,
+                path=str(path),
+                error=str(e),
+            )
+            return False
+
     async def send_proactive_media(
         self, path, *, caption: str = "", owners_only: bool = True
     ) -> None:

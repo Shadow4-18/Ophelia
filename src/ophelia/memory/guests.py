@@ -266,7 +266,8 @@ def guests_context_block(
         "the entry below and send to THAT platform:user_id, never to the "
         "owner's own id. You can also reach out on your own when it feels right. "
         "To read a guest's real chat history, call recall_guest_chat with their "
-        "name — do not invent what they said.)",
+        "name — do not invent what they said. To send them a photo/video, call "
+        "send_message_to_guest with file= set to a path under ~/.ophelia.)",
     ]
     activity = activity or {}
     for g in others:

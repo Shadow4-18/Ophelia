@@ -82,6 +82,28 @@ class ChannelHub:
         log.warning("hub.send_to_user_no_gateway", platform=platform)
         return False
 
+    async def send_file_to_user(
+        self,
+        platform: str,
+        user_id: int,
+        path,
+        *,
+        caption: str = "",
+    ) -> bool:
+        """Send an image/video/audio file to a specific user on a platform."""
+        for gw in self._gateways:
+            if gw.platform == platform and gw.is_configured():
+                sender = getattr(gw, "send_file_to_user", None)
+                if callable(sender):
+                    try:
+                        return bool(
+                            await sender(user_id, path, caption=caption)
+                        )
+                    except TypeError:
+                        return bool(await sender(user_id, path, caption))
+        log.warning("hub.send_file_to_user_no_gateway", platform=platform)
+        return False
+
     def require_any(self) -> None:
         active = [g for g in self._gateways if g.is_configured()]
         if not active:

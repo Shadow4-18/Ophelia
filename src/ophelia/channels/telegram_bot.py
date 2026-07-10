@@ -519,6 +519,60 @@ class TelegramGateway:
             )
             return False
 
+    async def send_file_to_user(
+        self, user_id: int, path, *, caption: str = ""
+    ) -> bool:
+        """Send a media file to a specific Telegram user by chat id."""
+        if not self._app:
+            return False
+        from pathlib import Path as _P
+
+        p = _P(path).expanduser()
+        if not p.is_file():
+            return False
+        kind = media_kind(p)
+        if not kind:
+            log.warning("telegram.send_file_to_user_unknown_kind", path=str(p))
+            return False
+        cap = (caption or "")[:900]
+        try:
+            with p.open("rb") as f:
+                if kind == "photo":
+                    await self._app.bot.send_photo(
+                        chat_id=user_id, photo=InputFile(f), caption=cap or None
+                    )
+                elif kind == "video":
+                    await self._app.bot.send_video(
+                        chat_id=user_id, video=InputFile(f), caption=cap or None
+                    )
+                elif kind == "audio":
+                    await self._app.bot.send_audio(
+                        chat_id=user_id, audio=InputFile(f), caption=cap or None
+                    )
+                else:
+                    await self._app.bot.send_document(
+                        chat_id=user_id, document=InputFile(f), caption=cap or None
+                    )
+            log.info(
+                "telegram.dm_media_sent",
+                user=user_id,
+                kind=kind,
+                path=str(p),
+            )
+            await self.session.log_outgoing(
+                channel=f"telegram:{user_id}",
+                text=cap or f"[media] {p.name}",
+            )
+            return True
+        except Exception as e:
+            log.warning(
+                "telegram.send_file_to_user_failed",
+                user=user_id,
+                path=str(p),
+                error=str(e),
+            )
+            return False
+
     async def cmd_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not self._allowed(update.effective_user.id):
             return

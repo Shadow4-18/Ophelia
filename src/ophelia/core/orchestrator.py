@@ -140,6 +140,17 @@ class Orchestrator:
         self.tools.proactive_sender = self.hub.broadcast_proactive
         # send_message_to_guest tool: cross-platform DM to a specific user.
         self.tools.guest_sender = self.hub.send_to_user
+        # Media DMs to a specific guest (images/videos).
+        self.tools.guest_media_sender = self.hub.send_file_to_user
+
+        async def _owner_media(path, caption: str = "") -> bool:
+            await self.hub.broadcast_proactive_media(
+                [path], caption=caption or "", owners_only=True
+            )
+            return True
+
+        # Guest relay_to_owner with a file → owner DMs.
+        self.tools.proactive_media_sender = _owner_media
         self.inner = (
             InnerMonologue(mirror_telegram=settings.inner_mirror_telegram)
             if settings.inner_log_enabled

@@ -795,20 +795,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "send_message_to_guest",
             "description": (
-                "Send a message to a guest on their platform (Telegram or "
-                "Discord). Use this when the owner asks you to message "
-                "someone, tell someone something, or reach out to a guest "
-                "by name — 'tell Bob I'll be late', 'let Alice know about "
-                "Friday', 'message your friend about the game'. Also use "
-                "it on your own initiative when you want to reach out to a "
-                "guest you know. The message is sent as you (Ophelia), in "
-                "your voice. Owner-only.\n\n"
-                "IMPORTANT: Get the exact platform and user_id from the "
-                "'Guests you know' list in your context — never guess and "
-                "never use the owner's own id (you can't DM the owner, "
-                "they're already in the conversation with you). If you "
-                "don't see the person in the guest list, tell the owner "
-                "you don't have that guest's contact instead of guessing."
+                "Send a message and/or media file to a guest on their platform "
+                "(Telegram or Discord). Use when the owner asks you to message "
+                "someone, tell someone something, or send them a photo/video — "
+                "'tell Bob I'll be late', 'send this image to Eri', 'forward "
+                "that clip to Alice'. Also use on your own initiative. "
+                "Owner-only.\n\n"
+                "For media: pass file= as an absolute path from list_inbox_images, "
+                "a generate_image/generate_video result ('saved to …'), or an "
+                "artifacts path. Text-only: omit file. Media-only: omit message "
+                "or use a short caption.\n\n"
+                "IMPORTANT: Get platform and user_id from the 'Guests you know' "
+                "list — never guess and never use the owner's own id."
             ),
             "parameters": {
                 "type": "object",
@@ -824,10 +822,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                     "message": {
                         "type": "string",
-                        "description": "The message to send, in your voice.",
+                        "description": (
+                            "Text to send (or caption if file is set). "
+                            "Optional when file is provided."
+                        ),
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Optional local path to an image/video/audio file "
+                            "under ~/.ophelia (artifacts or inbound media)."
+                        ),
                     },
                 },
-                "required": ["platform", "user_id", "message"],
+                "required": ["platform", "user_id"],
             },
         },
     },
@@ -836,10 +844,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "relay_to_owner",
             "description": (
-                "Pass a message from the current guest to your owner RIGHT NOW. "
-                "Use this whenever a guest asks you to tell / pass / relay / "
-                "let your owner know something. Narrating \"I'll tell them\" "
-                "without this tool does nothing — the owner will never see it. "
+                "Pass a message and/or media from the current guest to your "
+                "owner RIGHT NOW. Use whenever a guest asks you to tell / pass "
+                "/ relay / send something (including a photo or video) to your "
+                "owner. Narrating without this tool does nothing. "
+                "For media they just sent, use the path from "
+                "'[User sent a photo — saved to …]' in the turn. "
                 "Guest-facing; do not invent a reply from the owner."
             ),
             "parameters": {
@@ -848,12 +858,19 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "message": {
                         "type": "string",
                         "description": (
-                            "What to pass to the owner. Prefer the guest's "
-                            "own words; you may briefly frame it."
+                            "What to pass to the owner (text or caption). "
+                            "Optional when file is provided."
+                        ),
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": (
+                            "Optional local path to an image/video the guest "
+                            "wants forwarded (from the saved-to path in chat)."
                         ),
                     },
                 },
-                "required": ["message"],
+                "required": [],
             },
         },
     },
@@ -1026,6 +1043,10 @@ class ToolRegistry:
         # Set by the orchestrator to hub.send_to_user so the agent can message
         # a specific guest on any platform during natural conversation.
         self.guest_sender: Callable[[str, int, str], Awaitable[bool]] | None = None
+        # Cross-platform media DM: (platform, user_id, path, caption="") -> bool.
+        self.guest_media_sender: (
+            Callable[..., Awaitable[bool]] | None
+        ) = None
         # Per-turn media callback: sends a file (audio/video/image/doc) to the
         # current chat. Returns True on success. When unset (e.g. autonomous
         # turns), files are queued to _pending_artifacts for deferred delivery.
@@ -1523,19 +1544,51 @@ class ToolRegistry:
             self.memory, platform, user_id, name[:60], by_owner=by_owner
         )
 
+    def _resolve_shareable_media(self, raw: str):
+        """Validate a media path for guest/owner sharing. Returns Path or error str."""
+        from pathlib import Path as _P
+
+        s = (raw or "").strip().strip("\"'")
+        if not s:
+            return "file path is empty."
+        try:
+            p = _P(s).expanduser().resolve()
+        except (OSError, ValueError) as e:
+            return f"invalid path: {e}"
+        if not p.is_file():
+            return f"file not found: {p}"
+        try:
+            data_root = _P(self.settings.data_dir).expanduser().resolve()
+        except (OSError, ValueError):
+            data_root = _P(self.settings.data_dir)
+        try:
+            p.relative_to(data_root)
+        except ValueError:
+            return (
+                f"refusing to send {p} — file must live under {data_root} "
+                "(artifacts/, telegram_media/, discord_media/)."
+            )
+        from ophelia.channels.media_reply import media_kind
+
+        if not media_kind(p):
+            return (
+                f"unsupported media type: {p.suffix} "
+                "(use image/video/audio)."
+            )
+        return p
+
     async def _send_message_to_guest(
-        self, platform: str, user_id: int, message: str
+        self,
+        platform: str,
+        user_id: int,
+        message: str = "",
+        file: str | None = None,
     ) -> str:
-        """Send a DM to a specific guest on their platform. Used when the owner
-        asks Ophelia in natural conversation to message someone ('tell Bob
-        I'll be late'), or when she decides on her own to reach out."""
+        """Send a DM and/or media file to a guest. Owner-only."""
         message = (message or "").strip()
-        if not message:
-            return "Message can't be empty."
-        # Refuse to send a DM to the owner — this is almost always a mistake
-        # (the model picked the owner's own id from the roster instead of the
-        # intended guest). The owner is already in the conversation; they don't
-        # need a DM to themselves. Surface the error so she can correct herself.
+        file_raw = (file or "").strip()
+        if not message and not file_raw:
+            return "Need a message and/or file path."
         target_channel = f"{platform}:{user_id}"
         if self.settings.is_owner_channel(target_channel):
             log.warning(
@@ -1549,66 +1602,125 @@ class ToolRegistry:
                 f"Check the 'Guests you know' list in your context for the right "
                 f"platform:user_id and try again."
             )
-        if not self.guest_sender:
-            return (
-                "Can't send a DM right now — no cross-platform sender wired. "
-                "This usually means the hub isn't running."
-            )
-        log.info(
-            "tool.send_message_to_guest",
-            platform=platform,
-            user=user_id,
-            chars=len(message),
-            preview=message[:80],
-        )
-        try:
-            ok = await self.guest_sender(platform, user_id, message[:4000])
-        except Exception as e:
-            log.warning("tool.send_message_to_guest_failed",
-                        platform=platform, user=user_id, error=str(e))
-            return f"Failed to send to {platform}:{user_id}: {e}"
-        if ok:
-            from ophelia.memory.guests import get_guest_name
 
-            name = None
-            if self.memory:
-                name = await get_guest_name(
-                    self.memory, platform, user_id,
-                    data_dir=self.settings.data_dir,
+        media_path = None
+        if file_raw:
+            resolved = self._resolve_shareable_media(file_raw)
+            if isinstance(resolved, str):
+                return f"Can't send file: {resolved}"
+            media_path = resolved
+
+        parts: list[str] = []
+        if message and media_path is None:
+            if not self.guest_sender:
+                return (
+                    "Can't send a DM right now — no cross-platform sender wired. "
+                    "This usually means the hub isn't running."
                 )
-            who = name or f"{platform}:{user_id}"
             log.info(
-                "tool.send_message_to_guest_sent",
+                "tool.send_message_to_guest",
                 platform=platform,
                 user=user_id,
-                who=who,
+                chars=len(message),
+                preview=message[:80],
             )
-            return f"Sent to {who} ({platform}:{user_id})."
-        return (
-            f"Failed to send to {platform}:{user_id}. "
-            + (
-                "The guest may not have messaged the bot yet "
-                "(they need to /start it first on Telegram)."
-                if platform == "telegram"
-                else "Discord couldn't DM that user."
-            )
-        )
+            try:
+                ok = await self.guest_sender(platform, user_id, message[:4000])
+            except Exception as e:
+                log.warning(
+                    "tool.send_message_to_guest_failed",
+                    platform=platform,
+                    user=user_id,
+                    error=str(e),
+                )
+                return f"Failed to send to {platform}:{user_id}: {e}"
+            if not ok:
+                return (
+                    f"Failed to send to {platform}:{user_id}. "
+                    + (
+                        "The guest may not have messaged the bot yet "
+                        "(they need to /start it first on Telegram)."
+                        if platform == "telegram"
+                        else "Discord couldn't DM that user."
+                    )
+                )
+            parts.append("text")
 
-    async def _relay_to_owner(self, message: str) -> str:
-        """Guest → owner message pass. Guests must call this to actually notify."""
+        if media_path is not None:
+            if not self.guest_media_sender:
+                return (
+                    "Can't send media to a guest right now — no media sender "
+                    "wired. Text-only DMs may still work."
+                )
+            cap = message[:900] if message else ""
+            log.info(
+                "tool.send_media_to_guest",
+                platform=platform,
+                user=user_id,
+                path=str(media_path),
+                caption_chars=len(cap),
+            )
+            try:
+                ok = await self.guest_media_sender(
+                    platform, user_id, media_path, caption=cap
+                )
+            except TypeError:
+                try:
+                    ok = await self.guest_media_sender(
+                        platform, user_id, media_path, cap
+                    )
+                except Exception as e:
+                    return f"Failed to send media to {platform}:{user_id}: {e}"
+            except Exception as e:
+                log.warning(
+                    "tool.send_media_to_guest_failed",
+                    platform=platform,
+                    user=user_id,
+                    error=str(e),
+                )
+                return f"Failed to send media to {platform}:{user_id}: {e}"
+            if not ok:
+                return (
+                    f"Failed to send media to {platform}:{user_id}. "
+                    "They may need to /start the bot (Telegram) or allow DMs."
+                )
+            parts.append(f"media ({media_path.name})")
+
+        from ophelia.memory.guests import get_guest_name
+
+        name = None
+        if self.memory:
+            name = await get_guest_name(
+                self.memory,
+                platform,
+                user_id,
+                data_dir=self.settings.data_dir,
+            )
+        who = name or f"{platform}:{user_id}"
+        what = " + ".join(parts) if parts else "message"
+        return f"Sent to {who} ({platform}:{user_id}) [{what}]."
+
+    async def _relay_to_owner(
+        self, message: str = "", file: str | None = None
+    ) -> str:
+        """Guest → owner message/media pass."""
         message = (message or "").strip()
-        if not message:
-            return "Message can't be empty."
+        file_raw = (file or "").strip()
+        if not message and not file_raw:
+            return "Need a message and/or file path to relay."
         if self._is_owner:
             return (
                 "You're already talking to the owner — just say it in chat. "
                 "relay_to_owner is for guests passing a message to the owner."
             )
-        if not self.proactive_sender:
-            return (
-                "Can't reach the owner right now — no owner sender wired. "
-                "Tell the guest you'll try again later."
-            )
+
+        media_path = None
+        if file_raw:
+            resolved = self._resolve_shareable_media(file_raw)
+            if isinstance(resolved, str):
+                return f"Can't relay file: {resolved}"
+            media_path = resolved
+
         chan = (self._current_sender_channel or "").strip()
         guest_label = chan or "a guest"
         if chan and self.memory and ":" in chan:
@@ -1626,32 +1738,69 @@ class ToolRegistry:
                     guest_label = f"{name} ({chan})"
             except Exception:
                 pass
-        payload = f"📨 From {guest_label}:\n{message[:3500]}"
+
+        payload = ""
+        if message:
+            payload = f"📨 From {guest_label}:\n{message[:3500]}"
+        elif media_path is not None:
+            payload = f"📨 Media from {guest_label}"
+
         log.info(
             "tool.relay_to_owner",
             from_channel=chan or None,
             chars=len(message),
-            preview=message[:80],
+            has_file=bool(media_path),
+            preview=(message or str(media_path))[:80],
         )
-        try:
-            await self.proactive_sender(payload)
-        except Exception as e:
-            log.warning("tool.relay_to_owner_failed", error=str(e))
-            return f"Failed to reach the owner: {e}"
+
+        delivered = False
+        if payload:
+            if not self.proactive_sender:
+                return (
+                    "Can't reach the owner right now — no owner sender wired. "
+                    "Tell the guest you'll try again later."
+                )
+            try:
+                await self.proactive_sender(payload)
+                delivered = True
+            except Exception as e:
+                log.warning("tool.relay_to_owner_failed", error=str(e))
+                return f"Failed to reach the owner: {e}"
+
+        if media_path is not None:
+            sender = self.proactive_media_sender
+            if not sender:
+                return (
+                    "Text may have been delivered, but no media sender is wired "
+                    "for the owner — can't forward the file."
+                )
+            cap = message[:900] if message else f"From {guest_label}"
+            try:
+                ok = await sender(media_path, cap)
+            except Exception as e:
+                log.warning("tool.relay_to_owner_media_failed", error=str(e))
+                return f"Failed to forward media to the owner: {e}"
+            if not ok:
+                return "Owner text may have arrived, but media delivery failed."
+            delivered = True
+
+        if not delivered:
+            return "Nothing was delivered."
+
         if self.memory:
             try:
                 owners = list(self.settings.owner_channels())
                 store_ch = owners[0] if owners else "owner:relay"
-                await self.memory.append_message(
-                    store_ch,
-                    "assistant",
-                    f"[relay from {guest_label}] {message[:2000]}",
-                )
+                note = f"[relay from {guest_label}] {message[:2000]}"
+                if media_path is not None:
+                    note += f" [file={media_path.name}]"
+                await self.memory.append_message(store_ch, "assistant", note)
             except Exception as e:
                 log.debug("tool.relay_to_owner_store_failed", error=str(e))
+        extra = f" with {media_path.name}" if media_path is not None else ""
         return (
-            f"Delivered to your owner. Tell the guest it's been passed along "
-            f"(from {guest_label})."
+            f"Delivered to your owner{extra}. Tell the guest it's been "
+            f"passed along (from {guest_label})."
         )
 
     async def _recall_guest_chat(
