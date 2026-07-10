@@ -171,15 +171,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "generate_image",
             "description": (
-                "Generate an image from a text prompt. Auto-sends to chat when "
-                "delivered — do NOT call send_file afterward. Backends: xAI Grok "
-                "Imagine, OpenAI DALL-E, Ollama (local), Pollinations (free), "
-                "A1111/SDWebUI (local), ComfyUI (local), fal.ai, Replicate, "
-                "Civitai, ModelsLab. Set nsfw=true ONLY for explicit/sexual "
-                "content the user explicitly requested — nsfw=true routes to an "
-                "uncensored backend, nsfw=false (default) routes to the normal "
-                "image provider (Grok when configured). The result tells you "
-                "which backend actually ran."
+                "Generate an image. Auto-sends to chat — do NOT call send_file after. "
+                "Backends: xAI Grok Imagine, OpenAI DALL-E, Ollama, Pollinations, "
+                "A1111, ComfyUI, fal, Replicate, Civitai, ModelsLab. "
+                "Set nsfw=true ONLY for explicit/sexual content the user asked for — "
+                "that routes to the uncensored backend (Civitai when configured). "
+                "\n\nCivitai (NSFW / SDXL / Illustrious / Pony / LoRAs):\n"
+                "- Prefer search_civitai_models first to pick checkpoint + LoRAs and "
+                "read trigger_words + prompt_style (danbooru tags vs natural language).\n"
+                "- Pass model=<AIR URN>, loras={air: strength}, negative_prompt, and "
+                "write the prompt in that style with EVERY trigger word included.\n"
+                "- txt2img: prompt only. img2img: pass image=<local path or URL> "
+                "(use list_inbox_images for a photo the user sent) + optional strength "
+                "(0.6–0.8 typical).\n"
+                "- Or set auto_pick=true to let the tool search a matching checkpoint/"
+                "LoRA for you. Result text reports which model/LoRAs ran."
             ),
             "parameters": {
                 "type": "object",
@@ -196,8 +202,94 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                             "explicitly requested. Routed to an uncensored backend."
                         ),
                     },
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "Optional checkpoint AIR URN from search_civitai_models "
+                            "(e.g. urn:air:sdxl:checkpoint:civitai:ID@VERSION). "
+                            "Civitai only — ignored on Grok/DALL-E."
+                        ),
+                    },
+                    "loras": {
+                        "type": "string",
+                        "description": (
+                            "Optional LoRAs for Civitai. JSON object "
+                            '{"urn:air:...": 0.8} or comma list urn|0.8,urn|0.7. '
+                            "Always put each LoRA's trigger words in the prompt."
+                        ),
+                    },
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": (
+                            "Civitai/SD negative prompt. Required for good SD1/SDXL/"
+                            "Illustrious/Pony results. Leave empty for Flux."
+                        ),
+                    },
+                    "image": {
+                        "type": "string",
+                        "description": (
+                            "Optional source image for img2img (Civitai createVariant). "
+                            "http(s) URL or local path from list_inbox_images. "
+                            "Omit for text-to-image."
+                        ),
+                    },
+                    "strength": {
+                        "type": "number",
+                        "description": (
+                            "img2img denoise strength 0–1 (default 0.7). "
+                            "Lower = closer to source; 0.6–0.8 typical."
+                        ),
+                    },
+                    "auto_pick": {
+                        "type": "boolean",
+                        "description": (
+                            "When true on Civitai, search and pick a checkpoint "
+                            "(+ LoRAs) that fit the prompt. Prefer search_civitai_models "
+                            "when you want explicit control."
+                        ),
+                    },
                 },
                 "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_civitai_models",
+            "description": (
+                "Search Civitai for checkpoints or LoRAs before generate_image. "
+                "Returns AIR URNs, baseModel, trigger_words (trainedWords), "
+                "prompt_style tip (danbooru vs natural), and a suggested negative. "
+                "Use this so you pick the right model/LoRA and prompt correctly — "
+                "Illustrious/Pony want Danbooru tags + triggers; Flux wants prose. "
+                "Then call generate_image with model= and loras= from the results."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to find — e.g. 'illustrious anime', "
+                            "'realistic portrait sdxl', 'character name lora'."
+                        ),
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["Checkpoint", "LORA"],
+                        "description": "Checkpoint (base model) or LORA. Default Checkpoint.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (1–10, default 5).",
+                    },
+                    "nsfw": {
+                        "type": "boolean",
+                        "description": "Include NSFW-tagged models (default true).",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -808,6 +900,10 @@ def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
         skip.update({"web_search", "fetch_url"})
     if not stack.media_configured("image"):
         skip.add("generate_image")
+        skip.add("search_civitai_models")
+    elif not settings.civitai_api_key:
+        # Search is Civitai-specific; hide when no key even if another image backend is up.
+        skip.add("search_civitai_models")
     if not stack.media_configured("video"):
         skip.add("generate_video")
     if skip:
@@ -876,6 +972,7 @@ class ToolRegistry:
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
+            "search_civitai_models": self._search_civitai_models,
             "generate_video": self._generate_video,
             "list_inbox_images": self._list_inbox_images,
             "text_to_speech": self._text_to_speech,
@@ -1115,7 +1212,16 @@ class ToolRegistry:
         return xai
 
     async def _generate_image(
-        self, prompt: str, aspect_ratio: str = "1:1", nsfw: bool = False
+        self,
+        prompt: str,
+        aspect_ratio: str = "1:1",
+        nsfw: bool = False,
+        model: str | None = None,
+        loras: str | None = None,
+        negative_prompt: str | None = None,
+        image: str | None = None,
+        strength: float = 0.7,
+        auto_pick: bool = False,
     ) -> str:
         # Guests get 1:1 only — wider aspect ratios cost more tokens and the
         # experience is "see I can make images," not "produce wallpaper for
@@ -1129,8 +1235,50 @@ class ToolRegistry:
             aspect_ratio=aspect_ratio,
             artifacts_dir=self.artifacts_dir,
             nsfw=nsfw,
+            model=model,
+            loras=loras,
+            negative_prompt=negative_prompt,
+            image=image,
+            strength=strength,
+            auto_pick=auto_pick,
         )
         return await self._finalize_media_tool_result(result)
+
+    async def _search_civitai_models(
+        self,
+        query: str,
+        type: str = "Checkpoint",
+        limit: int = 5,
+        nsfw: bool = True,
+    ) -> str:
+        if not self.settings.civitai_api_key:
+            return (
+                "Civitai is not configured. Set CIVITAI_API_KEY in ~/.ophelia/.env "
+                "(ophelia setup → Image generation → NSFW → Civitai)."
+            )
+        from ophelia.providers import civitai as civ
+
+        kind = (type or "Checkpoint").strip()
+        if kind.upper() in ("LORA", "LORAS"):
+            kind = "LORA"
+        else:
+            kind = "Checkpoint"
+        try:
+            results = await civ.search_models(
+                self.settings,
+                query,
+                types=kind,
+                limit=max(1, min(int(limit or 5), 10)),
+                nsfw=bool(nsfw),
+            )
+        except Exception as e:
+            return f"Civitai search failed: {e}"
+        header = (
+            f"# Civitai {kind} results for {query!r}\n"
+            f"(Use air values with generate_image model=/loras=. "
+            f"Match prompt_style and include trigger_words.)"
+        )
+        return civ.format_search_results(results, header=header)
 
     async def _generate_video(
         self,

@@ -112,6 +112,12 @@ async def generate_image(
     aspect_ratio: str = "1:1",
     artifacts_dir: Path,
     nsfw: bool = False,
+    model: str | None = None,
+    negative_prompt: str | None = None,
+    loras: dict[str, float] | str | None = None,
+    image: str | None = None,
+    strength: float = 0.7,
+    auto_pick: bool = False,
 ) -> str:
     # Content tier gating.
     if nsfw and not settings.image_nsfw_allowed:
@@ -131,36 +137,60 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
-    model = stack.image_model_for(provider, nsfw=nsfw)
+    resolved_model = (model or "").strip() or stack.image_model_for(provider, nsfw=nsfw)
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
 
-    async with gate.session("image", model, provider):
+    async with gate.session("image", resolved_model, provider):
         if provider in ("xai-oauth", "xai"):
-            result = await _xai_image(settings, stack, prompt, aspect_ratio, model, artifacts_dir)
+            result = await _xai_image(
+                settings, stack, prompt, aspect_ratio, resolved_model, artifacts_dir
+            )
         elif provider == "openai":
-            result = await _openai_image(settings, stack, prompt, model, artifacts_dir)
+            result = await _openai_image(
+                settings, stack, prompt, resolved_model, artifacts_dir
+            )
         elif provider == "ollama":
-            result = await _ollama_image(settings, prompt, model, artifacts_dir)
+            result = await _ollama_image(
+                settings, prompt, resolved_model, artifacts_dir
+            )
         elif provider == "pollinations":
             result = await _pollinations_image(
-                settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
             )
         elif provider == "a1111":
-            result = await _a1111_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+            result = await _a1111_image(
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+            )
         elif provider == "comfyui":
-            result = await _comfyui_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+            result = await _comfyui_image(
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+            )
         elif provider == "fal":
-            result = await _fal_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+            result = await _fal_image(
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+            )
         elif provider == "replicate":
-            result = await _replicate_image(settings, prompt, aspect_ratio, model, artifacts_dir)
+            result = await _replicate_image(
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+            )
         elif provider == "civitai":
             result = await _civitai_image(
-                settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
+                settings,
+                prompt,
+                aspect_ratio,
+                resolved_model,
+                artifacts_dir,
+                nsfw=nsfw,
+                negative_prompt=negative_prompt,
+                loras=loras,
+                image=image,
+                strength=strength,
+                auto_pick=auto_pick,
             )
         elif provider == "modelslab":
             result = await _modelslab_image(
-                settings, prompt, aspect_ratio, model, artifacts_dir, nsfw=nsfw
+                settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
             )
         else:
             raise RuntimeError(
@@ -173,7 +203,7 @@ async def generate_image(
     # prevents the agent from claiming "I used Grok" when the image role
     # silently fell through to Pollinations because xAI wasn't configured.
     if result.startswith("Image saved to"):
-        result = f"{result} (backend: {provider}/{model}{nsfw_tag})"
+        result = f"{result} (backend: {provider}/{resolved_model}{nsfw_tag})"
     return result
 
 
@@ -681,25 +711,114 @@ async def _civitai_image(
     artifacts_dir: Path,
     *,
     nsfw: bool = False,
+    negative_prompt: str | None = None,
+    loras: dict[str, float] | str | None = None,
+    image: str | None = None,
+    strength: float = 0.7,
+    auto_pick: bool = False,
 ) -> str:
+    """Civitai orchestration — txt2img (createImage) or img2img (createVariant).
+
+    Model may be an AIR URN, 'flux', or empty (falls back to CIVITAI_IMAGE_MODEL /
+    auto-pick). LoRAs are {air: strength}. Local image paths are uploaded as blobs.
+    """
+    from ophelia.providers import civitai as civ
+
     w, h = _dims(aspect_ratio)
     base = settings.civitai_base_url.rstrip("/")
     headers = {
         "Authorization": f"Bearer {settings.civitai_api_key}",
         "Content-Type": "application/json",
     }
-    step_input: dict[str, object] = {
-        "engine": "flux",
-        "prompt": prompt,
-        "width": w,
-        "height": h,
-    }
-    if settings.civitai_image_model:
-        step_input["model"] = settings.civitai_image_model
-    elif model and model != "flux":
-        step_input["engine"] = model
+
+    model_air = (model or "").strip()
+    explicit_flux = model_air.lower() == "flux"
+    # Prefer explicit call arg, then env default. Fix the old bug where a URN
+    # in OPHELIA_IMAGE_NSFW_MODEL was wrongly sent as engine=.
+    if not model_air or model_air.lower() in ("auto",):
+        env_model = (settings.civitai_image_model or "").strip()
+        if env_model:
+            model_air = env_model
+
+    lora_map = civ.parse_loras(loras)
+    triggers: list[str] = []
+    pick_note = ""
+    ecosystem = civ.ecosystem_from_air_or_base(model_air)
+
+    # Auto-pick: explicit auto_pick, or nothing configured yet (not bare "flux").
+    should_pick = bool(auto_pick) or (
+        not explicit_flux
+        and not model_air
+        and not (settings.civitai_image_model or "").strip()
+    )
+    if should_pick:
+        try:
+            ck, picked_loras, rationale = await civ.pick_best_resources(
+                settings, prompt, nsfw=nsfw, want_lora=not lora_map
+            )
+            if ck:
+                model_air = ck.air
+                ecosystem = ck.ecosystem
+                triggers.extend(ck.trained_words)
+                pick_note = rationale
+            for lr in picked_loras:
+                lora_map.setdefault(lr.air, 0.8)
+                triggers.extend(lr.trained_words)
+        except Exception as e:
+            log.warning("civitai.auto_pick_failed", error=str(e))
+            pick_note = f"auto_pick_failed: {e}"
+            if not model_air:
+                model_air = "flux"
+                ecosystem = "flux1"
+
+    # If we have an AIR but no triggers yet, optionally enrich from site API.
+    if model_air.startswith("urn:air:") and "@" in model_air and not triggers:
+        try:
+            vid_s = model_air.rsplit("@", 1)[-1].split("+")[0]
+            if vid_s.isdigit():
+                ver = await civ.get_version(settings, int(vid_s))
+                if ver:
+                    triggers.extend(ver.trained_words)
+                    ecosystem = ver.ecosystem or ecosystem
+        except Exception as e:
+            log.debug("civitai.version_enrich_failed", error=str(e))
+
+    final_prompt = civ.ensure_triggers_in_prompt(prompt, triggers)
+    neg = (negative_prompt or "").strip()
+    if not neg and ecosystem in ("sd1", "sdxl"):
+        neg = civ.default_negative_for(ecosystem)
+
+    image_url = None
+    if image:
+        try:
+            image_url = await civ.resolve_image_url(settings, image)
+        except Exception as e:
+            return f"Civitai img2img source failed: {e}"
+
+    step_input = civ.build_step_input(
+        prompt=final_prompt,
+        width=w,
+        height=h,
+        model_air=model_air,
+        ecosystem=ecosystem,
+        negative_prompt=neg,
+        loras=lora_map or None,
+        image_url=image_url,
+        strength=strength,
+    )
     body = {"steps": [{"$type": "imageGen", "input": step_input}]}
     mature = "true" if (nsfw or settings.image_nsfw_allowed) else "false"
+    log.info(
+        "civitai.submit",
+        operation=step_input.get("operation"),
+        ecosystem=step_input.get("ecosystem"),
+        engine=step_input.get("engine"),
+        model=step_input.get("model") or step_input.get("engine"),
+        loras=len(lora_map),
+        img2img=bool(image_url),
+        pick=pick_note or None,
+    )
+
     async with httpx.AsyncClient(timeout=120.0) as http:
         r = await http.post(
             f"{base}/v2/consumer/workflows",
@@ -736,8 +855,19 @@ async def _civitai_image(
             dl = await http.get(url, headers={"Authorization": f"Bearer {settings.civitai_api_key}"})
         dl.raise_for_status()
         saved = await _save_image_bytes(dl.content, artifacts_dir, "civitai", prompt)
-    log.info("image.saved", provider="civitai", model=model, path=str(saved))
-    return f"Image saved to {saved}"
+
+    used = step_input.get("model") or step_input.get("engine") or model_air or "flux"
+    meta = f"Image saved to {saved}"
+    extras = [f"civitai {step_input.get('operation', 'createImage')}"]
+    extras.append(f"model={used}")
+    if lora_map:
+        extras.append(f"loras={len(lora_map)}")
+    if pick_note:
+        extras.append(f"picked: {pick_note}")
+    if triggers:
+        extras.append("triggers_injected=" + ", ".join(triggers[:6]))
+    log.info("image.saved", provider="civitai", model=str(used), path=str(saved))
+    return meta + " [" + "; ".join(extras) + "]"
 
 
 async def _modelslab_image(

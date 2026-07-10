@@ -1428,8 +1428,12 @@ _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
     "civitai": (
         "CIVITAI_IMAGE_MODEL",
         "",
-        "URN (blank = engine default flux)",
-        [],
+        "AIR URN (blank = auto-pick / flux). Prefer search_civitai_models at runtime.",
+        [
+            "urn:air:sdxl:checkpoint:civitai:827184@2514310",  # WAI Illustrious example
+            "urn:air:sdxl:checkpoint:civitai:101055@128078",
+            "flux",
+        ],
     ),
     "modelslab": (
         "MODELSLAB_IMAGE_MODEL",
