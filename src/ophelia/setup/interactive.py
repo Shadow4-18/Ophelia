@@ -427,6 +427,100 @@ def _pick_ollama_model(on_phone: bool) -> str | None:
     return choices[pick]
 
 
+def normalize_ollama_openai_base(raw: str) -> str:
+    """Normalize user input to an OpenAI-compatible Ollama base URL (…/v1).
+
+    Accepts bare IPs (`192.168.1.50`), host:port, or full URLs.
+    """
+    from urllib.parse import urlparse
+
+    s = (raw or "").strip()
+    if not s:
+        return "http://127.0.0.1:11434/v1"
+    if "://" not in s:
+        s = "http://" + s
+    s = s.rstrip("/")
+    parsed = urlparse(s)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 11434
+    scheme = parsed.scheme or "http"
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+    if path.endswith("/api"):
+        path = path[: -len("/api")]
+    path = path.rstrip("/")
+    base = f"{scheme}://{host}:{port}"
+    if path:
+        base = f"{base}{path}"
+    return f"{base}/v1"
+
+
+def _configure_ollama_vision_endpoint(*, on_phone: bool) -> None:
+    """Ask where the vision Ollama lives — this device or a remote PC GPU."""
+    current = read_env_key("OLLAMA_BASE_URL") or "http://127.0.0.1:11434/v1"
+    low = current.lower()
+    looks_local = any(x in low for x in ("127.0.0.1", "localhost", "::1"))
+
+    pick = radiolist(
+        "Where should vision Ollama run?",
+        [
+            "This device (localhost) — local Ollama",
+            "Remote PC on LAN / Tailscale — use the PC GPU (recommended for games)",
+            f"Keep current ({current})",
+        ],
+        selected=0 if looks_local else 1,
+        description=(
+            "Chat photos AND game-mode screen vision both use this endpoint.\n"
+            "A PC GPU (e.g. RTX 3080) is much faster than phone Ollama.\n"
+            "Same Wi‑Fi / Tailscale: prefer remote PC. Offline phone-only: local."
+        ),
+    )
+    if pick < 0 or pick == 2:
+        return
+
+    updates: dict[str, str | None] = {}
+    if pick == 0:
+        updates["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434/v1"
+        if on_phone:
+            updates["OPHELIA_OLLAMA_AUTOSTART"] = "true"
+        updates["OPHELIA_OLLAMA_KEEP_ALIVE"] = "30m"
+        touched = write_env_updates(updates)
+        print(f"\n  Saved: {', '.join(touched)}")
+        print("  Vision → local Ollama on this device.")
+        return
+
+    # Remote PC
+    default_hint = current if not looks_local else "192.168.1.50"
+    typed = prompt_text(
+        "PC Ollama address",
+        default=default_hint,
+        hint=(
+            "LAN IP or Tailscale IP — e.g. 192.168.1.50 or 100.x.x.x\n"
+            "  Or full URL: http://192.168.1.50:11434/v1"
+        ),
+    )
+    if not typed:
+        print("\n  Cancelled — OLLAMA_BASE_URL unchanged.")
+        return
+    url = normalize_ollama_openai_base(typed)
+    updates["OLLAMA_BASE_URL"] = url
+    updates["OPHELIA_OLLAMA_AUTOSTART"] = "false"
+    updates["OPHELIA_OLLAMA_KEEP_ALIVE"] = "-1"
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched)}")
+    print(f"  Vision → remote Ollama at {url}")
+    print(
+        "\n  On the PC, Ollama must listen on the LAN:\n"
+        "    set OLLAMA_HOST=0.0.0.0:11434  (then restart Ollama)\n"
+        "    ollama pull qwen2.5vl:7b\n"
+        "    allow port 11434 in the firewall\n"
+        "  Test from this device: curl "
+        + url.removesuffix("/v1")
+        + "/api/tags"
+    )
+
+
 def _list_ollama_model_names() -> list[str]:
     import httpx
 
@@ -647,8 +741,14 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "env": "OLLAMA_VISION_MODEL",
             "default": "",
             "presets": [
-                "openbmb/minicpm-v4.6", "moondream", "openbmb/minicpm-v4",
-                "qwen2.5vl:3b", "llava", "llama3.2-vision", "bakllava",
+                # PC GPU first (remote Ollama); phone-friendly models after.
+                "qwen2.5vl:7b",
+                "qwen2.5vl:3b",
+                "openbmb/minicpm-v4.6",
+                "moondream",
+                "llava",
+                "llama3.2-vision",
+                "bakllava",
             ],
             "optional": True,
             "dynamic": True,
@@ -697,7 +797,7 @@ _ROLE_LABELS = {
     "chat": "Chat / main replies",
     "consciousness": "Consciousness (background ticks)",
     "curator": "Memory curator",
-    "vision": "Vision (photo understanding)",
+    "vision": "Vision (photos + game screen)",
     # Image SFW/NSFW lives under the dedicated Image generation menu — not here.
     "video": "Video generation",
 }
@@ -1032,6 +1132,10 @@ def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
     else:
         write_env_updates({env_key: chosen})
         print(f"\n  Saved {env_key}={chosen}")
+
+    # Vision + Ollama: offer local vs remote-PC endpoint (photos + game screen).
+    if role == "vision" and effective_provider == "ollama":
+        _configure_ollama_vision_endpoint(on_phone=on_phone)
 
 
 def _clear_role_overrides(provider: str) -> None:
