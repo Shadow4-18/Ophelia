@@ -59,17 +59,18 @@ _PROMPT_STYLE_HINTS: dict[str, str] = {
         "Use Danbooru-style tags (comma-separated), not long prose. "
         "Lead with quality tags (masterpiece, best quality, absurdres), then "
         "subject tags (1girl, solo, …), then clothing/pose/scene. "
-        "ALWAYS include every LoRA/checkpoint trigger word from trainedWords. "
+        "If you pinned a character LoRA, include its short trigger_words yourself — "
+        "auto_pick will not inject them. "
         "Put junk in negative_prompt — many anime checkpoints expect a strong negative."
     ),
     "mixed": (
         "SDXL accepts tag-style OR short natural language. Quality tags still help "
-        "(masterpiece, best quality). Include LoRA trigger words verbatim. "
-        "Use a solid negative_prompt (worst quality, low quality, blurry)."
+        "(masterpiece, best quality). If using a LoRA, include its short trigger "
+        "yourself. Use a solid negative_prompt (worst quality, low quality, blurry)."
     ),
     "natural": (
         "Write a clear natural-language prompt (Flux/Qwen-style). "
-        "Do NOT spam Danbooru tags. Include LoRA trigger phrases if any. "
+        "Do NOT spam Danbooru tags. Include LoRA trigger phrases yourself if any. "
         "Negative prompts are optional / often unused on Flux."
     ),
 }
@@ -164,6 +165,151 @@ _USER_AGENT = "Ophelia/1.0 (+https://github.com/Shadow4-18/Ophelia; local-first 
 # (that path 400s with workflowTemplate required on current orchestration).
 _FALLBACK_SDXL_AIR = "urn:air:sdxl:checkpoint:civitai:101055@128078"
 _FALLBACK_ILLUSTRIOUS_AIR = "urn:air:sdxl:checkpoint:civitai:827184@2514310"
+# Pony Diffusion V6 XL — SDXL-based (NOT SD1.5). Illustrious is also SDXL.
+_FALLBACK_PONY_AIR = "urn:air:sdxl:checkpoint:civitai:257749@290640"
+
+# Curated general-purpose checkpoints for auto_pick. We do NOT search the
+# user's full prompt (that matched random character LoRAs on words like
+# "gothic"). Style → fixed AIR only.
+_CURATED_CHECKPOINTS: dict[str, tuple[str, str]] = {
+    # style: (air, display_name)
+    "illustrious": (_FALLBACK_ILLUSTRIOUS_AIR, "WAI-Illustrious (curated, SDXL)"),
+    "anime": (_FALLBACK_ILLUSTRIOUS_AIR, "WAI-Illustrious (curated, SDXL)"),
+    "pony": (_FALLBACK_PONY_AIR, "Pony Diffusion V6 XL (curated, SDXL)"),
+    "realistic": (_FALLBACK_SDXL_AIR, "SDXL curated realistic-capable"),
+    "sdxl": (_FALLBACK_SDXL_AIR, "SDXL curated general"),
+}
+
+
+def sanitize_air(raw: str) -> str:
+    """Normalize AIR URNs. Fixes ?version= / # typos that 404 on orchestration."""
+    air = (raw or "").strip()
+    if not air:
+        return ""
+    # urn:air:…:civitai:ID?version=VID  →  …:ID@VID
+    if "?version=" in air.lower():
+        base, _, ver = air.partition("?")
+        vid = ver.split("=", 1)[-1].split("&")[0].strip()
+        if "@" not in base and vid.isdigit():
+            air = f"{base}@{vid}"
+        else:
+            air = base
+    # Strip fragment junk (…#58885618)
+    if "#" in air:
+        air = air.split("#", 1)[0]
+    return air.strip()
+
+
+def air_kind(air: str) -> str:
+    """Return AIR kind (checkpoint|lora|…) or '' if not a parseable URN."""
+    m = _AIR_RE.match(sanitize_air(air))
+    return (m.group("kind") or "").lower() if m else ""
+
+
+def resolve_checkpoint_alias(raw: str) -> str:
+    """Map short names (pony, illustrious) to curated checkpoint AIRs."""
+    key = (raw or "").strip().lower().replace(" ", "").replace("_", "-")
+    aliases = {
+        "pony": _FALLBACK_PONY_AIR,
+        "ponyxl": _FALLBACK_PONY_AIR,
+        "pony-xl": _FALLBACK_PONY_AIR,
+        "ponydiffusion": _FALLBACK_PONY_AIR,
+        "ponydiffusionv6": _FALLBACK_PONY_AIR,
+        "illustrious": _FALLBACK_ILLUSTRIOUS_AIR,
+        "illustrious-xl": _FALLBACK_ILLUSTRIOUS_AIR,
+        "illustriousxl": _FALLBACK_ILLUSTRIOUS_AIR,
+        "wai": _FALLBACK_ILLUSTRIOUS_AIR,
+        "wai-illustrious": _FALLBACK_ILLUSTRIOUS_AIR,
+        "sdxl": _FALLBACK_SDXL_AIR,
+    }
+    return aliases.get(key, "")
+
+
+def base_family(base_model: str = "", air: str = "") -> str:
+    """Coarse family for compatibility: illustrious|pony|sdxl|sd1|flux|other."""
+    low = f"{base_model} {air}".lower()
+    if "illustrious" in low or "noobai" in low or "noob" in low:
+        return "illustrious"
+    if "pony" in low:
+        return "pony"
+    if "flux" in low:
+        return "flux"
+    if any(x in low for x in ("sd 1", "sd1", "sd15", ":sd1:", ":sd15:")):
+        return "sd1"
+    if "sdxl" in low or ":sdxl:" in low:
+        return "sdxl"
+    return "other"
+
+
+def lora_compatible_with_checkpoint(
+    checkpoint_air: str,
+    checkpoint_base: str,
+    lora_air: str,
+    lora_base: str,
+) -> bool:
+    """True when LoRA family matches the checkpoint (no Pony-on-SDXL, etc.)."""
+    ck = base_family(checkpoint_base, checkpoint_air)
+    lr = base_family(lora_base, lora_air)
+    if ck == "flux" or lr == "flux":
+        return False
+    if ck == "other" or lr == "other":
+        # Unknown — only allow if AIR ecosystems match exactly.
+        ck_eco = ecosystem_from_air_or_base(checkpoint_air, checkpoint_base)
+        lr_eco = ecosystem_from_air_or_base(lora_air, lora_base)
+        return ck_eco == lr_eco and ck_eco in ("sdxl", "sd1")
+    # Illustrious ↔ Illustrious; Pony ↔ Pony; generic SDXL ↔ SDXL (not Pony/Illustrious LoRAs)
+    if ck == lr:
+        return True
+    # Generic SDXL checkpoint can take generic SDXL LoRAs only (not pony/illustrious).
+    if ck == "sdxl" and lr == "sdxl":
+        return True
+    return False
+
+
+def detect_style(intent: str) -> str:
+    """Map a prompt to a curated checkpoint family — not a Civitai search query."""
+    low = (intent or "").lower()
+    if any(w in low for w in ("pony", "score_9", "score_8_up")):
+        return "pony"
+    if any(w in low for w in ("furry", "anthro")):
+        return "pony"
+    if any(
+        w in low
+        for w in (
+            "anime",
+            "waifu",
+            "1girl",
+            "1boy",
+            "manga",
+            "illustrious",
+            "danbooru",
+            "2d",
+            "vtuber",
+        )
+    ):
+        return "illustrious"
+    if any(
+        w in low
+        for w in ("photo", "photograph", "photoreal", "realistic", "raw photo")
+    ):
+        return "realistic"
+    return "sdxl"
+
+
+def maybe_quality_prefix(prompt: str, style: str) -> str:
+    """For danbooru-style checkpoints, softly add quality tags — never character triggers."""
+    text = (prompt or "").strip()
+    if style not in ("illustrious", "anime", "pony"):
+        return text
+    low = text.lower()
+    prefix_parts: list[str] = []
+    if "masterpiece" not in low:
+        prefix_parts.append("masterpiece")
+    if "best quality" not in low:
+        prefix_parts.append("best quality")
+    if not prefix_parts:
+        return text
+    return ", ".join(prefix_parts) + ", " + text
 
 
 def _auth_headers(settings: Settings) -> dict[str, str]:
@@ -342,14 +488,71 @@ def parse_loras(raw: Any) -> dict[str, float]:
     return out
 
 
-def ensure_triggers_in_prompt(prompt: str, triggers: list[str]) -> str:
-    """Prepend any missing trigger words so LoRAs/checkpoints actually fire."""
+def ensure_triggers_in_prompt(
+    prompt: str,
+    triggers: list[str],
+    *,
+    mode: str = "off",
+) -> str:
+    """Optionally merge trigger words into a prompt.
+
+    mode:
+      off      — never inject (default; prevents prompt pollution)
+      quality  — ignore triggers; caller should use maybe_quality_prefix
+      append   — append missing short triggers at the END
+      prepend  — legacy behaviour (pollutes; avoid for auto_pick)
+    """
     text = (prompt or "").strip()
-    low = text.lower()
-    missing = [t for t in triggers if t and t.lower() not in low]
-    if not missing:
+    if mode in ("off", "quality") or not triggers:
         return text
-    return ", ".join(missing) + (", " + text if text else "")
+    low = text.lower()
+    safe: list[str] = []
+    for t in triggers:
+        t = (t or "").strip()
+        if not t or t.lower() in low:
+            continue
+        # Skip character-description soup and NSFW anatomy dumps.
+        if len(t) > 40 or t.count(",") >= 2:
+            continue
+        if any(
+            bad in t.lower()
+            for bad in ("pussy", "nipple", "penis", "sex", "nude", "naked")
+        ):
+            continue
+        safe.append(t)
+    if not safe:
+        return text
+    if mode == "prepend":
+        return ", ".join(safe) + ", " + text
+    return text + ", " + ", ".join(safe)
+
+
+def filter_loras_for_checkpoint(
+    lora_map: dict[str, float],
+    *,
+    checkpoint_air: str,
+    checkpoint_base: str = "",
+    lora_meta: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Drop LoRAs whose family doesn't match the checkpoint; sanitize AIRs."""
+    out: dict[str, float] = {}
+    meta = lora_meta or {}
+    for air, strength in (lora_map or {}).items():
+        clean = sanitize_air(air)
+        if not clean:
+            continue
+        lora_base = meta.get(clean) or meta.get(air) or ""
+        if lora_compatible_with_checkpoint(
+            checkpoint_air, checkpoint_base, clean, lora_base
+        ):
+            out[clean] = strength
+        else:
+            log.info(
+                "civitai.lora_dropped_incompatible",
+                lora=clean,
+                checkpoint=checkpoint_air,
+            )
+    return out
 
 
 async def upload_local_image(settings: Settings, path: Path) -> str:
@@ -533,88 +736,52 @@ async def pick_best_resources(
     intent: str,
     *,
     nsfw: bool = True,
-    want_lora: bool = True,
+    want_lora: bool = False,
 ) -> tuple[CivitaiResource | None, list[CivitaiResource], str]:
-    """Heuristic: pick a strong checkpoint (+ optional LoRAs) for an intent.
+    """Conservative auto-pick: curated checkpoint, LoRAs off by default.
 
-    Prefers Illustrious / Pony / SDXL over Flux (Flux bare engine 400s).
-    Returns (checkpoint, loras, rationale).
+    Searching the full user prompt caused garbage (word "gothic" → random
+    character LoRAs + trigger pollution). Auto-pick now:
+      1. Detect style (anime/realistic/general)
+      2. Use a curated general-purpose checkpoint AIR
+      3. Do NOT auto-add LoRAs (agent must pass loras= explicitly)
+
+    ``settings`` / ``nsfw`` / ``want_lora`` kept for API compatibility;
+    LoRA auto-search is intentionally disabled.
     """
-    intent = (intent or "").strip()
-    low = intent.lower()
-    if any(w in low for w in ("anime", "waifu", "1girl", "manga", "illustrious", "pony")):
-        ck_queries = ["illustrious", "wai illustrious", "pony diffusion"]
-    elif any(w in low for w in ("realistic", "photo", "portrait", "photograph")):
-        ck_queries = ["realistic vision sdxl", "epicrealism xl", "sdxl"]
-    elif any(w in low for w in ("furry", "anthro")):
-        ck_queries = ["pony diffusion", "illustrious"]
-    else:
-        # Generic NSFW / creative — Illustrious first, then SDXL.
-        ck_queries = [
-            intent[:60] or "illustrious",
-            "illustrious",
-            "sdxl",
-        ]
-
-    checkpoint: CivitaiResource | None = None
-    last_err = ""
-    for cq in ck_queries:
-        try:
-            hits = await search_models(
-                settings, cq, types="Checkpoint", limit=8, nsfw=nsfw
-            )
-        except Exception as e:
-            last_err = str(e)
-            log.debug("civitai.checkpoint_search_failed", query=cq, error=last_err)
-            continue
-        # Drop Flux — orchestration needs different schema; NSFW path wants SDXL.
-        usable = [h for h in hits if not _is_fluxish(h)]
-        # Prefer Illustrious/Pony/SDXL ecosystems.
-        preferred = [
-            h
-            for h in usable
-            if h.ecosystem == "sdxl"
-            or any(
-                k in (h.base_model or "").lower()
-                for k in ("illustrious", "pony", "sdxl", "noob")
-            )
-        ]
-        checkpoint = (preferred or usable or [None])[0]
-        if checkpoint:
-            break
-
-    if checkpoint is None and last_err:
-        log.warning("civitai.pick_all_searches_failed", error=last_err)
-
+    del settings, nsfw  # reserved; curated path needs no network
+    style = detect_style(intent)
+    air, name = _CURATED_CHECKPOINTS.get(style, _CURATED_CHECKPOINTS["sdxl"])
+    air = sanitize_air(air)
+    checkpoint = CivitaiResource(
+        name=name,
+        type="Checkpoint",
+        model_id=0,
+        version_id=0,
+        version_name="curated",
+        air=air,
+        base_model=(
+            "Pony"
+            if style == "pony"
+            else "Illustrious"
+            if style in ("illustrious", "anime")
+            else "SDXL 1.0"
+        ),
+        trained_words=[],  # never inject curated triggers
+        nsfw=False,
+    )
     loras: list[CivitaiResource] = []
-    if want_lora and intent and checkpoint:
-        lora_q = intent[:60]
-        try:
-            raw_loras = await search_models(
-                settings, lora_q, types="LORA", limit=5, nsfw=nsfw
-            )
-            eco = checkpoint.ecosystem
-            matched = [
-                x
-                for x in raw_loras
-                if not _is_fluxish(x) and (x.ecosystem == eco or eco == "sdxl")
-            ]
-            loras = (matched or [x for x in raw_loras if not _is_fluxish(x)])[:2]
-        except Exception as e:
-            log.debug("civitai.lora_search_failed", error=str(e))
-
-    rationale_parts = []
-    if checkpoint:
-        rationale_parts.append(
-            f"checkpoint={checkpoint.name} ({checkpoint.air}, style={checkpoint.prompt_style})"
+    if want_lora:
+        log.debug(
+            "civitai.auto_pick_skips_loras",
+            note="pass loras= explicitly after search_civitai_models",
         )
-    else:
-        rationale_parts.append("checkpoint=none (will use SDXL fallback URN)")
-    if loras:
-        rationale_parts.append(
-            "loras=" + ", ".join(f"{x.name}@{x.air}" for x in loras)
-        )
-    return checkpoint, loras, "; ".join(rationale_parts) or "no matches"
+    rationale = (
+        f"checkpoint={checkpoint.name} ({checkpoint.air}, style={style}, "
+        f"prompt_style={checkpoint.prompt_style}); loras=none (auto_pick is "
+        f"checkpoint-only — pass loras= to add compatible ones)"
+    )
+    return checkpoint, loras, rationale
 
 
 def format_search_results(resources: list[CivitaiResource], *, header: str) -> str:
@@ -625,8 +792,10 @@ def format_search_results(resources: list[CivitaiResource], *, header: str) -> s
         blocks.append(r.to_agent_block())
         blocks.append("")
     blocks.append(
-        "Next: call generate_image with model=<air>, loras={air: strength}, "
-        "negative_prompt=..., and a prompt that includes the trigger_words "
-        "using the prompt_style tip above. For img2img pass image=<path or url>."
+        "Next: call generate_image with model=<air> to pin a checkpoint, and "
+        "loras={air: strength} only for LoRAs that match the same baseModel family "
+        "(Illustrious↔Illustrious, Pony↔Pony, SDXL↔SDXL). Write the prompt yourself — "
+        "auto_pick will NOT inject trigger_words. Include short trigger_words in your "
+        "prompt only when you intentionally use a character LoRA."
     )
     return "\n".join(blocks).strip()

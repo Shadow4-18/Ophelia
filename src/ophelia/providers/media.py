@@ -158,9 +158,28 @@ async def generate_image(
         )
 
     agent_model = (model or "").strip()
-    # Civitai: Ophelia picks checkpoint/LoRA per image. Do NOT lock to the
+    # Civitai AIR URNs must never hit xAI/OpenAI (404). If she passes an AIR,
+    # route to Civitai when a key is configured; otherwise strip and use default.
+    is_civitai_air = agent_model.lower().startswith("urn:air:")
+    if is_civitai_air and provider != "civitai":
+        if settings.civitai_api_key:
+            log.info(
+                "image.reroute_air_to_civitai",
+                from_provider=provider,
+                model=agent_model[:80],
+            )
+            provider = "civitai"
+        else:
+            log.warning(
+                "image.ignored_civitai_urn",
+                provider=provider,
+                model=agent_model[:80],
+            )
+            agent_model = ""
+
+    # Civitai: Ophelia picks a curated checkpoint per image. Do NOT lock to the
     # menu/env model (CIVITAI_IMAGE_MODEL / OPHELIA_IMAGE_NSFW_MODEL) — those
-    # are fallbacks only if search fails. Other backends still use router defaults.
+    # are fallbacks only. Other backends still use router defaults.
     if provider == "civitai":
         resolved_model = agent_model
         # Default to auto-pick whenever she didn't pass an explicit AIR URN.
@@ -171,6 +190,10 @@ async def generate_image(
             auto_pick = True
     else:
         resolved_model = agent_model or stack.image_model_for(provider, nsfw=nsfw)
+        # Belt-and-suspenders: never send urn:air: to non-Civitai backends.
+        if (resolved_model or "").lower().startswith("urn:air:"):
+            log.warning("image.stripped_air_from_non_civitai", provider=provider)
+            resolved_model = stack.image_model_for(provider, nsfw=nsfw)
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
@@ -754,9 +777,9 @@ async def _civitai_image(
 ) -> str:
     """Civitai orchestration — txt2img (createImage) or img2img (createVariant).
 
-    By default Ophelia picks checkpoint + LoRAs from the prompt (auto_pick).
-    Pass an explicit AIR URN in `model` only to pin a specific checkpoint.
-    CIVITAI_IMAGE_MODEL is a last-resort fallback if search fails — not a lock.
+    By default auto_pick selects a curated general checkpoint (no LoRAs, no
+    trigger injection). Pass model=<AIR> to pin a checkpoint; pass loras= to
+    add compatible LoRAs. CIVITAI_IMAGE_MODEL is a last-resort fallback only.
     """
     from ophelia.providers import civitai as civ
 
@@ -770,7 +793,7 @@ async def _civitai_image(
     }
 
     # Agent-provided pin only. Menu/env models are NOT applied up front.
-    model_air = (model or "").strip()
+    model_air = civ.sanitize_air((model or "").strip())
     if model_air.lower() in ("auto", "pick", "dynamic"):
         model_air = ""
         explicit_pin = False
@@ -779,61 +802,145 @@ async def _civitai_image(
     else:
         explicit_pin = bool(model_air)
 
+    agent_loras = bool(loras)
     lora_map = civ.parse_loras(loras)
-    triggers: list[str] = []
+    # Sanitize LoRA AIR keys early.
+    lora_map = {civ.sanitize_air(k): v for k, v in lora_map.items() if civ.sanitize_air(k)}
+    lora_triggers: list[str] = []
     pick_note = ""
+    checkpoint_base = ""
+    style = civ.detect_style(prompt)
+
+    # Common mistake: pass a LoRA AIR as model=. Move it to loras= and pick a
+    # matching checkpoint — orchestration needs checkpoint + LoRA together.
+    if model_air and civ.air_kind(model_air) == "lora":
+        lora_map.setdefault(model_air, 0.8)
+        agent_loras = True
+        pick_note = "model_was_lora→loras; "
+        # Prefer checkpoint family matching the LoRA once we know baseModel.
+        try:
+            vid_s = model_air.rsplit("@", 1)[-1].split("+")[0]
+            if vid_s.isdigit():
+                ver = await civ.get_version(settings, int(vid_s))
+                if ver and ver.base_model:
+                    fam = civ.base_family(ver.base_model, model_air)
+                    if fam == "pony":
+                        style = "pony"
+                    elif fam == "illustrious":
+                        style = "illustrious"
+                    lora_triggers.extend(ver.trained_words[:3])
+        except Exception as e:
+            log.debug("civitai.lora_as_model_meta_failed", error=str(e))
+        model_air = ""
+        explicit_pin = False
+    elif model_air and not model_air.startswith("urn:air:"):
+        # Short aliases: model=pony / model=illustrious
+        alias = civ.resolve_checkpoint_alias(model_air)
+        if alias:
+            model_air = alias
+            explicit_pin = True
+            pick_note = f"alias→{alias}; "
+
     ecosystem = civ.ecosystem_from_air_or_base(model_air)
 
     # Dynamic selection is the default. Only skip when she pinned a model URN/flux.
     should_pick = bool(auto_pick) and not explicit_pin
     if should_pick:
         try:
-            ck, picked_loras, rationale = await civ.pick_best_resources(
-                settings, prompt, nsfw=nsfw, want_lora=not lora_map
-            )
-            if ck:
-                model_air = ck.air
-                ecosystem = ck.ecosystem
-                triggers.extend(ck.trained_words)
-                pick_note = rationale
-            for lr in picked_loras:
-                lora_map.setdefault(lr.air, 0.8)
-                triggers.extend(lr.trained_words)
+            # Prefer style already inferred (e.g. from a LoRA demoted out of model=).
+            if style in civ._CURATED_CHECKPOINTS:
+                air, name = civ._CURATED_CHECKPOINTS[style]
+                model_air = civ.sanitize_air(air)
+                ecosystem = "sdxl"
+                checkpoint_base = (
+                    "Pony"
+                    if style == "pony"
+                    else "Illustrious"
+                    if style in ("illustrious", "anime")
+                    else "SDXL 1.0"
+                )
+                pick_note = (
+                    pick_note
+                    + f"checkpoint={name} ({model_air}, style={style}); "
+                    "loras=none-or-agent"
+                )
+            else:
+                ck, _picked_loras, rationale = await civ.pick_best_resources(
+                    settings, prompt, nsfw=nsfw, want_lora=False
+                )
+                if ck:
+                    model_air = civ.sanitize_air(ck.air)
+                    ecosystem = ck.ecosystem
+                    checkpoint_base = ck.base_model or ""
+                    pick_note = pick_note + rationale
         except Exception as e:
             log.warning("civitai.auto_pick_failed", error=str(e))
-            pick_note = f"auto_pick_failed: {e}"
+            pick_note = pick_note + f"auto_pick_failed: {e}"
 
     # Fallback chain if pick found nothing: env default → known SDXL URN.
     # Never bare engine:flux (400 workflowTemplate required).
     if not model_air:
-        env_model = (settings.civitai_image_model or "").strip()
+        env_model = civ.sanitize_air((settings.civitai_image_model or "").strip())
         if env_model and env_model.lower() not in ("auto", "dynamic", "pick", "flux"):
             model_air = env_model
             ecosystem = civ.ecosystem_from_air_or_base(model_air)
             pick_note = (pick_note + "; " if pick_note else "") + f"fallback_env={env_model}"
         else:
-            # Prefer Illustrious for anime-ish prompts, else generic SDXL.
-            low = (prompt or "").lower()
-            if any(w in low for w in ("anime", "waifu", "1girl", "manga", "illustrious")):
+            if style == "pony":
+                model_air = civ._FALLBACK_PONY_AIR
+            elif style in ("illustrious", "anime"):
                 model_air = civ._FALLBACK_ILLUSTRIOUS_AIR
             else:
                 model_air = civ._FALLBACK_SDXL_AIR
             ecosystem = "sdxl"
             pick_note = (pick_note + "; " if pick_note else "") + f"fallback_urn={model_air}"
 
-    # If we have an AIR but no triggers yet, optionally enrich from site API.
-    if model_air.startswith("urn:air:") and "@" in model_air and not triggers:
+    model_air = civ.sanitize_air(model_air)
+
+    # Enrich ecosystem/base from site API — do NOT pull trainedWords into prompt.
+    if model_air.startswith("urn:air:") and "@" in model_air:
         try:
             vid_s = model_air.rsplit("@", 1)[-1].split("+")[0]
             if vid_s.isdigit():
                 ver = await civ.get_version(settings, int(vid_s))
                 if ver:
-                    triggers.extend(ver.trained_words)
                     ecosystem = ver.ecosystem or ecosystem
+                    checkpoint_base = ver.base_model or checkpoint_base
         except Exception as e:
             log.debug("civitai.version_enrich_failed", error=str(e))
 
-    final_prompt = civ.ensure_triggers_in_prompt(prompt, triggers)
+    # Enrich LoRA baseModel from site API, then drop incompatible ones
+    # (e.g. Pony LoRA on generic SDXL — AIR alone is always :sdxl:).
+    lora_meta: dict[str, str] = {}
+    if lora_map:
+        for air in list(lora_map)[:5]:
+            if "@" not in air:
+                continue
+            try:
+                vid_s = air.rsplit("@", 1)[-1].split("+")[0]
+                if vid_s.isdigit():
+                    ver = await civ.get_version(settings, int(vid_s))
+                    if ver:
+                        lora_meta[air] = ver.base_model or ""
+                        if agent_loras:
+                            lora_triggers.extend(ver.trained_words[:3])
+            except Exception as e:
+                log.debug("civitai.lora_meta_fetch_failed", error=str(e))
+        lora_map = civ.filter_loras_for_checkpoint(
+            lora_map,
+            checkpoint_air=model_air,
+            checkpoint_base=checkpoint_base,
+            lora_meta=lora_meta,
+        )
+
+    # Prompt: keep user intent. Soft quality tags for danbooru families only.
+    # Short LoRA triggers appended only when the agent explicitly passed loras=.
+    final_prompt = civ.maybe_quality_prefix(prompt, style)
+    if agent_loras and lora_map:
+        final_prompt = civ.ensure_triggers_in_prompt(
+            final_prompt, lora_triggers, mode="append"
+        )
+
     neg = (negative_prompt or "").strip()
     if not neg and ecosystem in ("sd1", "sdxl"):
         neg = civ.default_negative_for(ecosystem)
@@ -856,8 +963,13 @@ async def _civitai_image(
         image_url=image_url,
         strength=strength,
     )
-    body = {"steps": [{"$type": "imageGen", "input": step_input}]}
-    mature = "true" if (nsfw or settings.image_nsfw_allowed) else "false"
+    # NSFW requests must always allow mature content on orchestration.
+    allow_mature = bool(nsfw or settings.image_nsfw_allowed)
+    mature = "true" if allow_mature else "false"
+    body: dict = {
+        "steps": [{"$type": "imageGen", "input": step_input}],
+        "allowMatureContent": allow_mature,
+    }
     log.info(
         "civitai.submit",
         operation=step_input.get("operation"),
@@ -868,6 +980,8 @@ async def _civitai_image(
         img2img=bool(image_url),
         pick=pick_note or None,
         auto_pick=should_pick,
+        allow_mature=allow_mature,
+        prompt_len=len(final_prompt),
     )
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:

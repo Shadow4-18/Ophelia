@@ -177,17 +177,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "Set nsfw=true ONLY for explicit/sexual content the user asked for — "
                 "that routes to the uncensored backend (Civitai when configured). "
                 "\n\nCivitai (NSFW / SDXL / Illustrious / Pony / LoRAs):\n"
-                "- She picks checkpoint + LoRAs herself from the prompt by default "
-                "(no menu lock). You do NOT need to set a fixed model in setup.\n"
-                "- Optional: search_civitai_models first when you want to inspect "
-                "options, then pass model=<AIR> / loras= to pin. Otherwise just "
-                "call generate_image and let auto-pick run.\n"
-                "- Write the prompt in the style the chosen model wants "
-                "(danbooru tags for Illustrious/Pony; natural language for Flux). "
-                "Trigger words are auto-injected when known.\n"
+                "- Illustrious and Pony are BOTH SDXL-based (not SD1.5). "
+                "Only pair LoRAs with the same family (Illustrious↔Illustrious, "
+                "Pony↔Pony).\n"
+                "- Auto-pick selects a curated checkpoint from style "
+                "(anime/vtuber→Illustrious, pony→Pony V6, photo→SDXL). It does "
+                "NOT add random LoRAs or inject character trigger words.\n"
+                "- Pass model=<checkpoint AIR or alias 'pony'|'illustrious'> to "
+                "pin. Pass loras= as JSON {\"urn:air:...\": 0.8} for LoRAs — "
+                "never put a LoRA AIR in model= (it will be moved to loras "
+                "automatically).\n"
+                "- Write the prompt yourself (danbooru tags for Illustrious/Pony). "
+                "Include short LoRA triggers in the prompt only when you use that LoRA.\n"
                 "- txt2img: prompt only. img2img: image=<path or URL> from "
                 "list_inbox_images + optional strength (0.6–0.8).\n"
-                "- Result text reports which checkpoint/LoRAs actually ran."
+                "- Never pass a Civitai AIR URN as model when using xAI/OpenAI."
             ),
             "parameters": {
                 "type": "object",
@@ -217,7 +221,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "description": (
                             "Optional LoRAs for Civitai. JSON object "
                             '{"urn:air:...": 0.8} or comma list urn|0.8,urn|0.7. '
-                            "Omit to let auto-pick choose matching LoRAs."
+                            "Omit for checkpoint-only (recommended). Must match "
+                            "checkpoint family (no Pony LoRA on generic SDXL)."
                         ),
                     },
                     "negative_prompt": {
@@ -259,10 +264,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "search_civitai_models",
             "description": (
-                "Optional browse of Civitai checkpoints/LoRAs. Usually unnecessary — "
-                "generate_image already auto-picks from the prompt. Use this when you "
-                "want to inspect AIR URNs, trigger_words, or prompt_style before pinning "
-                "a specific model/loras= on generate_image."
+                "Browse Civitai checkpoints/LoRAs when you want to pin a specific "
+                "model. generate_image auto-pick is checkpoint-only (curated, no "
+                "random LoRAs). Use this to find a character LoRA AIR, then pass "
+                "model=/loras= on generate_image. Check baseModel compatibility "
+                "and include short trigger_words in your own prompt."
             ),
             "parameters": {
                 "type": "object",
@@ -1278,7 +1284,8 @@ class ToolRegistry:
         header = (
             f"# Civitai {kind} results for {query!r}\n"
             f"(Use air values with generate_image model=/loras=. "
-            f"Match prompt_style and include trigger_words.)"
+            f"Match baseModel family. Write trigger_words into your own prompt — "
+            f"auto_pick will not inject them.)"
         )
         return civ.format_search_results(results, header=header)
 
