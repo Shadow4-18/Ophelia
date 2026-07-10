@@ -32,8 +32,11 @@ def test_guest_denied_blocks_phone_and_framework_control() -> None:
         "goal_create",
         "send_message_to_guest",
         "list_guests",
+        "recall_guest_chat",
     ):
         assert name in GUEST_DENIED_TOOLS
+
+    assert "relay_to_owner" not in GUEST_DENIED_TOOLS
 
 
 def test_guest_prompt_is_presence_not_kiosk() -> None:

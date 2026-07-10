@@ -88,6 +88,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "list_guests",
         "send_message_to_guest",
         "set_guest_rapport",
+        "recall_guest_chat",
         "whats_changed",
         "phone_see_screen",
         "phone_ui_dump",
@@ -833,6 +834,69 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "relay_to_owner",
+            "description": (
+                "Pass a message from the current guest to your owner RIGHT NOW. "
+                "Use this whenever a guest asks you to tell / pass / relay / "
+                "let your owner know something. Narrating \"I'll tell them\" "
+                "without this tool does nothing — the owner will never see it. "
+                "Guest-facing; do not invent a reply from the owner."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "What to pass to the owner. Prefer the guest's "
+                            "own words; you may briefly frame it."
+                        ),
+                    },
+                },
+                "required": ["message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_guest_chat",
+            "description": (
+                "Read a guest's real chat history with you (quarantined guest "
+                "messages). Use when the owner asks what a guest said, whether "
+                "someone left a message, or to check history with Eri/etc. "
+                "Owner-only. Do NOT invent quotes — if this returns nothing, "
+                "say you don't have that history."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "guest": {
+                        "type": "string",
+                        "description": (
+                            "Guest name, platform:user_id, or numeric id "
+                            "(e.g. 'Eri', 'telegram:12345')."
+                        ),
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional keyword filter (e.g. 'smell', 'tell'). "
+                            "Omit to get the most recent messages."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to return (default 30, max 80).",
+                    },
+                },
+                "required": ["guest"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_guest_rapport",
             "description": (
                 "Remember something about a guest for future conversations — "
@@ -1011,6 +1075,8 @@ class ToolRegistry:
             "who_am_i_talking_to": self._who_am_i_talking_to,
             "set_guest_name": self._set_guest_name,
             "send_message_to_guest": self._send_message_to_guest,
+            "relay_to_owner": self._relay_to_owner,
+            "recall_guest_chat": self._recall_guest_chat,
             "set_guest_rapport": self._set_guest_rapport,
             "whats_changed": self._whats_changed,
         }
@@ -1527,6 +1593,106 @@ class ToolRegistry:
                 else "Discord couldn't DM that user."
             )
         )
+
+    async def _relay_to_owner(self, message: str) -> str:
+        """Guest → owner message pass. Guests must call this to actually notify."""
+        message = (message or "").strip()
+        if not message:
+            return "Message can't be empty."
+        if self._is_owner:
+            return (
+                "You're already talking to the owner — just say it in chat. "
+                "relay_to_owner is for guests passing a message to the owner."
+            )
+        if not self.proactive_sender:
+            return (
+                "Can't reach the owner right now — no owner sender wired. "
+                "Tell the guest you'll try again later."
+            )
+        chan = (self._current_sender_channel or "").strip()
+        guest_label = chan or "a guest"
+        if chan and self.memory and ":" in chan:
+            platform, _, id_s = chan.partition(":")
+            try:
+                from ophelia.memory.guests import get_guest_name
+
+                name = await get_guest_name(
+                    self.memory,
+                    platform,
+                    int(id_s),
+                    data_dir=self.settings.data_dir,
+                )
+                if name:
+                    guest_label = f"{name} ({chan})"
+            except Exception:
+                pass
+        payload = f"📨 From {guest_label}:\n{message[:3500]}"
+        log.info(
+            "tool.relay_to_owner",
+            from_channel=chan or None,
+            chars=len(message),
+            preview=message[:80],
+        )
+        try:
+            await self.proactive_sender(payload)
+        except Exception as e:
+            log.warning("tool.relay_to_owner_failed", error=str(e))
+            return f"Failed to reach the owner: {e}"
+        if self.memory:
+            try:
+                owners = list(self.settings.owner_channels())
+                store_ch = owners[0] if owners else "owner:relay"
+                await self.memory.append_message(
+                    store_ch,
+                    "assistant",
+                    f"[relay from {guest_label}] {message[:2000]}",
+                )
+            except Exception as e:
+                log.debug("tool.relay_to_owner_store_failed", error=str(e))
+        return (
+            f"Delivered to your owner. Tell the guest it's been passed along "
+            f"(from {guest_label})."
+        )
+
+    async def _recall_guest_chat(
+        self, guest: str, query: str = "", limit: int = 30
+    ) -> str:
+        """Owner-only: read real guest_messages history for a named guest."""
+        if not self._is_owner:
+            return "Only the owner can read guest chat history."
+        if not self.memory:
+            return "Memory store unavailable."
+        guest = (guest or "").strip()
+        if not guest:
+            return "Need a guest name or platform:user_id."
+        from ophelia.memory.guests import get_guest_name, resolve_guest_target
+
+        resolved = await resolve_guest_target(self.settings, self.memory, guest)
+        if not resolved:
+            return (
+                f"Couldn't resolve '{guest}' to a known guest. "
+                "Use their name, platform:id, or list_guests."
+            )
+        platform, user_id = resolved
+        channel = f"{platform}:{user_id}"
+        lim = max(1, min(int(limit or 30), 80))
+        q = (query or "").strip()
+        hits = await self.memory.search_guest_messages(
+            q, channel=channel, limit=lim
+        )
+        name = await get_guest_name(
+            self.memory, platform, user_id, data_dir=self.settings.data_dir
+        )
+        label = f"{name} ({channel})" if name else channel
+        if not hits:
+            if q:
+                return f"No messages matching '{q}' in chat with {label}."
+            return f"No stored chat history with {label} yet."
+        lines = [f"Chat with {label} ({len(hits)} message(s)):"]
+        for h in hits:
+            role = "GUEST" if h["role"] == "user" else "YOU"
+            lines.append(f"  {role}: {h['content'][:400]}")
+        return "\n".join(lines)
 
     async def _set_guest_rapport(
         self, platform: str, user_id: int, note: str

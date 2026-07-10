@@ -498,6 +498,65 @@ class MemoryStore:
                     ]
         return out
 
+    async def search_guest_messages(
+        self,
+        query: str,
+        *,
+        channel: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search quarantined guest chat history (owner-facing recall).
+
+        Guest content lives in guest_messages, not the main messages FTS index.
+        """
+        if not query.strip() and not channel:
+            return []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if channel and query.strip():
+                cursor = await db.execute(
+                    """
+                    SELECT channel, role, content, created_at
+                    FROM guest_messages
+                    WHERE channel = ? AND content LIKE ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (channel, f"%{query.strip()}%", limit),
+                )
+            elif channel:
+                cursor = await db.execute(
+                    """
+                    SELECT channel, role, content, created_at
+                    FROM guest_messages
+                    WHERE channel = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (channel, limit),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT channel, role, content, created_at
+                    FROM guest_messages
+                    WHERE content LIKE ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (f"%{query.strip()}%", limit),
+                )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "channel": row["channel"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+            }
+            for row in reversed(rows)
+        ]
+
     async def record_humor_outbound(self, text: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

@@ -264,7 +264,9 @@ def guests_context_block(
         "and user_id — the exact platform:user_id shown below. The owner may "
         "ask you to 'tell' or 'message' someone by name; match the name to "
         "the entry below and send to THAT platform:user_id, never to the "
-        "owner's own id. You can also reach out on your own when it feels right.)",
+        "owner's own id. You can also reach out on your own when it feels right. "
+        "To read a guest's real chat history, call recall_guest_chat with their "
+        "name — do not invent what they said.)",
     ]
     activity = activity or {}
     for g in others:
