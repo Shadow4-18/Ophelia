@@ -1428,11 +1428,12 @@ _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
     "civitai": (
         "CIVITAI_IMAGE_MODEL",
         "",
-        "AIR URN (blank = auto-pick / flux). Prefer search_civitai_models at runtime.",
+        "Leave blank — Ophelia picks checkpoint/LoRA per image. Optional fallback URN only.",
         [
-            "urn:air:sdxl:checkpoint:civitai:827184@2514310",  # WAI Illustrious example
-            "urn:air:sdxl:checkpoint:civitai:101055@128078",
+            "(dynamic — Ophelia picks per image)",
             "flux",
+            "urn:air:sdxl:checkpoint:civitai:827184@2514310",
+            "urn:air:sdxl:checkpoint:civitai:101055@128078",
         ],
     ),
     "modelslab": (
@@ -1570,9 +1571,11 @@ def _pick_image_model(
     if pick < 0:
         return None
     chosen = choices[pick]
-    if chosen == "(clear — use provider default model)":
+    if chosen == "(clear — use provider default model)" or chosen.startswith(
+        "(dynamic"
+    ):
         write_env_updates({target_env: None})
-        print(f"\n  Cleared {target_env}")
+        print(f"\n  Cleared {target_env} — Ophelia picks per image")
         return None
     if chosen == "Type a model name manually...":
         typed = prompt_text(target_env, default=current or default, hint=hint)
@@ -1644,7 +1647,26 @@ def _configure_sfw_image() -> None:
     _configure_image_credentials(provider, updates)
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
-    if provider != "auto":
+    if provider == "civitai":
+        # Dynamic per-image pick is the product default — don't lock a URN.
+        mode = radiolist(
+            "Civitai model selection",
+            [
+                "Dynamic — Ophelia picks checkpoint + LoRA per image (recommended)",
+                "Set a fallback URN only (used if search fails)",
+            ],
+            selected=0,
+            description=(
+                "She searches Civitai for the best checkpoint/LoRA for each prompt.\n"
+                "  You do not need to change the menu when the subject changes."
+            ),
+        )
+        if mode == 0:
+            write_env_updates({"CIVITAI_IMAGE_MODEL": None, "OPHELIA_IMAGE_NSFW_MODEL": None})
+            print("\n  Civitai: dynamic pick ON (no locked model)")
+        elif mode == 1:
+            _pick_image_model(provider, title="Civitai fallback model (optional)")
+    elif provider != "auto":
         _pick_image_model(
             provider,
             title=f"SFW model — {provider}",
@@ -1704,7 +1726,32 @@ def _configure_nsfw_image() -> None:
     touched = write_env_updates(updates)
     print(f"\n  Saved: {', '.join(touched)}")
 
-    if provider != "auto":
+    if provider == "civitai":
+        mode = radiolist(
+            "Civitai NSFW model selection",
+            [
+                "Dynamic — Ophelia picks checkpoint + LoRA per image (recommended)",
+                "Set a fallback URN only (used if search fails)",
+            ],
+            selected=0,
+            description=(
+                "Same as SFW: she chooses Illustrious/Pony/realistic/etc. from the\n"
+                "  prompt each time. Menu lock is optional fallback only."
+            ),
+        )
+        if mode == 0:
+            write_env_updates(
+                {"OPHELIA_IMAGE_NSFW_MODEL": None, "CIVITAI_IMAGE_MODEL": None}
+            )
+            print("\n  Civitai NSFW: dynamic pick ON")
+        elif mode == 1:
+            _pick_image_model(
+                provider,
+                title="Civitai NSFW fallback model",
+                store_env="OPHELIA_IMAGE_NSFW_MODEL",
+                allow_clear=True,
+            )
+    elif provider != "auto":
         _pick_image_model(
             provider,
             title=f"NSFW model — {provider}",
@@ -1717,16 +1764,22 @@ def _configure_nsfw_image() -> None:
         s = Settings()
         resolved = s.image_nsfw_provider_resolved()
         print(f"\n  Auto NSFW backend currently resolves to: {resolved}")
-        _pick_image_model(
-            resolved,
-            title=f"NSFW model — auto → {resolved}",
-            store_env="OPHELIA_IMAGE_NSFW_MODEL",
-            allow_clear=True,
-        )
+        if resolved == "civitai":
+            write_env_updates({"OPHELIA_IMAGE_NSFW_MODEL": None})
+            print("  Civitai: dynamic pick ON (no locked NSFW model)")
+        else:
+            _pick_image_model(
+                resolved,
+                title=f"NSFW model — auto → {resolved}",
+                store_env="OPHELIA_IMAGE_NSFW_MODEL",
+                allow_clear=True,
+            )
 
     s = Settings()
     resolved = s.image_nsfw_provider_resolved()
-    model = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip() or "(provider default)"
+    model = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip() or (
+        "dynamic (per image)" if resolved == "civitai" else "(provider default)"
+    )
     print(f"  NSFW tier: ON → {resolved} / {model}")
 
 

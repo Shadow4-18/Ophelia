@@ -137,11 +137,25 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
-    resolved_model = (model or "").strip() or stack.image_model_for(provider, nsfw=nsfw)
+    agent_model = (model or "").strip()
+    # Civitai: Ophelia picks checkpoint/LoRA per image. Do NOT lock to the
+    # menu/env model (CIVITAI_IMAGE_MODEL / OPHELIA_IMAGE_NSFW_MODEL) — those
+    # are fallbacks only if search fails. Other backends still use router defaults.
+    if provider == "civitai":
+        resolved_model = agent_model
+        # Default to auto-pick whenever she didn't pass an explicit AIR URN.
+        if not agent_model:
+            auto_pick = True
+        elif agent_model.lower() in ("auto", "pick", "dynamic"):
+            resolved_model = ""
+            auto_pick = True
+    else:
+        resolved_model = agent_model or stack.image_model_for(provider, nsfw=nsfw)
+
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
 
-    async with gate.session("image", resolved_model, provider):
+    async with gate.session("image", resolved_model or "civitai-auto", provider):
         if provider in ("xai-oauth", "xai"):
             result = await _xai_image(
                 settings, stack, prompt, aspect_ratio, resolved_model, artifacts_dir
@@ -203,7 +217,8 @@ async def generate_image(
     # prevents the agent from claiming "I used Grok" when the image role
     # silently fell through to Pollinations because xAI wasn't configured.
     if result.startswith("Image saved to"):
-        result = f"{result} (backend: {provider}/{resolved_model}{nsfw_tag})"
+        label = resolved_model or "auto"
+        result = f"{result} (backend: {provider}/{label}{nsfw_tag})"
     return result
 
 
@@ -715,12 +730,13 @@ async def _civitai_image(
     loras: dict[str, float] | str | None = None,
     image: str | None = None,
     strength: float = 0.7,
-    auto_pick: bool = False,
+    auto_pick: bool = True,
 ) -> str:
     """Civitai orchestration — txt2img (createImage) or img2img (createVariant).
 
-    Model may be an AIR URN, 'flux', or empty (falls back to CIVITAI_IMAGE_MODEL /
-    auto-pick). LoRAs are {air: strength}. Local image paths are uploaded as blobs.
+    By default Ophelia picks checkpoint + LoRAs from the prompt (auto_pick).
+    Pass an explicit AIR URN in `model` only to pin a specific checkpoint.
+    CIVITAI_IMAGE_MODEL is a last-resort fallback if search fails — not a lock.
     """
     from ophelia.providers import civitai as civ
 
@@ -731,26 +747,23 @@ async def _civitai_image(
         "Content-Type": "application/json",
     }
 
+    # Agent-provided pin only. Menu/env models are NOT applied up front.
     model_air = (model or "").strip()
-    explicit_flux = model_air.lower() == "flux"
-    # Prefer explicit call arg, then env default. Fix the old bug where a URN
-    # in OPHELIA_IMAGE_NSFW_MODEL was wrongly sent as engine=.
-    if not model_air or model_air.lower() in ("auto",):
-        env_model = (settings.civitai_image_model or "").strip()
-        if env_model:
-            model_air = env_model
+    if model_air.lower() in ("auto", "pick", "dynamic"):
+        model_air = ""
+        explicit_pin = False
+    elif model_air.lower() == "flux":
+        explicit_pin = True
+    else:
+        explicit_pin = bool(model_air)
 
     lora_map = civ.parse_loras(loras)
     triggers: list[str] = []
     pick_note = ""
     ecosystem = civ.ecosystem_from_air_or_base(model_air)
 
-    # Auto-pick: explicit auto_pick, or nothing configured yet (not bare "flux").
-    should_pick = bool(auto_pick) or (
-        not explicit_flux
-        and not model_air
-        and not (settings.civitai_image_model or "").strip()
-    )
+    # Dynamic selection is the default. Only skip when she pinned a model URN/flux.
+    should_pick = bool(auto_pick) and not explicit_pin
     if should_pick:
         try:
             ck, picked_loras, rationale = await civ.pick_best_resources(
@@ -767,9 +780,18 @@ async def _civitai_image(
         except Exception as e:
             log.warning("civitai.auto_pick_failed", error=str(e))
             pick_note = f"auto_pick_failed: {e}"
-            if not model_air:
-                model_air = "flux"
-                ecosystem = "flux1"
+
+    # Fallback chain if pick found nothing: env default → flux.
+    if not model_air:
+        env_model = (settings.civitai_image_model or "").strip()
+        if env_model and env_model.lower() not in ("auto", "dynamic", "pick"):
+            model_air = env_model
+            ecosystem = civ.ecosystem_from_air_or_base(model_air)
+            pick_note = (pick_note + "; " if pick_note else "") + f"fallback_env={env_model}"
+        else:
+            model_air = "flux"
+            ecosystem = "flux1"
+            pick_note = (pick_note + "; " if pick_note else "") + "fallback=flux"
 
     # If we have an AIR but no triggers yet, optionally enrich from site API.
     if model_air.startswith("urn:air:") and "@" in model_air and not triggers:
@@ -817,6 +839,7 @@ async def _civitai_image(
         loras=len(lora_map),
         img2img=bool(image_url),
         pick=pick_note or None,
+        auto_pick=should_pick,
     )
 
     async with httpx.AsyncClient(timeout=120.0) as http:

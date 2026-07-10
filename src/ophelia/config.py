@@ -249,7 +249,11 @@ class Settings(BaseSettings):
     civitai_image_model: str = Field(
         default="",
         alias="CIVITAI_IMAGE_MODEL",
-        description="Model URN e.g. urn:air:sdxl:checkpoint:civitai:101055@128078 (optional)",
+        description=(
+            "Optional FALLBACK checkpoint AIR URN if runtime auto-pick fails. "
+            "Leave blank (recommended) — Ophelia picks checkpoint/LoRA per image "
+            "from the prompt. Not a lock."
+        ),
     )
     civitai_base_url: str = Field(
         default="https://orchestration.civitai.com", alias="CIVITAI_BASE_URL"

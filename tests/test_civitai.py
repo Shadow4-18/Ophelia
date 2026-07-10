@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ophelia.providers.civitai import (
     build_step_input,
     ecosystem_from_air_or_base,
@@ -107,3 +109,19 @@ def test_build_step_flux_default():
 def test_default_negatives():
     assert "worst quality" in default_negative_for("sdxl")
     assert default_negative_for("flux1") == ""
+
+
+def test_civitai_defaults_to_dynamic_pick() -> None:
+    """Menu/env must not lock Civitai; generate_image auto-picks when model omitted."""
+    import inspect
+
+    from ophelia.providers.media import _civitai_image
+
+    sig = inspect.signature(_civitai_image)
+    assert sig.parameters["auto_pick"].default is True
+
+    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "providers" / "media.py"
+    body = src.read_text(encoding="utf-8")
+    assert "picks checkpoint/LoRA per image" in body
+    assert "should_pick = bool(auto_pick) and not explicit_pin" in body
+    assert "if not agent_model:\n            auto_pick = True" in body

@@ -177,15 +177,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "Set nsfw=true ONLY for explicit/sexual content the user asked for — "
                 "that routes to the uncensored backend (Civitai when configured). "
                 "\n\nCivitai (NSFW / SDXL / Illustrious / Pony / LoRAs):\n"
-                "- Prefer search_civitai_models first to pick checkpoint + LoRAs and "
-                "read trigger_words + prompt_style (danbooru tags vs natural language).\n"
-                "- Pass model=<AIR URN>, loras={air: strength}, negative_prompt, and "
-                "write the prompt in that style with EVERY trigger word included.\n"
-                "- txt2img: prompt only. img2img: pass image=<local path or URL> "
-                "(use list_inbox_images for a photo the user sent) + optional strength "
-                "(0.6–0.8 typical).\n"
-                "- Or set auto_pick=true to let the tool search a matching checkpoint/"
-                "LoRA for you. Result text reports which model/LoRAs ran."
+                "- She picks checkpoint + LoRAs herself from the prompt by default "
+                "(no menu lock). You do NOT need to set a fixed model in setup.\n"
+                "- Optional: search_civitai_models first when you want to inspect "
+                "options, then pass model=<AIR> / loras= to pin. Otherwise just "
+                "call generate_image and let auto-pick run.\n"
+                "- Write the prompt in the style the chosen model wants "
+                "(danbooru tags for Illustrious/Pony; natural language for Flux). "
+                "Trigger words are auto-injected when known.\n"
+                "- txt2img: prompt only. img2img: image=<path or URL> from "
+                "list_inbox_images + optional strength (0.6–0.8).\n"
+                "- Result text reports which checkpoint/LoRAs actually ran."
             ),
             "parameters": {
                 "type": "object",
@@ -205,9 +207,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "model": {
                         "type": "string",
                         "description": (
-                            "Optional checkpoint AIR URN from search_civitai_models "
-                            "(e.g. urn:air:sdxl:checkpoint:civitai:ID@VERSION). "
-                            "Civitai only — ignored on Grok/DALL-E."
+                            "Optional pin: checkpoint AIR URN from "
+                            "search_civitai_models. Omit to let Ophelia pick "
+                            "per image (recommended). Civitai only."
                         ),
                     },
                     "loras": {
@@ -215,14 +217,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "description": (
                             "Optional LoRAs for Civitai. JSON object "
                             '{"urn:air:...": 0.8} or comma list urn|0.8,urn|0.7. '
-                            "Always put each LoRA's trigger words in the prompt."
+                            "Omit to let auto-pick choose matching LoRAs."
                         ),
                     },
                     "negative_prompt": {
                         "type": "string",
                         "description": (
-                            "Civitai/SD negative prompt. Required for good SD1/SDXL/"
-                            "Illustrious/Pony results. Leave empty for Flux."
+                            "Civitai/SD negative prompt. Optional — SD1/SDXL get "
+                            "a solid default if omitted. Leave empty for Flux."
                         ),
                     },
                     "image": {
@@ -243,9 +245,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "auto_pick": {
                         "type": "boolean",
                         "description": (
-                            "When true on Civitai, search and pick a checkpoint "
-                            "(+ LoRAs) that fit the prompt. Prefer search_civitai_models "
-                            "when you want explicit control."
+                            "Default true on Civitai when model is omitted. "
+                            "Set false only if you passed an explicit model pin."
                         ),
                     },
                 },
@@ -258,12 +259,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "search_civitai_models",
             "description": (
-                "Search Civitai for checkpoints or LoRAs before generate_image. "
-                "Returns AIR URNs, baseModel, trigger_words (trainedWords), "
-                "prompt_style tip (danbooru vs natural), and a suggested negative. "
-                "Use this so you pick the right model/LoRA and prompt correctly — "
-                "Illustrious/Pony want Danbooru tags + triggers; Flux wants prose. "
-                "Then call generate_image with model= and loras= from the results."
+                "Optional browse of Civitai checkpoints/LoRAs. Usually unnecessary — "
+                "generate_image already auto-picks from the prompt. Use this when you "
+                "want to inspect AIR URNs, trigger_words, or prompt_style before pinning "
+                "a specific model/loras= on generate_image."
             ),
             "parameters": {
                 "type": "object",
@@ -1221,13 +1220,16 @@ class ToolRegistry:
         negative_prompt: str | None = None,
         image: str | None = None,
         strength: float = 0.7,
-        auto_pick: bool = False,
+        auto_pick: bool = True,
     ) -> str:
         # Guests get 1:1 only — wider aspect ratios cost more tokens and the
         # experience is "see I can make images," not "produce wallpaper for
         # strangers." Owner is unaffected.
         if not self._is_owner:
             aspect_ratio = "1:1"
+        # Civitai: always let her pick unless she pinned a model AIR.
+        if not (model or "").strip():
+            auto_pick = True
         result = await generate_image(
             self.settings,
             self.stack,
