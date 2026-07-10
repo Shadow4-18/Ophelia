@@ -62,12 +62,32 @@ def _dims(aspect_ratio: str, *, clamp_max: int | None = None) -> tuple[int, int]
 async def _save_image_bytes(
     content: bytes, artifacts_dir: Path, provider: str, prompt: str
 ) -> Path:
+    """Write image bytes with an extension matching the real format.
+
+    Civitai (and others) often return JPEG blobs even when the URL path
+    looks like .png. Saving JPEG bytes as .png breaks Discord/viewers.
+    """
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     stamp = int(time.time())
     slug = abs(hash(prompt)) % 10**8
-    out = artifacts_dir / f"{provider}_{stamp}_{slug}.png"
+    ext = _image_ext_from_bytes(content)
+    out = artifacts_dir / f"{provider}_{stamp}_{slug}{ext}"
     out.write_bytes(content)
     return out
+
+
+def _image_ext_from_bytes(content: bytes) -> str:
+    if not content:
+        return ".bin"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"RIFF") and b"WEBP" in content[:16]:
+        return ".webp"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    return ".png"
 
 
 def _deep_find_first_str(node: object, keys: Iterable[str]) -> str:
@@ -745,6 +765,8 @@ async def _civitai_image(
     headers = {
         "Authorization": f"Bearer {settings.civitai_api_key}",
         "Content-Type": "application/json",
+        "User-Agent": "Ophelia/1.0 (+https://github.com/Shadow4-18/Ophelia)",
+        "Accept": "application/json",
     }
 
     # Agent-provided pin only. Menu/env models are NOT applied up front.
@@ -781,17 +803,23 @@ async def _civitai_image(
             log.warning("civitai.auto_pick_failed", error=str(e))
             pick_note = f"auto_pick_failed: {e}"
 
-    # Fallback chain if pick found nothing: env default → flux.
+    # Fallback chain if pick found nothing: env default → known SDXL URN.
+    # Never bare engine:flux (400 workflowTemplate required).
     if not model_air:
         env_model = (settings.civitai_image_model or "").strip()
-        if env_model and env_model.lower() not in ("auto", "dynamic", "pick"):
+        if env_model and env_model.lower() not in ("auto", "dynamic", "pick", "flux"):
             model_air = env_model
             ecosystem = civ.ecosystem_from_air_or_base(model_air)
             pick_note = (pick_note + "; " if pick_note else "") + f"fallback_env={env_model}"
         else:
-            model_air = "flux"
-            ecosystem = "flux1"
-            pick_note = (pick_note + "; " if pick_note else "") + "fallback=flux"
+            # Prefer Illustrious for anime-ish prompts, else generic SDXL.
+            low = (prompt or "").lower()
+            if any(w in low for w in ("anime", "waifu", "1girl", "manga", "illustrious")):
+                model_air = civ._FALLBACK_ILLUSTRIOUS_AIR
+            else:
+                model_air = civ._FALLBACK_SDXL_AIR
+            ecosystem = "sdxl"
+            pick_note = (pick_note + "; " if pick_note else "") + f"fallback_urn={model_air}"
 
     # If we have an AIR but no triggers yet, optionally enrich from site API.
     if model_air.startswith("urn:air:") and "@" in model_air and not triggers:
@@ -842,7 +870,7 @@ async def _civitai_image(
         auto_pick=should_pick,
     )
 
-    async with httpx.AsyncClient(timeout=120.0) as http:
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
         r = await http.post(
             f"{base}/v2/consumer/workflows",
             headers=headers,
@@ -873,10 +901,18 @@ async def _civitai_image(
         )
         if not url:
             return f"Civitai completed but no image URL found: {str(wf)[:400]}"
-        dl = await http.get(url)
+        # Blob hosts often 301 to orchestration-new; follow_redirects is on.
+        # Never raise — return a soft error so the chat turn doesn't crash.
+        dl = await http.get(url, headers={"Authorization": f"Bearer {settings.civitai_api_key}"})
         if dl.status_code >= 400:
-            dl = await http.get(url, headers={"Authorization": f"Bearer {settings.civitai_api_key}"})
-        dl.raise_for_status()
+            dl = await http.get(url)
+        if dl.status_code >= 400:
+            return (
+                f"Civitai image download failed HTTP {dl.status_code} "
+                f"(url={url[:120]}). Workflow succeeded but blob fetch failed."
+            )
+        if not dl.content or len(dl.content) < 100:
+            return f"Civitai image download returned empty/tiny body ({len(dl.content)} bytes)."
         saved = await _save_image_bytes(dl.content, artifacts_dir, "civitai", prompt)
 
     used = step_input.get("model") or step_input.get("engine") or model_air or "flux"

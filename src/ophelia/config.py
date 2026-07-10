@@ -749,15 +749,17 @@ class Settings(BaseSettings):
         return "duckduckgo"
 
     # Providers that can serve explicit/NSFW imagery (xAI/OpenAI are NOT here).
+    # Prefer keyed/local quality backends over free Pollinations — otherwise
+    # auto NSFW always lands on Pollinations because it needs no key.
     NSFW_CAPABLE_PROVIDERS: ClassVar[tuple[str, ...]] = (
-        "pollinations",
+        "civitai",
         "a1111",
         "comfyui",
         "modelslab",
-        "civitai",
         "fal",
         "replicate",
         "ollama",
+        "pollinations",
     )
 
     def image_backend_configured(self, provider: str) -> bool:

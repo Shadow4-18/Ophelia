@@ -158,16 +158,28 @@ def default_negative_for(ecosystem: str) -> str:
     return _DEFAULT_NEGATIVES.get((ecosystem or "").lower(), _DEFAULT_NEGATIVES["sdxl"])
 
 
+_USER_AGENT = "Ophelia/1.0 (+https://github.com/Shadow4-18/Ophelia; local-first agent)"
+
+# Known-good SDXL checkpoint used when site search fails — never bare engine:flux
+# (that path 400s with workflowTemplate required on current orchestration).
+_FALLBACK_SDXL_AIR = "urn:air:sdxl:checkpoint:civitai:101055@128078"
+_FALLBACK_ILLUSTRIOUS_AIR = "urn:air:sdxl:checkpoint:civitai:827184@2514310"
+
+
 def _auth_headers(settings: Settings) -> dict[str, str]:
     key = (settings.civitai_api_key or "").strip()
-    h = {"Content-Type": "application/json"}
+    h = {
+        "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+    }
     if key:
+        # Same personal API key works for Site REST + Orchestration.
         h["Authorization"] = f"Bearer {key}"
     return h
 
 
 def _site_headers(settings: Settings) -> dict[str, str]:
-    # Site API accepts the same API token when present; public search works without.
     return _auth_headers(settings)
 
 
@@ -179,8 +191,14 @@ async def search_models(
     limit: int = 5,
     nsfw: bool | None = True,
     sort: str = "Most Downloaded",
+    base_model: str | None = None,
 ) -> list[CivitaiResource]:
-    """Search Civitai models; return best version of each hit with AIR + triggers."""
+    """Search Civitai models; return best version of each hit with AIR + triggers.
+
+    Uses the same CIVITAI_API_KEY as orchestration (Bearer). follow_redirects
+    handles civitai.com → www / API host moves. Prefer SDXL/Illustrious hits
+    for NSFW gens — Flux is filtered out of auto-pick.
+    """
     q = (query or "").strip()
     if not q:
         return []
@@ -195,13 +213,22 @@ async def search_models(
         params["nsfw"] = "true"
     elif nsfw is False:
         params["nsfw"] = "false"
+    if base_model:
+        params["baseModels"] = base_model
 
     url = f"{SITE_API}/models"
-    async with httpx.AsyncClient(timeout=30.0) as http:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
         r = await http.get(url, headers=_site_headers(settings), params=params)
         if r.status_code >= 400:
-            log.warning("civitai.search_failed", status=r.status_code, body=r.text[:200])
-            raise RuntimeError(f"Civitai search failed HTTP {r.status_code}: {r.text[:200]}")
+            log.warning(
+                "civitai.search_failed",
+                status=r.status_code,
+                body=r.text[:200],
+                url=str(r.url),
+            )
+            raise RuntimeError(
+                f"Civitai search failed HTTP {r.status_code}: {r.text[:200]}"
+            )
         data = r.json()
 
     out: list[CivitaiResource] = []
@@ -253,7 +280,7 @@ async def search_models(
 async def get_version(settings: Settings, version_id: int) -> CivitaiResource | None:
     """Fetch a single model version (canonical air + trainedWords)."""
     url = f"{SITE_API}/model-versions/{int(version_id)}"
-    async with httpx.AsyncClient(timeout=20.0) as http:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
         r = await http.get(url, headers=_site_headers(settings))
         if r.status_code >= 400:
             return None
@@ -343,8 +370,9 @@ async def upload_local_image(settings: Settings, path: Path) -> str:
     headers = {
         "Authorization": f"Bearer {settings.civitai_api_key}",
         "Content-Type": mime,
+        "User-Agent": _USER_AGENT,
     }
-    async with httpx.AsyncClient(timeout=120.0) as http:
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
         r = await http.post(
             f"{base}/v2/consumer/blobs",
             headers=headers,
@@ -365,10 +393,13 @@ async def upload_local_image(settings: Settings, path: Path) -> str:
     if not url and body.get("id"):
         # Some responses only return an id — fetch blob metadata.
         blob_id = body["id"]
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
             g = await http.get(
                 f"{base}/v2/consumer/blobs/{blob_id}",
-                headers={"Authorization": f"Bearer {settings.civitai_api_key}"},
+                headers={
+                    "Authorization": f"Bearer {settings.civitai_api_key}",
+                    "User-Agent": _USER_AGENT,
+                },
             )
             if g.status_code < 400:
                 meta = g.json()
@@ -409,51 +440,63 @@ def build_step_input(
     cfg_scale: float | None = None,
     steps: int | None = None,
 ) -> dict[str, Any]:
-    """Build an orchestration imageGen input for txt2img or img2img."""
-    eco = (ecosystem or ecosystem_from_air_or_base(model_air)).lower()
+    """Build an orchestration imageGen input for txt2img or img2img.
+
+    Never uses bare engine:'flux' — that path 400s with workflowTemplate
+    required on current Civitai orchestration. Prefer sdcpp + SDXL AIR.
+    """
+    air = (model_air or "").strip()
+    eco = (ecosystem or ecosystem_from_air_or_base(air)).lower()
     operation = "createVariant" if image_url else "createImage"
 
-    # Flux without a specific checkpoint URN → simple flux engine path.
-    if not model_air or model_air.lower() in ("flux", "auto"):
-        if eco in ("flux1", "flux") or not model_air or model_air.lower() == "flux":
+    # Empty / "flux" / "auto" → known SDXL checkpoint (orchestration-safe).
+    if not air or air.lower() in ("flux", "auto", "pick", "dynamic"):
+        air = _FALLBACK_SDXL_AIR
+        eco = "sdxl"
+
+    # Real Flux AIR → sdcpp flux1 with diffuserModel (not engine:flux).
+    if air.lower().startswith("urn:air:flux") or eco in ("flux1", "flux"):
+        if not air.lower().startswith("urn:air:flux"):
+            # Mis-tagged ecosystem without a flux AIR — use SDXL instead.
+            air = _FALLBACK_SDXL_AIR
+            eco = "sdxl"
+        else:
             step: dict[str, Any] = {
-                "engine": "flux",
+                "engine": "sdcpp",
+                "ecosystem": "flux1",
+                "operation": operation,
+                "diffuserModel": air,
                 "prompt": prompt,
                 "width": width,
                 "height": height,
             }
             if image_url:
-                # Flux engine may not support createVariant — prefer sdcpp flux1.
-                step = {
-                    "engine": "sdcpp",
-                    "ecosystem": "flux1",
-                    "operation": operation,
-                    "prompt": prompt,
-                    "width": width,
-                    "height": height,
-                    "image": image_url,
-                    "strength": float(strength),
-                }
+                step["image"] = image_url
+                step["strength"] = float(strength)
+            if loras:
+                step["loras"] = loras
             return step
 
-    # Checkpoint / LoRA path via sdcpp.
-    if eco in ("flux1", "flux"):
-        orch_eco = "flux1"
-    elif eco in ("sd15", "sd1.5"):
+    if eco in ("sd15", "sd1.5"):
         orch_eco = "sd1"
+    elif eco in ("sd1", "sdxl", "sd3", "qwen"):
+        orch_eco = eco
     else:
-        orch_eco = eco or "sdxl"
+        orch_eco = "sdxl"
+
+    if not air.startswith("urn:air:"):
+        air = _FALLBACK_ILLUSTRIOUS_AIR if "illustrious" in eco else _FALLBACK_SDXL_AIR
+        orch_eco = "sdxl"
 
     step = {
         "engine": "sdcpp",
         "ecosystem": orch_eco,
         "operation": operation,
+        "model": air,
         "prompt": prompt,
         "width": width,
         "height": height,
     }
-    if model_air and model_air.lower() not in ("flux", "auto"):
-        step["model"] = model_air
     if negative_prompt:
         step["negativePrompt"] = negative_prompt
     elif orch_eco in ("sd1", "sdxl"):
@@ -474,6 +517,17 @@ def build_step_input(
     return step
 
 
+def _is_fluxish(resource: CivitaiResource) -> bool:
+    eco = (resource.ecosystem or "").lower()
+    base = (resource.base_model or "").lower()
+    air = (resource.air or "").lower()
+    return (
+        eco in ("flux1", "flux", "flux2")
+        or "flux" in base
+        or ":flux" in air
+    )
+
+
 async def pick_best_resources(
     settings: Settings,
     intent: str,
@@ -483,39 +537,69 @@ async def pick_best_resources(
 ) -> tuple[CivitaiResource | None, list[CivitaiResource], str]:
     """Heuristic: pick a strong checkpoint (+ optional LoRAs) for an intent.
 
+    Prefers Illustrious / Pony / SDXL over Flux (Flux bare engine 400s).
     Returns (checkpoint, loras, rationale).
     """
     intent = (intent or "").strip()
-    # Bias search queries by vibe.
     low = intent.lower()
     if any(w in low for w in ("anime", "waifu", "1girl", "manga", "illustrious", "pony")):
-        ck_query = "illustrious anime"
+        ck_queries = ["illustrious", "wai illustrious", "pony diffusion"]
     elif any(w in low for w in ("realistic", "photo", "portrait", "photograph")):
-        ck_query = "realistic vision sdxl"
+        ck_queries = ["realistic vision sdxl", "epicrealism xl", "sdxl"]
     elif any(w in low for w in ("furry", "anthro")):
-        ck_query = "pony diffusion"
+        ck_queries = ["pony diffusion", "illustrious"]
     else:
-        ck_query = intent[:80] or "sdxl"
+        # Generic NSFW / creative — Illustrious first, then SDXL.
+        ck_queries = [
+            intent[:60] or "illustrious",
+            "illustrious",
+            "sdxl",
+        ]
 
-    checkpoints = await search_models(
-        settings, ck_query, types="Checkpoint", limit=5, nsfw=nsfw
-    )
-    checkpoint = checkpoints[0] if checkpoints else None
+    checkpoint: CivitaiResource | None = None
+    last_err = ""
+    for cq in ck_queries:
+        try:
+            hits = await search_models(
+                settings, cq, types="Checkpoint", limit=8, nsfw=nsfw
+            )
+        except Exception as e:
+            last_err = str(e)
+            log.debug("civitai.checkpoint_search_failed", query=cq, error=last_err)
+            continue
+        # Drop Flux — orchestration needs different schema; NSFW path wants SDXL.
+        usable = [h for h in hits if not _is_fluxish(h)]
+        # Prefer Illustrious/Pony/SDXL ecosystems.
+        preferred = [
+            h
+            for h in usable
+            if h.ecosystem == "sdxl"
+            or any(
+                k in (h.base_model or "").lower()
+                for k in ("illustrious", "pony", "sdxl", "noob")
+            )
+        ]
+        checkpoint = (preferred or usable or [None])[0]
+        if checkpoint:
+            break
+
+    if checkpoint is None and last_err:
+        log.warning("civitai.pick_all_searches_failed", error=last_err)
 
     loras: list[CivitaiResource] = []
-    if want_lora and intent:
-        # Narrow LoRA search to a short subject phrase.
+    if want_lora and intent and checkpoint:
         lora_q = intent[:60]
         try:
-            loras = await search_models(
-                settings, lora_q, types="LORA", limit=3, nsfw=nsfw
+            raw_loras = await search_models(
+                settings, lora_q, types="LORA", limit=5, nsfw=nsfw
             )
-            # Prefer LoRAs matching the checkpoint ecosystem.
-            if checkpoint:
-                eco = checkpoint.ecosystem
-                matched = [x for x in loras if x.ecosystem == eco]
-                loras = matched or loras
-                loras = loras[:2]
+            eco = checkpoint.ecosystem
+            matched = [
+                x
+                for x in raw_loras
+                if not _is_fluxish(x) and (x.ecosystem == eco or eco == "sdxl")
+            ]
+            loras = (matched or [x for x in raw_loras if not _is_fluxish(x)])[:2]
         except Exception as e:
             log.debug("civitai.lora_search_failed", error=str(e))
 
@@ -524,6 +608,8 @@ async def pick_best_resources(
         rationale_parts.append(
             f"checkpoint={checkpoint.name} ({checkpoint.air}, style={checkpoint.prompt_style})"
         )
+    else:
+        rationale_parts.append("checkpoint=none (will use SDXL fallback URN)")
     if loras:
         rationale_parts.append(
             "loras=" + ", ".join(f"{x.name}@{x.air}" for x in loras)

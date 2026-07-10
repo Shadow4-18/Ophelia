@@ -94,16 +94,44 @@ def test_build_step_img2img():
     assert step["strength"] == 0.65
 
 
-def test_build_step_flux_default():
+def test_build_step_flux_default_becomes_sdxl():
+    """Bare 'flux' must NOT use engine:flux (workflowTemplate 400)."""
     step = build_step_input(
         prompt="a cat in space",
         width=1024,
         height=1024,
         model_air="flux",
     )
-    assert step["engine"] == "flux"
-    assert step["operation"] if False else True  # flux path has no operation
-    assert "operation" not in step
+    assert step["engine"] == "sdcpp"
+    assert step["ecosystem"] == "sdxl"
+    assert step["model"].startswith("urn:air:sdxl:")
+    assert "operation" in step
+
+
+def test_build_step_empty_model_uses_sdxl_fallback():
+    step = build_step_input(
+        prompt="test",
+        width=1024,
+        height=1024,
+        model_air="",
+    )
+    assert step["engine"] == "sdcpp"
+    assert step["model"].startswith("urn:air:")
+
+
+def test_image_ext_from_bytes():
+    from ophelia.providers.media import _image_ext_from_bytes
+
+    assert _image_ext_from_bytes(b"\xff\xd8\xff\xe0rest") == ".jpg"
+    assert _image_ext_from_bytes(b"\x89PNG\r\n\x1a\nrest") == ".png"
+    assert _image_ext_from_bytes(b"RIFF....WEBP....") == ".webp"
+
+
+def test_nsfw_auto_prefers_civitai_over_pollinations():
+    from ophelia.config import Settings
+
+    assert Settings.NSFW_CAPABLE_PROVIDERS[0] == "civitai"
+    assert Settings.NSFW_CAPABLE_PROVIDERS[-1] == "pollinations"
 
 
 def test_default_negatives():
