@@ -19,6 +19,7 @@ dependencies = [
     "uvicorn>=0.32",
     "discord.py>=2.4",
     "pillow>=10.0",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

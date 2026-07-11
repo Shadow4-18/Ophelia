@@ -437,7 +437,11 @@ OPHELIA_TTS_PROVIDER=auto
 ELEVENLABS_API_KEY=...            # elevenlabs
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
 KOKORO_TTS_URL=http://127.0.0.1:8880/v1   # kokoro
-KOKORO_TTS_VOICE=af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)
+KOKORO_TTS_VOICE=af_heart                 # single preset (safe default)
+# For a custom blend: bake first, then point at the baked name:
+#   ophelia tts combine "af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)"
+#   KOKORO_VOICES_DIR=/path/to/kokoro-fastapi/voices   # install target
+#   KOKORO_TTS_VOICE=ophelia_mix_af_heart_af_bella_…
 KOKORO_TTS_SPEED=1.0
 OPENAI_TTS_VOICE=nova             # openai (uses OPENAI_API_KEY)
 XAI_TTS_VOICE=eve                 # xai
@@ -445,7 +449,7 @@ XAI_TTS_VOICE=eve                 # xai
 
 Ophelia is taught to speak expressively when Kokoro is active: she embeds
 `[pause:0.8s]` beats in voice replies, varies `speed` via `text_to_speech`, and
-can mix voices for a unique sound. Use `/voice on` in Telegram so her text
+can use a baked custom mix. Use `/voice on` in Telegram so her text
 replies are spoken with full expression.
 
 ### Kokoro expression & voice mixing (Neuro-style speech)
@@ -454,9 +458,15 @@ replies are spoken with full expression.
 (or LAN). The lighter Termux **Kokoros** server supports preset voices only —
 no mixing or inline pauses.
 
+**Important:** Kokoro-FastAPI's *inline* mix strings
+(`af_bella(0.6)+bf_emma(0.4)` as the `voice` field) do a naive weighted sum of
+style vectors **without L2 renormalization**. That shrinks the embedding
+magnitude and produces muffled, static-y speech with harsh high peaks.
+Ophelia bakes mixes locally with proper L2 renorm — use that path.
+
 | Feature | How | Example |
 |---------|-----|---------|
-| Voice mix | `KOKORO_TTS_VOICE` or `text_to_speech` `voice_id` | `af_bella(0.6)+bf_emma(0.4)` |
+| Voice mix | `ophelia tts combine` → baked name in `KOKORO_TTS_VOICE` | `ophelia_mix_af_bella_bf_emma_…` |
 | Speed | `KOKORO_TTS_SPEED` or tool `speed` param | `0.85` thoughtful, `1.15` hyped |
 | Pauses | embed in spoken text | `Well... [pause:0.8s] maybe.` |
 | Pronunciation | embed in text (English) | `[Ophelia](/oʊˈfiːliə/)` |
@@ -465,7 +475,9 @@ CLI helpers:
 
 ```bash
 ophelia tts voices                              # list server voices
-ophelia tts combine "af_bella(2)+af_heart(1)"   # save blended .pt locally
+ophelia tts combine "af_bella(2)+af_heart(1)"   # L2-renorm bake → ~/.ophelia/voices/
+# Set KOKORO_VOICES_DIR to your FastAPI voices folder so the bake is installed,
+# then KOKORO_TTS_VOICE=<baked_name>
 ophelia tts speak "Hey. [pause:0.6s] You there?" --speed 1.05 --play
 ```
 
