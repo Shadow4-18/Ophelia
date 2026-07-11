@@ -76,13 +76,16 @@ async def synthesize(
     if provider == "elevenlabs":
         return await _elevenlabs_tts(text, out_path, settings)
     if provider == "kokoro":
+        from ophelia.media.kokoro_mix import resolve_kokoro_voice
+
+        raw_voice = voice or settings.kokoro_tts_voice
         return await _openai_compatible_tts(
             text,
             out_path,
             base_url=kokoro_base_url(settings),
             api_key="not-needed",
             model="kokoro",
-            voice=voice or settings.kokoro_tts_voice,
+            voice=resolve_kokoro_voice(raw_voice, settings=settings),
             speed=speed if speed is not None else settings.kokoro_tts_speed,
         )
     if provider == "openai":
@@ -128,12 +131,57 @@ async def kokoro_combine_voices(
     *,
     settings: Settings,
 ) -> Path:
-    """Blend Kokoro voice packs and save the combined .pt tensor locally."""
+    """Blend Kokoro voice packs with L2 renorm and save a ``.pt`` locally.
+
+    Prefers Ophelia's local baker (correct magnitude). Falls back to the
+    Kokoro-FastAPI ``/audio/voices/combine`` endpoint only if local baking
+    fails (e.g. offline with no cached voices.bin) — that path is known to
+    omit L2 renormalization and can sound muffled/peaky.
+    """
+    from ophelia.media.kokoro_mix import bake_voice_mix
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        return bake_voice_mix(expression, out_path, settings=settings)
+    except Exception as e:
+        log.warning(
+            "kokoro_combine.local_bake_failed",
+            error=str(e),
+            hint="falling back to Kokoro-FastAPI /audio/voices/combine",
+        )
+
     url = f"{kokoro_base_url(settings)}/audio/voices/combine"
     async with httpx.AsyncClient(timeout=120.0) as http:
+        # FastAPI combine often rejects weighted ``name(w)`` forms — expand
+        # integer weights into repeated names when needed by the server.
         r = await http.post(url, json=expression)
+        if r.status_code >= 400 and "(" in expression:
+            # af_bella(2)+af_sky(1) -> af_bella+af_bella+af_sky (approx)
+            from ophelia.media.kokoro_mix import parse_mix_expression
+
+            try:
+                tokens = parse_mix_expression(expression)
+                expanded: list[str] = []
+                for name, weight, op in tokens:
+                    reps = max(1, int(round(abs(weight))))
+                    piece = "+".join([name] * reps)
+                    if not expanded:
+                        expanded.append(piece)
+                    else:
+                        expanded.append(f"{op}{piece}" if op == "-" else piece)
+                # join: first piece, then +rest (subtract already prefixed)
+                flat = expanded[0]
+                for piece in expanded[1:]:
+                    if piece.startswith("-"):
+                        flat += piece
+                    else:
+                        flat += "+" + piece
+                r = await http.post(url, json=flat)
+            except Exception:
+                pass
         r.raise_for_status()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(r.content)
     return out_path
 

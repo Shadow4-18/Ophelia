@@ -384,8 +384,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Speak aloud — synthesizes expressive audio and auto-sends to chat. "
                 "Do NOT call send_file afterward; delivery is automatic. "
-                "With Kokoro: embed [pause:0.8s] for beats, use voice mixes like "
-                "af_bella(0.6)+bf_emma(0.4), and set speed 0.85–1.2 for mood."
+                "With Kokoro: embed [pause:0.8s] for beats, prefer a single preset "
+                "or a baked mix voice id (from `ophelia tts combine`), and set "
+                "speed 0.85–1.2 for mood. Avoid raw inline mixes like "
+                "af_bella(0.6)+bf_emma(0.4) unless KOKORO_VOICES_DIR is set — "
+                "they sound muffled/peaky without L2 renorm."
             ),
             "parameters": {
                 "type": "object",
@@ -400,9 +403,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "voice_id": {
                         "type": "string",
                         "description": (
-                            "Optional voice override. Kokoro: preset or mix "
-                            "(af_heart, af_bella(0.7)+bf_emma(0.3)). "
-                            "xAI: eve/ara/rex. OpenAI: nova/alloy/..."
+                            "Optional voice override. Kokoro: preset or baked mix "
+                            "name (af_heart, ophelia_mix_…). Raw "
+                            "af_bella(0.7)+bf_emma(0.3) only if KOKORO_VOICES_DIR "
+                            "is configured. xAI: eve/ara/rex. OpenAI: nova/alloy/..."
                         ),
                     },
                     "speed": {

@@ -1955,12 +1955,18 @@ def _section_tts() -> None:
         updates["KOKORO_TTS_URL"] = base
         voice = prompt_text(
             "KOKORO_TTS_VOICE",
-            default=read_env_key("KOKORO_TTS_VOICE")
-            or "af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)",
-            hint="preset or mix: af_heart, af_bella(0.7)+bf_emma(0.3), ...",
+            default=read_env_key("KOKORO_TTS_VOICE") or "af_heart",
+            hint="preset (af_heart) — bake mixes with `ophelia tts combine`",
         )
         if voice:
             updates["KOKORO_TTS_VOICE"] = voice
+        voices_dir = prompt_text(
+            "KOKORO_VOICES_DIR",
+            default=read_env_key("KOKORO_VOICES_DIR") or "",
+            hint="Kokoro-FastAPI voices folder (installs baked mixes)",
+        )
+        if voices_dir:
+            updates["KOKORO_VOICES_DIR"] = voices_dir
         spd = prompt_text(
             "KOKORO_TTS_SPEED",
             default=read_env_key("KOKORO_TTS_SPEED") or "1.0",
@@ -1997,8 +2003,8 @@ def _section_tts() -> None:
     print(f"\n  Saved: {', '.join(touched)}")
     print(f"  Active TTS backend: {provider}")
     if provider == "kokoro":
-        print("  Reminder: Kokoro-FastAPI on PC gives voice mixing + [pause:1s] expressions.")
-        print("  Termux Kokoros gives preset voices only. See README.")
+        print("  Reminder: bake mixes with `ophelia tts combine` + KOKORO_VOICES_DIR.")
+        print("  Inline FastAPI mixes skip L2 renorm (muffled/peaky). Termux Kokoros: presets only.")
 
 
 def _section_features(on_phone: bool) -> None:

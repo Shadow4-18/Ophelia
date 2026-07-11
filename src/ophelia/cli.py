@@ -840,10 +840,11 @@ def cmd_tts_voices(_: argparse.Namespace) -> int:
 
 
 def cmd_tts_combine(args: argparse.Namespace) -> int:
-    """Blend Kokoro voice packs and save a .pt tensor locally."""
+    """Blend Kokoro voice packs (L2-renormalized) and save a .pt tensor locally."""
     import asyncio
 
     from ophelia.config import OPHELIA_HOME, ensure_dirs
+    from ophelia.media.kokoro_mix import mix_cache_name
     from ophelia.media.voice import kokoro_combine_voices
 
     settings = Settings()
@@ -852,17 +853,46 @@ def cmd_tts_combine(args: argparse.Namespace) -> int:
     if out.suffix != ".pt":
         out = out.with_suffix(".pt")
     if not out.is_absolute():
-        out = OPHELIA_HOME / "voices" / out.name
+        # Default name from mix formula when user kept the placeholder
+        if args.output == "ophelia_mix.pt":
+            try:
+                out = OPHELIA_HOME / "voices" / f"{mix_cache_name(args.expression)}.pt"
+            except ValueError:
+                out = OPHELIA_HOME / "voices" / out.name
+        else:
+            out = OPHELIA_HOME / "voices" / out.name
 
     async def _run() -> int:
         try:
             path = await kokoro_combine_voices(args.expression, out, settings=settings)
         except Exception as e:
             print(f"Combine failed: {e}")
-            print("Requires Kokoro-FastAPI with allow_local_voice_saving enabled.")
             return 1
-        print(f"Saved combined voice: {path}")
-        print("Use inline mix in KOKORO_TTS_VOICE, or load this .pt on the Kokoro server.")
+        print(f"Saved L2-renormalized combined voice: {path}")
+        voice_name = path.stem
+        voices_dir = (settings.kokoro_voices_dir or "").strip()
+        if voices_dir:
+            dest = Path(voices_dir).expanduser() / path.name
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(path.read_bytes())
+                print(f"Installed into KOKORO_VOICES_DIR: {dest}")
+                print(f"Set KOKORO_TTS_VOICE={voice_name}")
+            except OSError as e:
+                print(f"Could not install into {voices_dir}: {e}")
+                print(f"Copy {path} into your Kokoro-FastAPI voices folder, then:")
+                print(f"  KOKORO_TTS_VOICE={voice_name}")
+        else:
+            print(
+                "Copy this .pt into your Kokoro-FastAPI voices folder "
+                "(or set KOKORO_VOICES_DIR), then:"
+            )
+            print(f"  KOKORO_TTS_VOICE={voice_name}")
+            print(
+                "Do NOT put the raw mix string in KOKORO_TTS_VOICE — "
+                "Kokoro-FastAPI's inline blend skips L2 renorm and sounds "
+                "muffled / peaky."
+            )
         return 0
 
     return asyncio.run(_run())
@@ -1207,7 +1237,8 @@ def main(argv: list[str] | None = None) -> int:
         func=cmd_tts_voices
     )
     p_combine = tts_sub.add_parser(
-        "combine", help="Blend voice packs (Kokoro-FastAPI) → ~/.ophelia/voices/*.pt"
+        "combine",
+        help="Bake L2-renormalized voice mix → ~/.ophelia/voices/*.pt",
     )
     p_combine.add_argument(
         "expression",
@@ -1219,7 +1250,11 @@ def main(argv: list[str] | None = None) -> int:
     p_combine.set_defaults(func=cmd_tts_combine)
     p_speak = tts_sub.add_parser("speak", help="Test TTS with expressions / speed")
     p_speak.add_argument("text", help='Text to speak (Kokoro: embed [pause:1s] pauses)')
-    p_speak.add_argument("--voice", default=None, help="Voice override / mix")
+    p_speak.add_argument(
+        "--voice",
+        default=None,
+        help="Voice override (preset or baked mix name)",
+    )
     p_speak.add_argument("--speed", type=float, default=None, help="Speech rate")
     p_speak.add_argument("-o", "--output", default=None, help="Output audio path")
     p_speak.add_argument(

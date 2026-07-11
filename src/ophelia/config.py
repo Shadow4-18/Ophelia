@@ -397,11 +397,13 @@ class Settings(BaseSettings):
     # the Rust `koko openai` server natively in Termux). Fully offline.
     kokoro_tts_url: str | None = Field(default=None, alias="KOKORO_TTS_URL")
     kokoro_tts_voice: str = Field(
-        default="af_heart(0.45)+af_bella(0.35)+bf_emma(0.2)",
+        default="af_heart",
         alias="KOKORO_TTS_VOICE",
         description=(
             "Kokoro preset or mix expression, e.g. af_heart or "
-            "af_bella(0.7)+bf_emma(0.3)"
+            "af_bella(0.7)+bf_emma(0.3). Mixes should be baked via "
+            "`ophelia tts combine` (or set KOKORO_VOICES_DIR) — raw inline "
+            "mixes from Kokoro-FastAPI omit L2 renorm and sound muffled/peaky."
         ),
     )
     kokoro_tts_speed: float = Field(
@@ -410,6 +412,17 @@ class Settings(BaseSettings):
         ge=0.5,
         le=2.0,
         description="Speech rate for Kokoro (0.85 thoughtful, 1.0 normal, 1.15 hyped)",
+    )
+    # Directory where Kokoro-FastAPI loads ``*.pt`` voice packs. When set,
+    # Ophelia installs L2-renormalized baked mixes here so the speech API can
+    # load them by a short name instead of doing a broken server-side blend.
+    kokoro_voices_dir: str | None = Field(
+        default=None,
+        alias="KOKORO_VOICES_DIR",
+        description=(
+            "Path to Kokoro-FastAPI voices folder (e.g. Docker mount). "
+            "Required for automatic install of baked voice mixes."
+        ),
     )
     # Auto-start the local Kokoro server (`koko openai`) when configured and down.
     # None = auto (on under Termux, off elsewhere); True/False to force.
