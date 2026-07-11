@@ -619,6 +619,29 @@ def cmd_restart(_: argparse.Namespace) -> int:
     return action_restart()
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    """Pull latest Ophelia code, reinstall, optionally restart."""
+    from ophelia.platform import is_termux
+    from ophelia.setup.update import run_update
+
+    branch = getattr(args, "branch", None) or None
+    if getattr(args, "no_restart", False):
+        restart = False
+    elif getattr(args, "restart", False):
+        restart = True
+    else:
+        # Termux always-on installs benefit from an automatic bounce.
+        restart = is_termux()
+
+    result = run_update(
+        branch=branch,
+        restart=restart,
+        allow_dirty=bool(getattr(args, "allow_dirty", False)),
+    )
+    print(result.summary())
+    return 0 if result.ok else 1
+
+
 def cmd_dashboard(_: argparse.Namespace) -> int:
     from ophelia.setup.dashboard import run_dashboard
 
@@ -996,6 +1019,32 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("restart", help="Restart the Ophelia tmux session (Termux)").set_defaults(
         func=cmd_restart
     )
+    p_update = sub.add_parser(
+        "update",
+        help="git pull + pip install -e . (optional restart) — remote-friendly self-update",
+    )
+    p_update.add_argument(
+        "--branch",
+        "-b",
+        default=None,
+        help="Branch to checkout/pull (default: current branch)",
+    )
+    p_update.add_argument(
+        "--restart",
+        action="store_true",
+        help="Schedule a restart after a successful update",
+    )
+    p_update.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="Never restart (overrides Termux default restart)",
+    )
+    p_update.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow update with local uncommitted changes (autostash rebase)",
+    )
+    p_update.set_defaults(func=cmd_update)
     sub.add_parser("menu", help="Open the interactive launcher menu").set_defaults(func=cmd_menu)
     sub.add_parser(
         "dashboard", help="Live status dashboard (mood, drives, pressure, channels)"

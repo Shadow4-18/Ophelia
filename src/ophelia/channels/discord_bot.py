@@ -332,6 +332,17 @@ class DiscordGateway:
                 guest_approvals=gw._guest_approvals,
             )
 
+        @bot.command(name="update")
+        async def cmd_update(ctx, *args: str) -> None:
+            """Pull + reinstall (+ restart): !update [branch] [dirty] [norestart]"""
+            if not gw._allowed(ctx.author.id):
+                await ctx.send("Owner only.")
+                return
+            await gw.session.cmd_update(
+                list(args),
+                lambda t: ctx.send(t[:2000]),
+            )
+
         @bot.event
         async def on_message(message) -> None:
             if message.author.bot:
