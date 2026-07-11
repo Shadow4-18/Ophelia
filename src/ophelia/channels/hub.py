@@ -114,7 +114,7 @@ class ChannelHub:
                 "Or use: ophelia ui / ophelia chat (no bot needed)"
             )
 
-    async def broadcast_proactive(self, text: str, *, owners_only: bool = True) -> None:
+    async def broadcast_proactive(self, text: str, *, owners_only: bool = True) -> int:
         """Send spontaneous text to chat platforms.
 
         By default owners_only=True — consciousness ticks, ambient asides,
@@ -122,15 +122,18 @@ class ChannelHub:
         to every guest on the allowlist. Intentional guest outreach uses
         send_to_user / send_message_to_guest instead (Neuro-style DMs).
         Pass owners_only=False only when you truly mean every allowlisted user.
+
+        Returns the number of (gateway, chunk) deliveries that succeeded.
         """
         from ophelia.channels.proactive_filter import is_outreach_junk, proactive_chunks
 
         if is_outreach_junk(text):
             log.debug("hub.proactive_suppressed", reason="junk", preview=(text or "")[:80])
-            return
+            return 0
         chunks = proactive_chunks(text)
         if not chunks:
-            return
+            return 0
+        delivered = 0
         for gw in self._gateways:
             if not gw.is_configured():
                 continue
@@ -142,10 +145,18 @@ class ChannelHub:
                     if not callable(sender):
                         continue
                     try:
-                        await sender(chunk, owners_only=owners_only)
+                        result = await sender(chunk, owners_only=owners_only)
                     except TypeError:
                         # Older gateway signature without owners_only.
-                        await sender(chunk)
+                        result = await sender(chunk)
+                    # Gateways may return an int count, a bool, or None (legacy).
+                    if isinstance(result, bool):
+                        n = 1 if result else 0
+                    elif isinstance(result, (int, float)):
+                        n = int(result)
+                    else:
+                        n = 1
+                    delivered += max(0, n)
                     mirror = getattr(gw, "mirror_consciousness", None)
                     if callable(mirror):
                         try:
@@ -154,6 +165,14 @@ class ChannelHub:
                             log.warning("hub.consciousness_mirror_failed", platform=gw.platform, error=str(e))
                 except Exception as e:
                     log.warning("hub.proactive_failed", platform=gw.platform, error=str(e))
+        if delivered == 0:
+            log.warning(
+                "hub.proactive_zero_delivery",
+                owners_only=owners_only,
+                preview=(text or "")[:80],
+                gateways=[g.platform for g in self._gateways if g.is_configured()],
+            )
+        return delivered
 
     async def broadcast_proactive_media(
         self, paths: list, *, caption: str = "", owners_only: bool = True

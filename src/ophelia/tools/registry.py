@@ -849,11 +849,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Pass a message and/or media from the current guest to your "
                 "owner RIGHT NOW. Use whenever a guest asks you to tell / pass "
-                "/ relay / send something (including a photo or video) to your "
-                "owner. Narrating without this tool does nothing. "
+                "/ relay / send / message something (including a photo or video) "
+                "to your owner — even if they say 'don't say I told you' or "
+                "'make it seem random'. Narrating SENT without this tool does "
+                "nothing. For covert/spontaneous-looking delivery, set "
+                "as_self=true (sends as YOUR words, no 'From <guest>' label). "
                 "For media they just sent, use the path from "
                 "'[User sent a photo — saved to …]' in the turn. "
-                "Guest-facing; do not invent a reply from the owner."
+                "Confirm to the guest only AFTER this tool succeeds."
             ),
             "parameters": {
                 "type": "object",
@@ -862,7 +865,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "What to pass to the owner (text or caption). "
-                            "Optional when file is provided."
+                            "Optional when file is provided. Write the actual "
+                            "words the owner should see — not 'I'll tell them'."
                         ),
                     },
                     "file": {
@@ -870,6 +874,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "description": (
                             "Optional local path to an image/video the guest "
                             "wants forwarded (from the saved-to path in chat)."
+                        ),
+                    },
+                    "as_self": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, send as your own spontaneous message "
+                            "with no guest attribution (use when the guest "
+                            "wants it secret / 'random'). Default false "
+                            "attributes the guest."
                         ),
                     },
                 },
@@ -1704,9 +1717,18 @@ class ToolRegistry:
         return f"Sent to {who} ({platform}:{user_id}) [{what}]."
 
     async def _relay_to_owner(
-        self, message: str = "", file: str | None = None
+        self,
+        message: str = "",
+        file: str | None = None,
+        as_self: bool = False,
     ) -> str:
-        """Guest → owner message/media pass."""
+        """Guest → owner message/media pass.
+
+        ``as_self=True`` sends without a 'From <guest>' label so the owner
+        sees it as Ophelia's own spontaneous line (for 'don't say I told you'
+        / 'make it seem random' requests). Internal memory still notes the
+        requesting guest.
+        """
         message = (message or "").strip()
         file_raw = (file or "").strip()
         if not message and not file_raw:
@@ -1742,21 +1764,33 @@ class ToolRegistry:
             except Exception:
                 pass
 
-        payload = ""
-        if message:
-            payload = f"📨 From {guest_label}:\n{message[:3500]}"
-        elif media_path is not None:
-            payload = f"📨 Media from {guest_label}"
+        # Covert mode: owner sees Ophelia's words only. Attributed mode keeps
+        # the 📨 From <guest> header so the owner knows who asked.
+        if as_self:
+            if message:
+                payload = message[:3500]
+            elif media_path is not None:
+                payload = ""  # media-only; caption handled below
+            else:
+                payload = ""
+        else:
+            payload = ""
+            if message:
+                payload = f"📨 From {guest_label}:\n{message[:3500]}"
+            elif media_path is not None:
+                payload = f"📨 Media from {guest_label}"
 
         log.info(
             "tool.relay_to_owner",
             from_channel=chan or None,
             chars=len(message),
             has_file=bool(media_path),
+            as_self=bool(as_self),
             preview=(message or str(media_path))[:80],
         )
 
         delivered = False
+        delivery_error = ""
         if payload:
             if not self.proactive_sender:
                 return (
@@ -1764,8 +1798,17 @@ class ToolRegistry:
                     "Tell the guest you'll try again later."
                 )
             try:
-                await self.proactive_sender(payload)
-                delivered = True
+                result = await self.proactive_sender(payload)
+                # Prefer an explicit delivery count when the hub provides one.
+                if isinstance(result, (int, float)):
+                    delivered = int(result) > 0
+                    if not delivered:
+                        delivery_error = (
+                            "Owner sender reported 0 deliveries "
+                            "(check owner channel ids / bot DMs)."
+                        )
+                else:
+                    delivered = True
             except Exception as e:
                 log.warning("tool.relay_to_owner_failed", error=str(e))
                 return f"Failed to reach the owner: {e}"
@@ -1773,37 +1816,52 @@ class ToolRegistry:
         if media_path is not None:
             sender = self.proactive_media_sender
             if not sender:
+                if delivered:
+                    return (
+                        "Text was handed off, but no media sender is wired "
+                        "for the owner — can't forward the file."
+                    )
                 return (
-                    "Text may have been delivered, but no media sender is wired "
-                    "for the owner — can't forward the file."
+                    "No media sender is wired for the owner — can't forward the file."
                 )
-            cap = message[:900] if message else f"From {guest_label}"
+            if as_self:
+                cap = message[:900] if message else ""
+            else:
+                cap = message[:900] if message else f"From {guest_label}"
             try:
                 ok = await sender(media_path, cap)
             except Exception as e:
                 log.warning("tool.relay_to_owner_media_failed", error=str(e))
                 return f"Failed to forward media to the owner: {e}"
             if not ok:
-                return "Owner text may have arrived, but media delivery failed."
+                if delivered:
+                    return "Owner text may have arrived, but media delivery failed."
+                return "Media delivery to the owner failed."
             delivered = True
 
         if not delivered:
-            return "Nothing was delivered."
+            return delivery_error or "Nothing was delivered to the owner."
 
         if self.memory:
             try:
                 owners = list(self.settings.owner_channels())
                 store_ch = owners[0] if owners else "owner:relay"
-                note = f"[relay from {guest_label}] {message[:2000]}"
+                mode = "covert" if as_self else "attributed"
+                note = f"[relay from {guest_label} mode={mode}] {message[:2000]}"
                 if media_path is not None:
                     note += f" [file={media_path.name}]"
                 await self.memory.append_message(store_ch, "assistant", note)
             except Exception as e:
                 log.debug("tool.relay_to_owner_store_failed", error=str(e))
         extra = f" with {media_path.name}" if media_path is not None else ""
+        how = (
+            "as your own message (no guest label)"
+            if as_self
+            else f"attributed to {guest_label}"
+        )
         return (
-            f"Delivered to your owner{extra}. Tell the guest it's been "
-            f"passed along (from {guest_label})."
+            f"Delivered to your owner{extra} ({how}). Tell the guest it's been "
+            f"passed along — do not invent an owner reply."
         )
 
     async def _recall_guest_chat(
