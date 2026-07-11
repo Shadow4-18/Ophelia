@@ -321,6 +321,20 @@ def bake_voice_mix(
     return write_torch_voice_pt(blended, out_path, archive_name=name)
 
 
+def dominant_voice(expression: str) -> str:
+    """Highest-weight '+' component — safe single-preset fallback."""
+    tokens = parse_mix_expression(expression)
+    best_name = tokens[0][0]
+    best_w = -1.0
+    for name, weight, op in tokens:
+        if op != "+":
+            continue
+        if weight > best_w:
+            best_w = weight
+            best_name = name
+    return best_name
+
+
 def resolve_kokoro_voice(
     voice: str,
     *,
@@ -332,8 +346,8 @@ def resolve_kokoro_voice(
     - Mix expressions are baked with L2 renorm into ``~/.ophelia/voices/`` and,
       when ``settings.kokoro_voices_dir`` is set, installed there so Kokoro-FastAPI
       can load them by the short baked name.
-    - If no voices dir is configured, logs a warning and returns the original
-      expression (server-side naive mix — muffled / peaky).
+    - If the mix cannot be installed for the server, fall back to the dominant
+      single preset — never send a raw inline mix (those sound muffled/peaky).
     """
     voice = (voice or "").strip()
     if not voice or not is_mix_expression(voice):
@@ -341,9 +355,11 @@ def resolve_kokoro_voice(
 
     try:
         baked_name = mix_cache_name(voice)
+        fallback = dominant_voice(voice)
     except ValueError as e:
         log.warning("kokoro_mix.parse_failed", voice=voice, error=str(e))
-        return voice
+        # Last resort: strip to first token-looking id
+        return re.split(r"[+\-]", voice, maxsplit=1)[0].split("(")[0].strip() or "af_heart"
 
     from ophelia.config import OPHELIA_HOME
 
@@ -356,22 +372,28 @@ def resolve_kokoro_voice(
             bake_voice_mix(voice, local_pt, settings=settings)
             log.info("kokoro_mix.baked", expression=voice, path=str(local_pt))
     except Exception as e:
-        log.warning("kokoro_mix.bake_failed", voice=voice, error=str(e))
-        return voice
+        log.warning(
+            "kokoro_mix.bake_failed",
+            voice=voice,
+            error=str(e),
+            fallback=fallback,
+        )
+        return fallback
 
     voices_dir = (settings.kokoro_voices_dir or "").strip()
     if not voices_dir:
         log.warning(
             "kokoro_mix.no_voices_dir",
             hint=(
-                "Inline Kokoro mixes are muffled without L2 renorm. "
+                "Refusing raw inline mix (muffled/peaky without L2 renorm). "
+                f"Using dominant preset '{fallback}'. "
                 "Set KOKORO_VOICES_DIR to your Kokoro-FastAPI voices folder "
-                f"and use baked voice '{baked_name}', or run: "
-                f"ophelia tts combine {voice!r}"
+                f"and re-try, or: ophelia tts combine {voice!r}"
             ),
             baked=str(local_pt),
+            fallback=fallback,
         )
-        return voice
+        return fallback
 
     dest_dir = Path(voices_dir).expanduser()
     try:
@@ -387,5 +409,6 @@ def resolve_kokoro_voice(
             voices_dir=voices_dir,
             error=str(e),
             baked=str(local_pt),
+            fallback=fallback,
         )
-        return voice
+        return fallback

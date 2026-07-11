@@ -128,11 +128,31 @@ def test_resolve_installs_into_voices_dir(tmp_path: Path, monkeypatch):
     assert (home / "voices" / f"{name}.pt").is_file()
 
 
-def test_resolve_passthrough_single_voice():
+def test_resolve_without_voices_dir_uses_dominant(tmp_path: Path, monkeypatch):
     from ophelia.config import Settings
+    from ophelia.media import kokoro_mix as km
+
+    voices_bin = tmp_path / "voices.npz"
+    np.savez(voices_bin, af_bella=_fake_pack(4), bf_emma=_fake_pack(5))
+    home = tmp_path / "home"
+    home.mkdir()
+
+    monkeypatch.setattr(km, "_ensure_voices_bin", lambda cache_dir: voices_bin)
+    monkeypatch.setattr(km, "_voices_cache_dir", lambda settings=None: tmp_path / "cache")
+    import ophelia.config as cfg
+
+    monkeypatch.setattr(cfg, "OPHELIA_HOME", home)
 
     settings = Settings(KOKORO_TTS_URL="http://127.0.0.1:8880/v1")
-    assert resolve_kokoro_voice("af_heart", settings=settings) == "af_heart"
+    # No KOKORO_VOICES_DIR → must NOT pass raw mix through
+    assert resolve_kokoro_voice("af_bella(0.7)+bf_emma(0.3)", settings=settings) == "af_bella"
+
+
+def test_dominant_voice():
+    from ophelia.media.kokoro_mix import dominant_voice
+
+    assert dominant_voice("af_bella(0.7)+bf_emma(0.3)") == "af_bella"
+    assert dominant_voice("af_heart(0.2)+af_bella(0.8)") == "af_bella"
 
 
 def test_default_kokoro_voice_is_single_preset():
