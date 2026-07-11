@@ -223,6 +223,17 @@ def action_restart() -> int:
     return action_start()
 
 
+def action_update() -> int:
+    """Interactive menu entry: pull + reinstall (+ Termux restart by default)."""
+    from ophelia.setup.update import run_update
+
+    print("Updating Ophelia (git pull + pip install -e .)…")
+    result = run_update(restart=is_termux(), allow_dirty=False)
+    print(result.summary())
+    tui.pause()
+    return 0 if result.ok else 1
+
+
 def action_reattach() -> int:
     if not is_termux():
         print("Reattach is a Termux/tmux feature.")
@@ -365,6 +376,7 @@ def _menu_items() -> list[tuple[str, str, callable]]:
 
     if running:
         items.append(("Pause / Resume autonomy", "Run", action_pause_resume))
+    items.append(("Update Ophelia (git pull + reinstall)", "Run", action_update))
     items.append(("Live status dashboard", "Run", action_dashboard))
     items.append(("Quick chat (one message)", "Run", action_chat))
 

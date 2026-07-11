@@ -58,7 +58,7 @@ class ChannelSession:
 
     WELCOME = (
         "Ophelia online.\n"
-        "Commands: /status /pause /resume /voice /listen /inner /game /models /help\n"
+        "Commands: /status /pause /resume /update /voice /listen /inner /game /models /help\n"
         "(Telegram: /command — Discord: !command)"
     )
 
@@ -557,6 +557,9 @@ class ChannelSession:
             "/status — what's on / running / pending\n"
             "/pause — pause autonomous outreach\n"
             "/resume — resume autonomous outreach\n"
+            "/update [branch] — pull + reinstall (+ restart). Owner-only.\n"
+            "         add `dirty` to allow local uncommitted changes\n"
+            "         add `norestart` to skip restart\n"
             "/voice on|off — voice replies\n"
             "/listen on|off — local mic listening (Termux:API)\n"
             "/inner on|off|tail — inner-monologue mirror\n"
@@ -568,6 +571,44 @@ class ChannelSession:
             "/revoke <guest> — instantly block a guest from messaging you\n"
             "/help — this list"
         )
+
+    async def cmd_update(self, args: list[str], reply: ReplyFn) -> None:
+        """Owner-only: git pull + pip install -e ., then schedule restart."""
+        import asyncio
+
+        from ophelia.setup.update import request_process_exit_soon, run_update
+
+        branch: str | None = None
+        allow_dirty = False
+        restart = True
+        for tok in args:
+            low = tok.lower()
+            if low in ("dirty", "--allow-dirty", "allow-dirty"):
+                allow_dirty = True
+            elif low in ("norestart", "no-restart", "--no-restart"):
+                restart = False
+            elif low in ("restart", "--restart"):
+                restart = True
+            elif not tok.startswith("-"):
+                branch = tok
+
+        await reply(
+            "Updating"
+            + (f" (branch `{branch}`)" if branch else "")
+            + " — git pull + reinstall"
+            + (" + restart" if restart else "")
+            + ". Hang on…"
+        )
+
+        result = await asyncio.to_thread(
+            run_update,
+            branch=branch,
+            restart=restart,
+            allow_dirty=allow_dirty,
+        )
+        await reply(result.summary())
+        if result.ok and result.restart_scheduled:
+            request_process_exit_soon(2.5)
 
     async def _send_to_user(self, platform: str, user_id: int, message: str,
                             gateway_sender: SendToGuestFn | None = None) -> bool:

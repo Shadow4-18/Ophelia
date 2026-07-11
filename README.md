@@ -288,6 +288,7 @@ are replaced. Available from your phone while away from the terminal:
 |---------|--------------|
 | `/status` | Autonomy/thinking/listen/voice state, pending resume, chat provider+model, Ollama reachability |
 | `/pause` · `/resume` | Pause / resume autonomous outreach |
+| `/update [branch]` | Owner-only: `git pull` + `pip install -e .` (+ restart). Add `dirty` / `norestart` as needed |
 | `/continue` | Resume an unfinished tool chain that hit the round cap |
 | `/voice on\|off` | Toggle voice replies |
 | `/listen on\|off` | Toggle local mic listening (Termux:API) |
