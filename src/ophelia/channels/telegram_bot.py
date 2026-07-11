@@ -1286,18 +1286,18 @@ class TelegramGateway:
             return [self.signals.last_telegram_user_id]
         return []
 
-    async def send_proactive(self, text: str, *, owners_only: bool = True) -> None:
+    async def send_proactive(self, text: str, *, owners_only: bool = True) -> int:
         from ophelia.channels.proactive_filter import is_outreach_junk
 
         if is_outreach_junk(text):
             log.debug("telegram.proactive_suppressed", preview=(text or "")[:80])
-            return
+            return 0
         if not self._app:
             log.warning(
                 "telegram.notify_skipped",
                 reason="bot not ready — Telegram still starting",
             )
-            return
+            return 0
         recipients = self._proactive_recipients(owners_only=owners_only)
         if not recipients:
             log.warning(
@@ -1305,7 +1305,8 @@ class TelegramGateway:
                 reason="no TELEGRAM_ALLOWED_USER_IDS and no user has /start yet",
                 hint="message @userinfobot for your ID, add to ~/.ophelia/.env, send /start to your bot",
             )
-            return
+            return 0
+        sent = 0
         for uid in recipients:
             try:
                 await self._app.bot.send_message(chat_id=uid, text=text[:4000])
@@ -1314,6 +1315,7 @@ class TelegramGateway:
                     channel=f"telegram:{uid}",
                     text=text,
                 )
+                sent += 1
             except Exception as e:
                 err = str(e)
                 hint = ""
@@ -1325,6 +1327,7 @@ class TelegramGateway:
                     error=err,
                     hint=hint or None,
                 )
+        return sent
 
     async def send_proactive_voice(self, text: str, *, owners_only: bool = True) -> None:
         """Spontaneous voice note to owner (Kokoro / configured TTS)."""

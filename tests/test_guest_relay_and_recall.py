@@ -61,6 +61,7 @@ async def test_relay_to_owner_delivers(tmp_path: Path, monkeypatch):
 
     async def fake_proactive(text: str, **kwargs):
         sent.append(text)
+        return 1
 
     reg = ToolRegistry(settings, tmp_path / "art", memory=store)
     reg.proactive_sender = fake_proactive
@@ -72,9 +73,69 @@ async def test_relay_to_owner_delivers(tmp_path: Path, monkeypatch):
     assert len(sent) == 1
     assert "Eri" in sent[0]
     assert "smells" in sent[0]
+    assert "📨" in sent[0]
 
     hits = await store.search_messages("relay from Eri")
     assert hits
+
+
+@pytest.mark.asyncio
+async def test_relay_to_owner_as_self_omits_guest_label(tmp_path: Path, monkeypatch):
+    """Covert relays must look like Ophelia's own words (no From Eri:)."""
+    from ophelia.channels.session import ChannelSession  # noqa: F401
+    from ophelia.config import Settings
+    from ophelia.memory.store import MemoryStore
+    from ophelia.tools.registry import ToolRegistry
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "111")
+    settings = Settings()
+    store = MemoryStore(tmp_path / "m.db")
+    await store.init()
+    await store.set_fact("guest_name_owner:telegram:222", "Eri")
+
+    sent: list[str] = []
+
+    async def fake_proactive(text: str, **kwargs):
+        sent.append(text)
+        return 1
+
+    reg = ToolRegistry(settings, tmp_path / "art", memory=store)
+    reg.proactive_sender = fake_proactive
+    reg._is_owner = False
+    reg._current_sender_channel = "telegram:222"
+
+    msg = "Hey random thought — you could be nicer to Eri."
+    result = await reg._relay_to_owner(msg, as_self=True)
+    assert "Delivered" in result
+    assert "as your own message" in result.lower() or "no guest label" in result.lower()
+    assert len(sent) == 1
+    assert sent[0] == msg
+    assert "From Eri" not in sent[0]
+    assert "📨" not in sent[0]
+
+    # Internal memory still notes who asked
+    hits = await store.search_messages("mode=covert")
+    assert hits
+
+
+@pytest.mark.asyncio
+async def test_relay_to_owner_reports_zero_delivery(tmp_path: Path):
+    from ophelia.channels.session import ChannelSession  # noqa: F401
+    from ophelia.config import Settings
+    from ophelia.tools.registry import ToolRegistry
+
+    settings = Settings()
+    reg = ToolRegistry(settings, tmp_path / "art")
+    reg._is_owner = False
+    reg._current_sender_channel = "telegram:222"
+
+    async def fake_proactive(text: str, **kwargs):
+        return 0  # hub found no owner recipients
+
+    reg.proactive_sender = fake_proactive
+    out = await reg._relay_to_owner("hi Okia")
+    assert "Delivered" not in out
+    assert "0" in out or "Nothing was delivered" in out or "deliveries" in out.lower()
 
 
 @pytest.mark.asyncio
@@ -133,8 +194,20 @@ async def test_recall_guest_chat_denied_for_guest(tmp_path: Path):
     assert "Only the owner" in out
 
 
-def test_guest_prompt_mentions_relay():
+def test_relay_tool_documents_as_self():
+    from ophelia.tools.registry import TOOL_DEFINITIONS
+
+    relay = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "relay_to_owner")
+    props = relay["function"]["parameters"]["properties"]
+    assert "as_self" in props
+    desc = relay["function"]["description"].lower()
+    assert "as_self" in desc
+    assert "random" in desc or "secret" in desc or "spontaneous" in desc
+
+
+def test_guest_prompt_mentions_covert_relay():
     src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "core" / "agent_loop.py"
     body = src.read_text(encoding="utf-8")
     assert "relay_to_owner" in body
-    assert "RELAY TO OWNER" in body
+    assert "as_self=true" in body
+    assert "SENT" in body

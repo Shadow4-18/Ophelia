@@ -552,18 +552,19 @@ class DiscordGateway:
         allowed = self.settings.allowed_discord_users()
         return sorted(allowed) if allowed else []
 
-    async def send_proactive(self, text: str, *, owners_only: bool = True) -> None:
+    async def send_proactive(self, text: str, *, owners_only: bool = True) -> int:
         from ophelia.channels.proactive_filter import is_outreach_junk
 
         if is_outreach_junk(text):
             log.debug("discord.proactive_suppressed", preview=(text or "")[:80])
-            return
+            return 0
         if not self._bot:
-            return
+            return 0
         recipients = self._proactive_recipients(owners_only=owners_only)
         if not recipients:
             log.warning("discord.notify_skipped", reason="no DISCORD_ALLOWED_USER_IDS")
-            return
+            return 0
+        sent = 0
         for uid in recipients:
             try:
                 user = await self._bot.fetch_user(uid)
@@ -578,8 +579,10 @@ class DiscordGateway:
                     channel=f"discord:{uid}",
                     text=text,
                 )
+                sent += 1
             except Exception as e:
                 log.warning("discord.notify_failed", user=uid, error=str(e))
+        return sent
 
     async def _send_to_guest(self, platform: str, user_id: int, message: str) -> bool:
         """Send a DM to a specific user on the given platform. Returns True on
