@@ -666,6 +666,17 @@ class Settings(BaseSettings):
     ui_port: int = Field(default=8765, alias="OPHELIA_UI_PORT")
     ui_open_browser: bool = Field(default=True, alias="OPHELIA_UI_OPEN_BROWSER")
 
+    # Public wiki/blog Ophelia owns and publishes (read-only for visitors)
+    site_enabled: bool = Field(default=True, alias="OPHELIA_SITE_ENABLED")
+    site_host: str = Field(default="127.0.0.1", alias="OPHELIA_SITE_HOST")
+    site_port: int = Field(default=8788, alias="OPHELIA_SITE_PORT")
+    site_dir: Path = Field(default=OPHELIA_HOME / "site", alias="OPHELIA_SITE_DIR")
+    site_public_url: str | None = Field(
+        default=None,
+        alias="OPHELIA_SITE_PUBLIC_URL",
+        description="Optional public URL (tunnel/Pages) told to Ophelia in tool results",
+    )
+
     web_search_enabled: bool = Field(default=True, alias="OPHELIA_WEB_SEARCH")
     # Web search backend. duckduckgo needs no key (free, less reliable);
     # tavily / serper / brave need an API key (reliable, AI-friendly).
@@ -711,6 +722,8 @@ class Settings(BaseSettings):
             self.memory_db = env_home_path / "data" / "memory.db"
             if not self.mcp_config_path or self.mcp_config_path == OPHELIA_HOME / "mcp.json":
                 self.mcp_config_path = env_home_path / "mcp.json"
+            if not self.site_dir or self.site_dir == OPHELIA_HOME / "site":
+                self.site_dir = env_home_path / "site"
         return self
 
     def consciousness_on(self) -> bool:
@@ -923,4 +936,6 @@ class Settings(BaseSettings):
 
 def ensure_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.site_dir.mkdir(parents=True, exist_ok=True)
+    (settings.site_dir / "assets").mkdir(parents=True, exist_ok=True)
     OPHELIA_HOME.mkdir(parents=True, exist_ok=True)

@@ -40,6 +40,22 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_site(args: argparse.Namespace) -> int:
+    """Run Ophelia's public wiki/blog alone (without the always-on agent)."""
+    settings = Settings()
+    ensure_dirs(settings)
+    from ophelia.site.server import run_site
+
+    print(f"Ophelia site: http://{settings.site_host}:{settings.site_port}/")
+    print(f"Content:      {settings.site_dir}")
+    print("She edits this via site_* tools while `ophelia run` is up.")
+    try:
+        asyncio.run(run_site(settings))
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     settings = Settings()
     ensure_dirs(settings)
@@ -1154,6 +1170,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not open browser automatically",
     )
     p_ui.set_defaults(func=cmd_ui)
+
+    sub.add_parser(
+        "site",
+        help="Serve Ophelia's public wiki/blog (also starts with `ophelia run`)",
+    ).set_defaults(func=cmd_site)
 
     p_chat = sub.add_parser("chat", help="One-shot chat message (no always-on loop)")
     p_chat.add_argument("message")

@@ -507,6 +507,17 @@ class Orchestrator:
         except Exception as e:
             log.warning("greet.failed", error=api_error_detail(e))
 
+    async def _run_public_site(self) -> None:
+        """Serve Ophelia's public wiki/blog (read-only for visitors)."""
+        try:
+            from ophelia.site.server import run_site
+
+            await run_site(self.settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("site.failed", error=str(e))
+
     async def _notify_spontaneous(self, text: str) -> None:
         await self.hub.broadcast_proactive(text)
 
@@ -671,6 +682,9 @@ class Orchestrator:
         if self.settings.greet_on_start and self.hub.configured_names():
             tasks.append(asyncio.create_task(self._greet_on_start()))
 
+        if self.settings.site_enabled:
+            tasks.append(asyncio.create_task(self._run_public_site()))
+
         log.info(
             "ophelia.starting",
             provider=self.settings.provider,
@@ -683,6 +697,7 @@ class Orchestrator:
             curator=bool(self.curator),
             inner=bool(self.inner),
             games=bool(self.games),
+            site=bool(self.settings.site_enabled),
         )
         # Log the resolved media providers so the owner can see at startup
         # which backend image/video will use — catches misconfigurations

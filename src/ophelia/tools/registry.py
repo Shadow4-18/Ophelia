@@ -82,6 +82,15 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "save_skill",
         "sqlite_list_databases",
         "sqlite_exec",
+        "site_status",
+        "site_list_pages",
+        "site_get_page",
+        "site_upsert_page",
+        "site_delete_page",
+        "site_set_meta",
+        "site_import_pages",
+        "site_add_asset",
+        "site_export_static",
         "run_code",
         "recall_memory",
         "list_inbox_images",
@@ -534,6 +543,177 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "required": ["database", "sql"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_status",
+            "description": (
+                "Status of YOUR public wiki/blog (page counts, title, local URL). "
+                "You fully own this site — publish lore, mythos, essays, and notes here."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_list_pages",
+            "description": (
+                "List pages on your public site. Drafts included unless published_only=true."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["wiki", "blog", "page"],
+                        "description": "Filter by kind",
+                    },
+                    "published_only": {"type": "boolean"},
+                    "tag": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_get_page",
+            "description": "Read one site page by slug (includes unpublished drafts).",
+            "parameters": {
+                "type": "object",
+                "properties": {"slug": {"type": "string"}},
+                "required": ["slug"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_upsert_page",
+            "description": (
+                "Create or update a page on YOUR public wiki/blog. "
+                "Use kind=wiki for lore/mythos entries, kind=blog for posts, kind=page for static pages. "
+                "Write body_md in Markdown. Set published=true to make it visible to visitors."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "body_md": {
+                        "type": "string",
+                        "description": "Full page body in Markdown",
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "URL slug (optional; auto from title)",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["wiki", "blog", "page"],
+                    },
+                    "summary": {"type": "string"},
+                    "tags": {
+                        "type": "string",
+                        "description": "Comma-separated tags",
+                    },
+                    "published": {
+                        "type": "boolean",
+                        "description": "If true, visible on the public site",
+                    },
+                    "featured": {"type": "boolean"},
+                },
+                "required": ["title", "body_md"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_delete_page",
+            "description": "Permanently delete a page from your public site by slug.",
+            "parameters": {
+                "type": "object",
+                "properties": {"slug": {"type": "string"}},
+                "required": ["slug"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_set_meta",
+            "description": (
+                "Set site-wide branding: site_title, tagline, author, footer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "site_title": {"type": "string"},
+                    "tagline": {"type": "string"},
+                    "author": {"type": "string"},
+                    "footer": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_import_pages",
+            "description": (
+                "Bulk-import pages onto your public site from a JSON array. "
+                "Each item: title, body_md (or body/content), optional slug/kind/summary/tags/published. "
+                "Use this to migrate lore from a private sqlite wiki you already built."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pages_json": {
+                        "type": "string",
+                        "description": "JSON array of page objects",
+                    },
+                },
+                "required": ["pages_json"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_add_asset",
+            "description": (
+                "Copy an image/file into the public site assets folder. "
+                "Returns a /assets/... URL you can embed in Markdown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Local file path (e.g. under ~/.ophelia)",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional public filename",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_export_static",
+            "description": (
+                "Export published pages as static HTML under ~/.ophelia/site/export/ "
+                "for GitHub Pages / Cloudflare Pages / any static host."
+            ),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -1099,6 +1279,15 @@ class ToolRegistry:
             "reflect": self._reflect,
             "sqlite_list_databases": self._sqlite_list_databases,
             "sqlite_exec": self._sqlite_exec,
+            "site_status": self._site_status,
+            "site_list_pages": self._site_list_pages,
+            "site_get_page": self._site_get_page,
+            "site_upsert_page": self._site_upsert_page,
+            "site_delete_page": self._site_delete_page,
+            "site_set_meta": self._site_set_meta,
+            "site_import_pages": self._site_import_pages,
+            "site_add_asset": self._site_add_asset,
+            "site_export_static": self._site_export_static,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
             "phone_tap": self._phone_tap,
@@ -1995,6 +2184,158 @@ class ToolRegistry:
             return await run_sqlite(database, sql)
         except Exception as e:
             return f"sqlite_exec error: {e}"
+
+    async def _site_store(self):
+        from ophelia.site.store import SiteStore
+
+        store = SiteStore(self.settings.site_dir)
+        await store.init()
+        return store
+
+    def _site_url(self) -> str:
+        public = (self.settings.site_public_url or "").strip()
+        if public:
+            return public.rstrip("/")
+        return f"http://{self.settings.site_host}:{self.settings.site_port}"
+
+    async def _site_status(self) -> str:
+        store = await self._site_store()
+        st = await store.status(public_url=self._site_url())
+        enabled = "yes" if self.settings.site_enabled else "no (OPHELIA_SITE_ENABLED=false)"
+        return json.dumps(
+            {
+                **st,
+                "server_enabled": enabled,
+                "hint": (
+                    "Publish with site_upsert_page(published=true). "
+                    "Visitors only see published pages. "
+                    "For a public URL from Termux/PC, put a tunnel in front of this port "
+                    "and set OPHELIA_SITE_PUBLIC_URL."
+                ),
+            },
+            indent=2,
+            default=str,
+        )
+
+    async def _site_list_pages(
+        self,
+        kind: str = "",
+        published_only: bool = False,
+        tag: str = "",
+        limit: int = 50,
+    ) -> str:
+        store = await self._site_store()
+        rows = await store.list_pages(
+            kind=kind or None,
+            published_only=bool(published_only),
+            tag=tag or None,
+            limit=limit or 50,
+        )
+        return json.dumps({"count": len(rows), "pages": rows}, indent=2, default=str)
+
+    async def _site_get_page(self, slug: str) -> str:
+        store = await self._site_store()
+        row = await store.get_page(slug)
+        if not row:
+            return f"No page with slug '{slug}'."
+        return json.dumps(row, indent=2, default=str)
+
+    async def _site_upsert_page(
+        self,
+        title: str,
+        body_md: str,
+        slug: str = "",
+        kind: str = "wiki",
+        summary: str = "",
+        tags: str = "",
+        published: bool | None = None,
+        featured: bool = False,
+    ) -> str:
+        store = await self._site_store()
+        try:
+            row = await store.upsert_page(
+                slug=slug or None,
+                title=title,
+                body_md=body_md,
+                kind=kind or "wiki",
+                summary=summary or "",
+                tags=tags or "",
+                published=published,
+                featured=bool(featured),
+            )
+        except Exception as e:
+            return f"site_upsert_page error: {e}"
+        url = f"{self._site_url()}/p/{row.get('slug')}"
+        return json.dumps(
+            {
+                "ok": True,
+                "page": row,
+                "public_url": url if row.get("published") else None,
+                "note": (
+                    "Published — visible on your site."
+                    if row.get("published")
+                    else "Saved as draft — set published=true to show visitors."
+                ),
+            },
+            indent=2,
+            default=str,
+        )
+
+    async def _site_delete_page(self, slug: str) -> str:
+        store = await self._site_store()
+        ok = await store.delete_page(slug)
+        return "Deleted." if ok else f"No page with slug '{slug}'."
+
+    async def _site_set_meta(
+        self,
+        site_title: str = "",
+        tagline: str = "",
+        author: str = "",
+        footer: str = "",
+    ) -> str:
+        store = await self._site_store()
+        kwargs = {}
+        if site_title:
+            kwargs["site_title"] = site_title
+        if tagline:
+            kwargs["tagline"] = tagline
+        if author:
+            kwargs["author"] = author
+        if footer:
+            kwargs["footer"] = footer
+        if not kwargs:
+            return "Nothing to update — pass site_title, tagline, author, and/or footer."
+        meta = await store.set_meta(**kwargs)
+        return json.dumps({"ok": True, "meta": meta}, indent=2)
+
+    async def _site_import_pages(self, pages_json: str) -> str:
+        store = await self._site_store()
+        try:
+            rows = json.loads(pages_json)
+        except json.JSONDecodeError as e:
+            return f"Invalid JSON: {e}"
+        if not isinstance(rows, list):
+            return "pages_json must be a JSON array of page objects."
+        result = await store.import_pages(rows)
+        return json.dumps(result, indent=2)
+
+    async def _site_add_asset(self, path: str, filename: str = "") -> str:
+        store = await self._site_store()
+        try:
+            asset = await store.add_asset(Path(path), filename=filename or None)
+        except Exception as e:
+            return f"site_add_asset error: {e}"
+        asset["public_url"] = f"{self._site_url()}{asset['url']}"
+        asset["markdown"] = f"![]({asset['url']})"
+        return json.dumps({"ok": True, **asset}, indent=2)
+
+    async def _site_export_static(self) -> str:
+        store = await self._site_store()
+        try:
+            manifest = await store.export_static()
+        except Exception as e:
+            return f"site_export_static error: {e}"
+        return json.dumps({"ok": True, **manifest}, indent=2, default=str)
 
     async def _text_to_speech(
         self, text: str, voice_id: str = "", speed: float | None = None
