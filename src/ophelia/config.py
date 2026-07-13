@@ -672,12 +672,12 @@ class Settings(BaseSettings):
     avatar_model: str | None = Field(
         default=None,
         alias="OPHELIA_AVATAR_MODEL",
-        description="Optional Cubism .model3.json or VRoid .vrm (absolute or under avatar_dir)",
+        description="Optional Cubism .model3.json, VRoid .vrm, or VRChat .glb/.gltf",
     )
     avatar_backend: str = Field(
         default="auto",
         alias="OPHELIA_AVATAR_BACKEND",
-        description="auto | procedural | live2d | vroid — auto prefers .vrm then Live2D when present",
+        description="auto | procedural | live2d | vroid | vrchat — auto prefers .vrm, then .glb, then Live2D",
     )
 
     # Public wiki/blog Ophelia owns and publishes (read-only for visitors)

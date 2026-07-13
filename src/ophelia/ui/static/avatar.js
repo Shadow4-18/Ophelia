@@ -1,8 +1,8 @@
 /**
- * Ophelia avatar stage — procedural presence + Live2D hook + VRoid/VRM.
+ * Ophelia avatar stage — procedural + Live2D hook + VRoid/VRM + VRChat glTF.
  *
- * Consumes the same parameter bus the server emits (ParamAngleX, ParamMouthOpenY, …)
- * plus VRM expression weights. Drop a Cubism model or VRoid .vrm under ~/.ophelia/avatar.
+ * Consumes the shared parameter bus (ParamAngleX, ParamMouthOpenY, …) plus
+ * VRM / VRChat morph weights. Drop models under ~/.ophelia/avatar.
  */
 (function (global) {
   const DEFAULT_PARAMS = {
@@ -37,8 +37,11 @@
       this._raf = 0;
       this._live2d = null;
       this._vrm = null;
-      this._vrmLoading = false;
-      this._useVrm = false;
+      this._vrchat = null;
+      this._webgl = null;
+      this._webglKind = null;
+      this._webglLoading = false;
+      this._useWebgl = false;
       this._running = false;
 
       canvas.addEventListener("pointermove", (e) => {
@@ -58,7 +61,7 @@
       const loop = (t) => {
         this._raf = requestAnimationFrame(loop);
         this._tickBlink(t);
-        if (!this._useVrm) this.draw(t);
+        if (!this._useWebgl) this.draw(t);
       };
       this._raf = requestAnimationFrame(loop);
     }
@@ -66,7 +69,7 @@
     stop() {
       this._running = false;
       cancelAnimationFrame(this._raf);
-      this._vrm?.stop?.();
+      this._webgl?.stop?.();
     }
 
     apply(state) {
@@ -81,8 +84,8 @@
       if (typeof state.mouth_open === "number") {
         this.params.ParamMouthOpenY = state.mouth_open;
       }
-      if (this.backend === "vroid" && this.modelUrl) {
-        this._ensureVrm(state);
+      if ((this.backend === "vroid" || this.backend === "vrchat") && this.modelUrl) {
+        this._ensureWebgl(state);
       } else {
         this._showProcedural();
         if (this.backend === "live2d" && this.modelUrl && !this._live2d) {
@@ -92,44 +95,55 @@
     }
 
     _showProcedural() {
-      this._useVrm = false;
+      this._useWebgl = false;
       this.canvas.hidden = false;
       if (this.vrmCanvas) this.vrmCanvas.hidden = true;
-      this._vrm?.stop?.();
+      this._webgl?.stop?.();
     }
 
-    _showVrm() {
-      this._useVrm = true;
+    _showWebgl() {
+      this._useWebgl = true;
       this.canvas.hidden = true;
       if (this.vrmCanvas) this.vrmCanvas.hidden = false;
-      this._vrm?.start?.();
-      this._vrm?.resize?.();
+      this._webgl?.start?.();
+      this._webgl?.resize?.();
     }
 
-    async _ensureVrm(state) {
+    async _ensureWebgl(state) {
       if (!this.vrmCanvas) {
         this._showProcedural();
         return;
       }
-      if (this._vrm) {
-        this._showVrm();
-        this._vrm.apply(state);
+      const want = state.backend === "vrchat" ? "vrchat" : "vroid";
+      if (this._webgl && this._webglKind === want) {
+        this._showWebgl();
+        this._webgl.apply(state);
         return;
       }
-      if (this._vrmLoading) return;
-      this._vrmLoading = true;
+      if (this._webglLoading) return;
+      this._webglLoading = true;
       try {
-        const mod = await import("/static/vrm.js");
-        this._vrm = await mod.createVrmStage(this.vrmCanvas);
-        this._showVrm();
-        this._vrm.apply(state);
-        this._vrm.start();
+        this._webgl?.stop?.();
+        this._webgl = null;
+        if (want === "vrchat") {
+          const mod = await import("/static/vrchat.js");
+          this._webgl = await mod.createVrchatStage(this.vrmCanvas);
+          this._vrchat = this._webgl;
+        } else {
+          const mod = await import("/static/vrm.js");
+          this._webgl = await mod.createVrmStage(this.vrmCanvas);
+          this._vrm = this._webgl;
+        }
+        this._webglKind = want;
+        this._showWebgl();
+        this._webgl.apply(state);
+        this._webgl.start();
       } catch (err) {
-        console.warn("VRoid/VRM stage failed; falling back to procedural", err);
+        console.warn(`${want} stage failed; falling back to procedural`, err);
         this.backend = "procedural";
         this._showProcedural();
       } finally {
-        this._vrmLoading = false;
+        this._webglLoading = false;
       }
     }
 
@@ -147,7 +161,7 @@
     }
 
     resize() {
-      if (this._useVrm && this._vrm) this._vrm.resize();
+      if (this._useWebgl && this._webgl) this._webgl.resize();
     }
 
     _tickBlink(now) {

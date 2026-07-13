@@ -19,7 +19,7 @@ ophelia ui --no-browser
 
 | Panel | Shows |
 |-------|--------|
-| **Stage** | Avatar display — procedural, Live2D, or VRoid/VRM — driven by mood + lip sync |
+| **Stage** | Avatar display — procedural, Live2D, VRoid/VRM, or VRChat glTF — driven by mood + lip sync |
 | **Channel** | Chat with Ophelia (same memory as `ui:local` session) |
 | **State** (toggle) | Mood, valence/arousal, drives, urges, last inner thought |
 | **Inner monologue** (toggle) | Live stream from `~/.ophelia/data/inner_monologue.md` |
@@ -27,7 +27,7 @@ ophelia ui --no-browser
 
 Consciousness runs in the background — spontaneous messages appear in chat (highlighted) and animate the avatar. **Pause mind** stops outreach without stopping the server. Use **state** in the top bar to open psyche + inner panels.
 
-## Avatar / Live2D / VRoid
+## Avatar / Live2D / VRoid / VRChat
 
 The workstation ships a **procedural** VTuber-style stage that reads a shared parameter bus. Mood, drives, and speaking state stream over WebSocket (`avatar` events) and `GET /api/avatar`.
 
@@ -35,9 +35,10 @@ The workstation ships a **procedural** VTuber-style stage that reads a shared pa
 |---------|------|--------|
 | `procedural` | (none) | Built-in canvas presence |
 | `live2d` | `*.model3.json` | Cubism Core not bundled — bus ready for your runtime |
-| `vroid` | `*.vrm` | VRoid Studio export; loads via three.js + `@pixiv/three-vrm` (CDN) |
+| `vroid` | `*.vrm` | VRoid / UniVRM export; three.js + `@pixiv/three-vrm` (CDN) |
+| `vrchat` | `*.glb` / `*.gltf` | VRChat-oriented humanoid export; morph targets + bones |
 
-`OPHELIA_AVATAR_BACKEND=auto` prefers a `.vrm` if present, then Live2D, else procedural.
+`OPHELIA_AVATAR_BACKEND=auto` prefers `.vrm`, then `.glb`/`.gltf`, then Live2D, else procedural.
 
 ### Drop in a VRoid model
 
@@ -46,17 +47,29 @@ The workstation ships a **procedural** VTuber-style stage that reads a shared pa
 
 ```text
 ~/.ophelia/avatar/
-  model.vrm          # also accepts ophelia.vrm / avatar.vrm / any *.vrm
+  model.vrm
+```
+
+### Drop in a VRChat model
+
+Native VRChat **`.vrca` AssetBundles cannot load in the browser**. Export a viewer-friendly format:
+
+1. From Blender / Unity (VRChat SDK avatar), export **glTF Binary (`.glb`)** or **glTF (`.gltf`)** with morph targets (SDK3 visemes + face blendshapes) and a humanoid skeleton.
+2. Or use **UniVRM** and drop a `.vrm` (handled by the `vroid` backend — same psyche bus).
+
+```text
+~/.ophelia/avatar/
+  model.glb          # also: model.gltf, ophelia.glb, vrchat.glb, any *.glb/*.gltf
 ```
 
 ```env
 OPHELIA_AVATAR_ENABLED=true
 OPHELIA_AVATAR_DIR=~/.ophelia/avatar
-OPHELIA_AVATAR_MODEL=model.vrm
-OPHELIA_AVATAR_BACKEND=auto   # auto | procedural | live2d | vroid
+OPHELIA_AVATAR_MODEL=model.glb
+OPHELIA_AVATAR_BACKEND=auto   # auto | procedural | live2d | vroid | vrchat
 ```
 
-The UI loads three.js + three-vrm from jsDelivr on demand, then applies expression presets (`happy`, `sad`, …), lip sync (`aa` / `oh`), look, and head pose from the same psyche bus.
+The VRChat stage matches morph names such as `vrc.v_aa`, `vrc.v_oh`, `vrc.blink`, `Joy` / `Angry` / `Sorrow`, and common English aliases, then poses `Head` / `Neck` / `Spine` bones from the shared param bus.
 
 ### Drop in a Cubism model
 
@@ -91,7 +104,7 @@ Configure a provider first — see [pc-setup.md](pc-setup.md).
 | Platform | PC browser | Phone/desktop app |
 | Phone tools | off by default | N/A on PC |
 | Consciousness | yes | yes |
-| Avatar stage | yes (procedural / Live2D / VRoid) | no |
+| Avatar stage | yes (procedural / Live2D / VRoid / VRChat) | no |
 | Voice STT/TTS | no (yet) | yes (xAI) |
 
 Use **both**: run `ophelia ui` on PC and `ophelia run` on phone with Telegram — separate channels unless you unify later.

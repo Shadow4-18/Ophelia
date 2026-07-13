@@ -20,8 +20,10 @@ log = structlog.get_logger()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# VRoid / VRM exports are glTF binary containers
+# VRoid / VRM exports are glTF binary containers; VRChat exports often .glb
 mimetypes.add_type("model/gltf-binary", ".vrm")
+mimetypes.add_type("model/gltf-binary", ".glb")
+mimetypes.add_type("model/gltf+json", ".gltf")
 
 
 class ChatRequest(BaseModel):

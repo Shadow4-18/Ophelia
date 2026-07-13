@@ -1,13 +1,15 @@
-"""Avatar bridge — psyche → Live2D / VRoid (VRM) / VTuber expression parameters.
+"""Avatar bridge — psyche → Live2D / VRoid / VRChat / VTuber expression parameters.
 
 Maps Ophelia's mood, drives, and speaking state into a stable parameter
 bus the workstation UI can consume:
 
 - Live2D Cubism ids (ParamMouthOpenY, …) for 2D models / procedural stage
 - VRM 1.0 expression weights for VRoid Studio exports (.vrm)
+- VRChat-style morph / viseme weights for glTF/GLB humanoid exports
 
-No Cubism SDK is bundled. VRM loads in-browser via three.js + @pixiv/three-vrm
-from CDN when a .vrm is present under the avatar directory.
+No Cubism SDK is bundled. VRM / glTF load in-browser via three.js (+ three-vrm
+for .vrm). Native VRChat .vrca AssetBundles are not loadable in the browser —
+export as .vrm or .glb/.gltf instead.
 """
 
 from __future__ import annotations
@@ -58,7 +60,26 @@ VRM_PRESETS = (
 )
 
 ExpressionId = str  # happy | sad | angry | shy | surprised | thinking | neutral | sleepy | curious
-AvatarBackend = str  # procedural | live2d | vroid
+AvatarBackend = str  # procedural | live2d | vroid | vrchat
+
+# VRChat SDK3 viseme morph names (and common aliases without the vrc.v_ prefix).
+VRCHAT_VISEMES = (
+    "vrc.v_sil",
+    "vrc.v_pp",
+    "vrc.v_ff",
+    "vrc.v_th",
+    "vrc.v_dd",
+    "vrc.v_kk",
+    "vrc.v_ch",
+    "vrc.v_ss",
+    "vrc.v_nn",
+    "vrc.v_rr",
+    "vrc.v_aa",
+    "vrc.v_e",
+    "vrc.v_ih",
+    "vrc.v_oh",
+    "vrc.v_ou",
+)
 
 
 @dataclass
@@ -71,13 +92,14 @@ class AvatarState:
     blink: float = 1.0  # 1 = open, 0 = closed
     params: dict[str, float] = field(default_factory=dict)
     vrm: dict[str, float] = field(default_factory=dict)
+    vrchat: dict[str, float] = field(default_factory=dict)
     label: str = "neutral"
     valence: float = 0.0
     arousal: float = 0.3
     backend: AvatarBackend = "procedural"
     model_url: str | None = None
     model_ready: bool = False
-    model_kind: str | None = None  # model3 | vrm
+    model_kind: str | None = None  # model3 | vrm | gltf
     updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -137,13 +159,43 @@ def find_vrm(avatar_dir: Path, configured: str | None = None) -> Path | None:
     return matches[0] if matches else None
 
 
+def find_vrchat(avatar_dir: Path, configured: str | None = None) -> Path | None:
+    """Locate a VRChat-oriented glTF/GLB export under the avatar directory.
+
+    Browser runtimes cannot load native `.vrca` AssetBundles. Export the avatar
+    from Blender/Unity as `.glb` / `.gltf` (or use UniVRM → `.vrm`).
+    """
+    root = resolve_avatar_dir(avatar_dir)
+    configured_path = _resolve_configured(root, configured)
+    if configured_path and configured_path.suffix.lower() in (".glb", ".gltf"):
+        return configured_path
+    if configured:
+        low = str(configured).lower()
+        if low.endswith((".glb", ".gltf")) and configured_path is None:
+            return None
+    if not root.is_dir():
+        return None
+    for name in (
+        "model.glb",
+        "model.gltf",
+        "ophelia.glb",
+        "avatar.glb",
+        "vrchat.glb",
+    ):
+        direct = root / name
+        if direct.is_file():
+            return direct
+    matches = sorted(root.rglob("*.glb")) + sorted(root.rglob("*.gltf"))
+    return matches[0] if matches else None
+
+
 def resolve_model(
     avatar_dir: Path,
     configured: str | None = None,
     *,
     prefer: str = "auto",
 ) -> tuple[str | None, Path | None]:
-    """Return (kind, path) where kind is 'vrm' | 'model3' | None."""
+    """Return (kind, path) where kind is 'vrm' | 'gltf' | 'model3' | None."""
     root = resolve_avatar_dir(avatar_dir)
     prefer = (prefer or "auto").lower()
     configured_path = _resolve_configured(root, configured)
@@ -152,31 +204,34 @@ def resolve_model(
         name = configured_path.name.lower()
         if suffix == ".vrm":
             return "vrm", configured_path
+        if suffix in (".glb", ".gltf"):
+            return "gltf", configured_path
         if name.endswith(".model3.json"):
             return "model3", configured_path
 
     vrm = find_vrm(root, None)
+    gltf = find_vrchat(root, None)
     model3 = find_model3(root, None)
 
-    if prefer in ("vroid", "vrm"):
-        if vrm:
-            return "vrm", vrm
-        if model3:
-            return "model3", model3
-        return None, None
-    if prefer == "live2d":
-        if model3:
-            return "model3", model3
-        if vrm:
-            return "vrm", vrm
+    def _pick(*order: str) -> tuple[str | None, Path | None]:
+        for kind in order:
+            if kind == "vrm" and vrm:
+                return "vrm", vrm
+            if kind == "gltf" and gltf:
+                return "gltf", gltf
+            if kind == "model3" and model3:
+                return "model3", model3
         return None, None
 
-    # auto: VRoid/VRM first (full 3D body), then Live2D, else none
-    if vrm:
-        return "vrm", vrm
-    if model3:
-        return "model3", model3
-    return None, None
+    if prefer in ("vroid", "vrm"):
+        return _pick("vrm", "gltf", "model3")
+    if prefer in ("vrchat", "gltf", "glb"):
+        return _pick("gltf", "vrm", "model3")
+    if prefer == "live2d":
+        return _pick("model3", "vrm", "gltf")
+
+    # auto: VRM → VRChat glTF → Live2D
+    return _pick("vrm", "gltf", "model3")
 
 
 def _clamp(v: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -371,6 +426,72 @@ def vrm_weights_from_expression(
     return weights
 
 
+def vrchat_weights_from_expression(
+    expression: ExpressionId,
+    *,
+    mouth_open: float = 0.0,
+    eye_open: float = 1.0,
+    params: dict[str, float] | None = None,
+    speaking: bool = False,
+) -> dict[str, float]:
+    """Map Ophelia expression + lip sync onto VRChat-style morph target names.
+
+    Emits SDK3 visemes (`vrc.v_aa`, …) plus common expression aliases so the
+    browser stage can match whatever blendshapes the exported glTF carries.
+    """
+    params = params or {}
+    weights: dict[str, float] = {name: 0.0 for name in VRCHAT_VISEMES}
+
+    # Emotion — classic VRChat face names + English aliases
+    emotion_aliases: dict[str, list[tuple[str, float]]] = {
+        "happy": [("Joy", 0.85), ("happy", 0.85), ("smile", 0.7)],
+        "angry": [("Angry", 0.85), ("angry", 0.85), ("anger", 0.8)],
+        "sad": [("Sorrow", 0.85), ("sad", 0.85), ("sorrow", 0.8)],
+        "surprised": [("surprised", 0.8), ("Surprised", 0.8), ("Fun", 0.35)],
+        "sleepy": [("Sorrow", 0.25), ("relaxed", 0.5), ("blink", 0.15)],
+        "thinking": [("Sorrow", 0.15), ("neutral", 0.4)],
+        "curious": [("surprised", 0.45), ("Fun", 0.3)],
+        "shy": [("Joy", 0.4), ("happy", 0.35), ("blush", 0.5)],
+        "neutral": [("neutral", 1.0)],
+    }
+    for name, value in emotion_aliases.get(expression, emotion_aliases["neutral"]):
+        weights[name] = max(weights.get(name, 0.0), value)
+
+    open_y = _clamp(mouth_open, 0.0, 1.0)
+    if speaking or open_y > 0.05:
+        # Approximate with open vowels; sil when nearly closed
+        if open_y < 0.12:
+            weights["vrc.v_sil"] = 1.0 - open_y
+        weights["vrc.v_aa"] = open_y * 0.9
+        weights["vrc.v_oh"] = open_y * 0.4
+        weights["vrc.v_e"] = open_y * 0.2
+        form = float(params.get(PARAM_MOUTH_FORM, 0.0))
+        if form > 0.25:
+            weights["vrc.v_ih"] = min(0.55, form * 0.45)
+            weights["vrc.v_e"] = max(weights["vrc.v_e"], min(0.45, form * 0.35))
+        elif form < -0.2:
+            weights["vrc.v_ou"] = min(0.5, abs(form) * 0.45)
+        # Short aliases (some exporters strip the vrc.v_ prefix)
+        weights["aa"] = weights["vrc.v_aa"]
+        weights["oh"] = weights["vrc.v_oh"]
+        weights["ih"] = weights.get("vrc.v_ih", 0.0)
+        weights["ou"] = weights.get("vrc.v_ou", 0.0)
+        weights["sil"] = weights.get("vrc.v_sil", 0.0)
+    else:
+        weights["vrc.v_sil"] = 1.0
+        weights["sil"] = 1.0
+
+    blink = _clamp(1.0 - eye_open, 0.0, 1.0)
+    if blink > 0.05:
+        weights["vrc.blink"] = blink
+        weights["blink"] = blink
+        weights["Blink"] = blink
+        weights["Blink_L"] = blink
+        weights["Blink_R"] = blink
+
+    return {k: v for k, v in weights.items() if v > 0.001}
+
+
 def mouth_envelope(text: str, elapsed: float, *, cps: float = 14.0) -> float:
     """Approximate lip-sync mouth open from spoken text + elapsed seconds."""
     clean = "".join(ch for ch in (text or "") if ch.isalnum() or ch.isspace())
@@ -428,17 +549,13 @@ class AvatarBridge:
         return kind
 
     def resolved_backend(self) -> str:
-        pref = self.backend_pref
-        if pref == "procedural":
+        if self.backend_pref == "procedural":
             return "procedural"
         kind = self.model_kind()
-        if pref in ("vroid", "vrm"):
-            return "vroid" if kind == "vrm" else ("live2d" if kind == "model3" else "procedural")
-        if pref == "live2d":
-            return "live2d" if kind == "model3" else ("vroid" if kind == "vrm" else "procedural")
-        # auto
         if kind == "vrm":
             return "vroid"
+        if kind == "gltf":
+            return "vrchat"
         if kind == "model3":
             return "live2d"
         return "procedural"
@@ -520,6 +637,13 @@ class AvatarBridge:
             params=params,
             speaking=self._speaking,
         )
+        vrchat = vrchat_weights_from_expression(
+            expr,
+            mouth_open=mouth,
+            eye_open=eye_open,
+            params=params,
+            speaking=self._speaking,
+        )
         state = AvatarState(
             expression=expr,
             speaking=self._speaking,
@@ -527,12 +651,13 @@ class AvatarBridge:
             blink=eye_open,
             params=params,
             vrm=vrm,
+            vrchat=vrchat,
             label=label or expr,
             valence=valence,
             arousal=arousal,
             backend=backend,
             model_url=model_url,
-            model_ready=bool(model_url) and backend in ("live2d", "vroid"),
+            model_ready=bool(model_url) and backend in ("live2d", "vroid", "vrchat"),
             model_kind=kind,
             updated_at=time.time(),
         )

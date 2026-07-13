@@ -45,8 +45,12 @@ function applyAvatar(data) {
     : `avatar ${data.backend || "procedural"}${data.speaking ? " · speaking" : ""}`;
   const line = data.speaking
     ? "speaking…"
-    : data.backend === "vroid" && !stage._vrm?.ready
-      ? (stage._vrm?.loading || stage._vrmLoading ? "loading VRoid…" : (stage._vrm?.error ? "VRoid load failed" : `${data.expression || "neutral"} presence`))
+    : (data.backend === "vroid" || data.backend === "vrchat") && !stage._webgl?.ready
+      ? (stage._webgl?.loading || stage._webglLoading
+          ? `loading ${data.backend === "vrchat" ? "VRChat" : "VRoid"}…`
+          : (stage._webgl?.error
+              ? `${data.backend} load failed`
+              : `${data.expression || "neutral"} presence`))
       : data.expression
         ? `${data.expression} presence`
         : "presence online";

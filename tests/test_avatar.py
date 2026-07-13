@@ -8,11 +8,13 @@ from ophelia.mind.avatar import (
     AvatarBridge,
     expression_from_mood,
     find_model3,
+    find_vrchat,
     find_vrm,
     mouth_envelope,
     params_from_psyche,
     resolve_model,
     vrm_weights_from_expression,
+    vrchat_weights_from_expression,
 )
 
 
@@ -92,6 +94,24 @@ def test_vrm_weights_blink_when_eyes_closed():
     assert weights["relaxed"] > 0
 
 
+def test_vrchat_weights_visemes_and_joy():
+    weights = vrchat_weights_from_expression(
+        "happy",
+        mouth_open=0.6,
+        eye_open=1.0,
+        speaking=True,
+    )
+    assert weights["Joy"] > 0.5 or weights["happy"] > 0.5
+    assert weights["vrc.v_aa"] > 0.4
+    assert weights["aa"] == weights["vrc.v_aa"]
+
+
+def test_vrchat_weights_blink_aliases():
+    weights = vrchat_weights_from_expression("neutral", mouth_open=0.0, eye_open=0.1)
+    assert weights["vrc.blink"] >= 0.8
+    assert weights["Blink"] >= 0.8
+
+
 def test_avatar_bridge_snapshot_and_speak(tmp_path: Path):
     bridge = AvatarBridge(enabled=True, avatar_dir=tmp_path, backend="procedural")
     idle = bridge.snapshot(label="neutral", valence=0.1, arousal=0.3)
@@ -142,13 +162,31 @@ def test_find_vrm(tmp_path: Path):
 
 def test_resolve_model_prefers_vrm_on_auto(tmp_path: Path):
     (tmp_path / "model.model3.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "model.glb").write_bytes(b"glb")
     (tmp_path / "model.vrm").write_bytes(b"vrm")
     kind, path = resolve_model(tmp_path, prefer="auto")
     assert kind == "vrm"
     assert path.name == "model.vrm"
+    kind_g, path_g = resolve_model(tmp_path, prefer="vrchat")
+    assert kind_g == "gltf"
+    assert path_g.name == "model.glb"
     kind2, path2 = resolve_model(tmp_path, prefer="live2d")
     assert kind2 == "model3"
     assert path2.name == "model.model3.json"
+
+
+def test_find_vrchat(tmp_path: Path):
+    assert find_vrchat(tmp_path) is None
+    glb = tmp_path / "ophelia.glb"
+    glb.write_bytes(b"glb")
+    assert find_vrchat(tmp_path) == glb
+    direct = tmp_path / "model.glb"
+    direct.write_bytes(b"glb")
+    assert find_vrchat(tmp_path) == direct
+    nested = tmp_path / "avatars" / "hero.gltf"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_text("{}", encoding="utf-8")
+    assert find_vrchat(tmp_path, "avatars/hero.gltf") == nested
 
 
 def test_avatar_bridge_live2d_backend_when_model_present(tmp_path: Path):
@@ -185,3 +223,28 @@ def test_avatar_bridge_configured_vrm_wins(tmp_path: Path):
     state = bridge.snapshot(label="neutral", valence=0.0, arousal=0.3)
     assert state.backend == "vroid"
     assert state.model_url == "/avatar/mine.vrm"
+
+
+def test_avatar_bridge_vrchat_backend_when_glb_present(tmp_path: Path):
+    (tmp_path / "model.glb").write_bytes(b"glb")
+    bridge = AvatarBridge(enabled=True, avatar_dir=tmp_path, backend="auto")
+    state = bridge.snapshot(label="happy", valence=0.6, arousal=0.5)
+    assert state.backend == "vrchat"
+    assert state.model_url == "/avatar/model.glb"
+    assert state.model_ready is True
+    assert state.model_kind == "gltf"
+    assert state.vrchat.get("Joy", 0) > 0 or state.vrchat.get("happy", 0) > 0
+
+
+def test_avatar_bridge_configured_glb_wins_over_vrm_when_forced(tmp_path: Path):
+    (tmp_path / "model.vrm").write_bytes(b"vrm")
+    (tmp_path / "mine.glb").write_bytes(b"glb")
+    bridge = AvatarBridge(
+        enabled=True,
+        avatar_dir=tmp_path,
+        model_path="mine.glb",
+        backend="vrchat",
+    )
+    state = bridge.snapshot(label="neutral", valence=0.0, arousal=0.3)
+    assert state.backend == "vrchat"
+    assert state.model_url == "/avatar/mine.glb"
