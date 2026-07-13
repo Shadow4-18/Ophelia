@@ -20,10 +20,11 @@ log = structlog.get_logger()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# VRoid / VRM exports are glTF binary containers; VRChat exports often .glb
+# VRoid / VRM are glTF-based; VRChat avatars are typically FBX
 mimetypes.add_type("model/gltf-binary", ".vrm")
 mimetypes.add_type("model/gltf-binary", ".glb")
 mimetypes.add_type("model/gltf+json", ".gltf")
+mimetypes.add_type("application/octet-stream", ".fbx")
 
 
 class ChatRequest(BaseModel):

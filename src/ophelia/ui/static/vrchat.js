@@ -1,29 +1,50 @@
 /**
- * VRChat glTF/GLB stage — three.js GLTFLoader + morph-target / bone driving.
+ * VRChat FBX / glTF stage — three.js FBXLoader + GLTFLoader.
  *
- * Loads humanoid exports (Blender/Unity → .glb/.gltf) and applies the server
- * `vrchat` morph bus (SDK3 visemes + expression aliases) plus head look from
- * Live2D-style params. Native .vrca AssetBundles are not supported in-browser.
+ * VRChat avatars are authored as Unity humanoid FBX. Loads `.fbx` (primary) or
+ * `.glb`/`.gltf` (alternate), then applies the server `vrchat` morph bus
+ * (SDK3 visemes + expression aliases) and head look from shared params.
+ * Native .vrca AssetBundles are not supported in-browser.
  */
 import * as THREE from "three";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 const DEG = Math.PI / 180;
 
 const BONE_CANDIDATES = {
-  head: ["Head", "head", "mixamorigHead", "Head_M"],
-  neck: ["Neck", "neck", "mixamorigNeck", "Neck_M"],
-  spine: ["Spine", "spine", "mixamorigSpine", "Spine_M"],
-  chest: ["Chest", "chest", "UpperChest", "mixamorigSpine1", "Spine1_M"],
+  head: ["Head", "head", "mixamorigHead", "Head_M", "head.x"],
+  neck: ["Neck", "neck", "mixamorigNeck", "Neck_M", "neck.x"],
+  spine: ["Spine", "spine", "mixamorigSpine", "Spine_M", "spine.x"],
+  chest: [
+    "Chest",
+    "chest",
+    "UpperChest",
+    "upperchest",
+    "mixamorigSpine1",
+    "Spine1_M",
+    "spine1.x",
+  ],
 };
 
 function findBone(root, names) {
+  const lower = names.map((n) => n.toLowerCase());
   let found = null;
   root.traverse((obj) => {
-    if (found || !obj.isBone && !obj.isObject3D) return;
-    if (names.includes(obj.name)) found = obj;
+    if (found) return;
+    const n = (obj.name || "").toLowerCase();
+    if (lower.includes(n)) found = obj;
   });
   return found;
+}
+
+function extensionOf(url) {
+  try {
+    const path = new URL(url, window.location.href).pathname;
+    return path.split(".").pop()?.toLowerCase() || "";
+  } catch {
+    return (url.split(".").pop() || "").toLowerCase();
+  }
 }
 
 export class VrchatStage {
@@ -34,14 +55,14 @@ export class VrchatStage {
     this.error = null;
     this.modelUrl = null;
     this.root = null;
-    this._morphs = []; // { mesh, index, name, nameLower }
+    this._morphs = [];
     this._bones = {};
     this._clock = new THREE.Clock();
     this._pointer = { x: 0, y: 0 };
     this._state = null;
     this._raf = 0;
     this._running = false;
-    this._breath = 0;
+    this._mixer = null;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -105,19 +126,25 @@ export class VrchatStage {
 
   dispose() {
     this.stop();
-    if (this.root) {
-      this.scene.remove(this.root);
-      this.root.traverse((obj) => {
-        if (obj.geometry) obj.geometry.dispose?.();
-        if (obj.material) {
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          mats.forEach((m) => m.dispose?.());
-        }
-      });
-      this.root = null;
-    }
+    this._clearRoot();
     this.renderer.dispose();
     this.ready = false;
+  }
+
+  _clearRoot() {
+    if (!this.root) return;
+    this.scene.remove(this.root);
+    this.root.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose?.();
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => m.dispose?.());
+      }
+    });
+    this.root = null;
+    this._mixer = null;
+    this._morphs = [];
+    this._bones = {};
   }
 
   apply(state) {
@@ -133,25 +160,40 @@ export class VrchatStage {
     this.error = null;
     this.modelUrl = url;
     try {
-      if (this.root) {
-        this.scene.remove(this.root);
-        this.root = null;
+      this._clearRoot();
+      const ext = extensionOf(url);
+      let root;
+      if (ext === "fbx") {
+        const loader = new FBXLoader();
+        root = await loader.loadAsync(url);
+        // FBX from Unity is often huge (cm). Normalize toward meters.
+        if (root.scale.x === 1 && root.scale.y === 1) {
+          const box = new THREE.Box3().setFromObject(root);
+          const size = box.getSize(new THREE.Vector3());
+          if (size.y > 10) {
+            const s = 1.7 / Math.max(size.y, 0.001);
+            root.scale.setScalar(s);
+          }
+        }
+      } else {
+        const loader = new GLTFLoader();
+        const gltf = await loader.loadAsync(url);
+        root = gltf.scene;
       }
-      this._morphs = [];
-      this._bones = {};
 
-      const loader = new GLTFLoader();
-      const gltf = await loader.loadAsync(url);
-      const root = gltf.scene;
       root.traverse((obj) => {
-        if (obj.isMesh && obj.morphTargetDictionary && obj.morphTargetInfluences) {
-          for (const [name, index] of Object.entries(obj.morphTargetDictionary)) {
-            this._morphs.push({
-              mesh: obj,
-              index,
-              name,
-              nameLower: name.toLowerCase(),
-            });
+        if (obj.isMesh) {
+          obj.castShadow = false;
+          obj.receiveShadow = false;
+          if (obj.morphTargetDictionary && obj.morphTargetInfluences) {
+            for (const [name, index] of Object.entries(obj.morphTargetDictionary)) {
+              this._morphs.push({
+                mesh: obj,
+                index,
+                name,
+                nameLower: name.toLowerCase(),
+              });
+            }
           }
         }
       });
@@ -164,15 +206,16 @@ export class VrchatStage {
       this._frameModel();
       this.ready = true;
       console.info(
-        "VRChat glTF loaded:",
+        "VRChat model loaded:",
         url,
+        `format=${ext || "?"}`,
         `morphs=${this._morphs.length}`,
         `bones=${Object.keys(this._bones).filter((k) => this._bones[k]).join(",") || "none"}`
       );
     } catch (err) {
       this.error = String(err?.message || err);
       this.ready = false;
-      console.warn("VRChat glTF load failed:", err);
+      console.warn("VRChat model load failed:", err);
     } finally {
       this.loading = false;
     }
@@ -191,7 +234,6 @@ export class VrchatStage {
 
   _applyMorphWeights(weights) {
     if (!weights) return;
-    // Reset known influences gently by writing provided keys; leave others alone.
     for (const [name, value] of Object.entries(weights)) {
       this._setMorph(name, value);
     }
@@ -203,7 +245,6 @@ export class VrchatStage {
     const az = params?.ParamAngleZ || 0;
     const bodyX = params?.ParamBodyAngleX || 0;
     const breath = params?.ParamBreath ?? 0.5;
-    this._breath = breath;
 
     const head = this._bones.head;
     const neck = this._bones.neck;
@@ -234,7 +275,6 @@ export class VrchatStage {
     const box = new THREE.Box3().setFromObject(this.root);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
-    // Prefer upper body / face framing
     const focusY = center.y + size.y * 0.18;
     const dist = Math.max(1.7, Math.max(size.x, size.y) * 1.25);
     this.camera.position.set(0, focusY, dist);
@@ -242,7 +282,8 @@ export class VrchatStage {
   }
 
   _frame() {
-    this._clock.getDelta();
+    const dt = this._clock.getDelta();
+    if (this._mixer) this._mixer.update(dt);
     const state = this._state;
     if (this.root) {
       if (state?.vrchat) this._applyMorphWeights(state.vrchat);

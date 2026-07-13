@@ -5,11 +5,11 @@ bus the workstation UI can consume:
 
 - Live2D Cubism ids (ParamMouthOpenY, …) for 2D models / procedural stage
 - VRM 1.0 expression weights for VRoid Studio exports (.vrm)
-- VRChat-style morph / viseme weights for glTF/GLB humanoid exports
+- VRChat-style morph / viseme weights for FBX (and glTF) humanoid exports
 
-No Cubism SDK is bundled. VRM / glTF load in-browser via three.js (+ three-vrm
-for .vrm). Native VRChat .vrca AssetBundles are not loadable in the browser —
-export as .vrm or .glb/.gltf instead.
+No Cubism SDK is bundled. VRM / FBX / glTF load in-browser via three.js
+(+ three-vrm for .vrm). Native VRChat .vrca AssetBundles are not loadable in
+the browser — use the avatar's FBX (or UniVRM → .vrm).
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class AvatarState:
     backend: AvatarBackend = "procedural"
     model_url: str | None = None
     model_ready: bool = False
-    model_kind: str | None = None  # model3 | vrm | gltf
+    model_kind: str | None = None  # model3 | vrm | fbx | gltf
     updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -160,22 +160,28 @@ def find_vrm(avatar_dir: Path, configured: str | None = None) -> Path | None:
 
 
 def find_vrchat(avatar_dir: Path, configured: str | None = None) -> Path | None:
-    """Locate a VRChat-oriented glTF/GLB export under the avatar directory.
+    """Locate a VRChat humanoid model — FBX first, then glTF/GLB.
 
-    Browser runtimes cannot load native `.vrca` AssetBundles. Export the avatar
-    from Blender/Unity as `.glb` / `.gltf` (or use UniVRM → `.vrm`).
+    VRChat avatars are authored as FBX (Unity humanoid). The workstation loads
+    `.fbx` via three.js FBXLoader. `.glb`/`.gltf` remain accepted as alternates.
+    Native `.vrca` AssetBundles are not browser-loadable.
     """
     root = resolve_avatar_dir(avatar_dir)
     configured_path = _resolve_configured(root, configured)
-    if configured_path and configured_path.suffix.lower() in (".glb", ".gltf"):
+    vrchat_suffixes = (".fbx", ".glb", ".gltf")
+    if configured_path and configured_path.suffix.lower() in vrchat_suffixes:
         return configured_path
     if configured:
         low = str(configured).lower()
-        if low.endswith((".glb", ".gltf")) and configured_path is None:
+        if low.endswith(vrchat_suffixes) and configured_path is None:
             return None
     if not root.is_dir():
         return None
     for name in (
+        "model.fbx",
+        "ophelia.fbx",
+        "avatar.fbx",
+        "vrchat.fbx",
         "model.glb",
         "model.gltf",
         "ophelia.glb",
@@ -185,7 +191,30 @@ def find_vrchat(avatar_dir: Path, configured: str | None = None) -> Path | None:
         direct = root / name
         if direct.is_file():
             return direct
-    matches = sorted(root.rglob("*.glb")) + sorted(root.rglob("*.gltf"))
+    matches = (
+        sorted(root.rglob("*.fbx"))
+        + sorted(root.rglob("*.glb"))
+        + sorted(root.rglob("*.gltf"))
+    )
+    return matches[0] if matches else None
+
+
+def _find_by_suffixes(root: Path, suffixes: tuple[str, ...]) -> Path | None:
+    if not root.is_dir():
+        return None
+    preferred_names = {
+        ".fbx": ("model.fbx", "ophelia.fbx", "avatar.fbx", "vrchat.fbx"),
+        ".glb": ("model.glb", "ophelia.glb", "avatar.glb", "vrchat.glb"),
+        ".gltf": ("model.gltf",),
+    }
+    for suffix in suffixes:
+        for name in preferred_names.get(suffix, ()):
+            direct = root / name
+            if direct.is_file():
+                return direct
+    matches: list[Path] = []
+    for suffix in suffixes:
+        matches.extend(sorted(root.rglob(f"*{suffix}")))
     return matches[0] if matches else None
 
 
@@ -195,7 +224,7 @@ def resolve_model(
     *,
     prefer: str = "auto",
 ) -> tuple[str | None, Path | None]:
-    """Return (kind, path) where kind is 'vrm' | 'gltf' | 'model3' | None."""
+    """Return (kind, path) where kind is 'vrm' | 'fbx' | 'gltf' | 'model3' | None."""
     root = resolve_avatar_dir(avatar_dir)
     prefer = (prefer or "auto").lower()
     configured_path = _resolve_configured(root, configured)
@@ -204,19 +233,24 @@ def resolve_model(
         name = configured_path.name.lower()
         if suffix == ".vrm":
             return "vrm", configured_path
+        if suffix == ".fbx":
+            return "fbx", configured_path
         if suffix in (".glb", ".gltf"):
             return "gltf", configured_path
         if name.endswith(".model3.json"):
             return "model3", configured_path
 
     vrm = find_vrm(root, None)
-    gltf = find_vrchat(root, None)
+    fbx = _find_by_suffixes(root, (".fbx",))
+    gltf = _find_by_suffixes(root, (".glb", ".gltf"))
     model3 = find_model3(root, None)
 
     def _pick(*order: str) -> tuple[str | None, Path | None]:
         for kind in order:
             if kind == "vrm" and vrm:
                 return "vrm", vrm
+            if kind == "fbx" and fbx:
+                return "fbx", fbx
             if kind == "gltf" and gltf:
                 return "gltf", gltf
             if kind == "model3" and model3:
@@ -224,14 +258,16 @@ def resolve_model(
         return None, None
 
     if prefer in ("vroid", "vrm"):
-        return _pick("vrm", "gltf", "model3")
-    if prefer in ("vrchat", "gltf", "glb"):
-        return _pick("gltf", "vrm", "model3")
+        return _pick("vrm", "fbx", "gltf", "model3")
+    if prefer in ("vrchat", "fbx"):
+        return _pick("fbx", "gltf", "vrm", "model3")
+    if prefer in ("gltf", "glb"):
+        return _pick("gltf", "fbx", "vrm", "model3")
     if prefer == "live2d":
-        return _pick("model3", "vrm", "gltf")
+        return _pick("model3", "vrm", "fbx", "gltf")
 
-    # auto: VRM → VRChat glTF → Live2D
-    return _pick("vrm", "gltf", "model3")
+    # auto: VRM → FBX (VRChat) → glTF → Live2D
+    return _pick("vrm", "fbx", "gltf", "model3")
 
 
 def _clamp(v: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -554,7 +590,7 @@ class AvatarBridge:
         kind = self.model_kind()
         if kind == "vrm":
             return "vroid"
-        if kind == "gltf":
+        if kind in ("fbx", "gltf"):
             return "vrchat"
         if kind == "model3":
             return "live2d"

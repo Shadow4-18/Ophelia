@@ -36,9 +36,9 @@ The workstation ships a **procedural** VTuber-style stage that reads a shared pa
 | `procedural` | (none) | Built-in canvas presence |
 | `live2d` | `*.model3.json` | Cubism Core not bundled — bus ready for your runtime |
 | `vroid` | `*.vrm` | VRoid / UniVRM export; three.js + `@pixiv/three-vrm` (CDN) |
-| `vrchat` | `*.glb` / `*.gltf` | VRChat-oriented humanoid export; morph targets + bones |
+| `vrchat` | `*.fbx` (primary), also `*.glb` / `*.gltf` | Unity humanoid FBX; morph targets + bones |
 
-`OPHELIA_AVATAR_BACKEND=auto` prefers `.vrm`, then `.glb`/`.gltf`, then Live2D, else procedural.
+`OPHELIA_AVATAR_BACKEND=auto` prefers `.vrm`, then `.fbx`, then `.glb`/`.gltf`, then Live2D, else procedural.
 
 ### Drop in a VRoid model
 
@@ -52,24 +52,23 @@ The workstation ships a **procedural** VTuber-style stage that reads a shared pa
 
 ### Drop in a VRChat model
 
-Native VRChat **`.vrca` AssetBundles cannot load in the browser**. Export a viewer-friendly format:
-
-1. From Blender / Unity (VRChat SDK avatar), export **glTF Binary (`.glb`)** or **glTF (`.gltf`)** with morph targets (SDK3 visemes + face blendshapes) and a humanoid skeleton.
-2. Or use **UniVRM** and drop a `.vrm` (handled by the `vroid` backend — same psyche bus).
+VRChat avatars are authored as **FBX** (Unity humanoid). Drop the FBX on the stage:
 
 ```text
 ~/.ophelia/avatar/
-  model.glb          # also: model.gltf, ophelia.glb, vrchat.glb, any *.glb/*.gltf
+  model.fbx          # also: ophelia.fbx, avatar.fbx, vrchat.fbx, any *.fbx
 ```
 
 ```env
 OPHELIA_AVATAR_ENABLED=true
 OPHELIA_AVATAR_DIR=~/.ophelia/avatar
-OPHELIA_AVATAR_MODEL=model.glb
+OPHELIA_AVATAR_MODEL=model.fbx
 OPHELIA_AVATAR_BACKEND=auto   # auto | procedural | live2d | vroid | vrchat
 ```
 
-The VRChat stage matches morph names such as `vrc.v_aa`, `vrc.v_oh`, `vrc.blink`, `Joy` / `Angry` / `Sorrow`, and common English aliases, then poses `Head` / `Neck` / `Spine` bones from the shared param bus.
+The stage loads FBX via three.js `FBXLoader`, matches morph names such as `vrc.v_aa`, `vrc.blink`, `Joy` / `Angry` / `Sorrow`, and poses `Head` / `Neck` / `Spine` bones from the shared param bus.
+
+Alternates: `.glb`/`.gltf` still work; UniVRM `.vrm` uses the `vroid` backend. Native **`.vrca` AssetBundles cannot load in the browser**.
 
 ### Drop in a Cubism model
 

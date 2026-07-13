@@ -162,12 +162,16 @@ def test_find_vrm(tmp_path: Path):
 
 def test_resolve_model_prefers_vrm_on_auto(tmp_path: Path):
     (tmp_path / "model.model3.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "model.fbx").write_bytes(b"fbx")
     (tmp_path / "model.glb").write_bytes(b"glb")
     (tmp_path / "model.vrm").write_bytes(b"vrm")
     kind, path = resolve_model(tmp_path, prefer="auto")
     assert kind == "vrm"
     assert path.name == "model.vrm"
-    kind_g, path_g = resolve_model(tmp_path, prefer="vrchat")
+    kind_f, path_f = resolve_model(tmp_path, prefer="vrchat")
+    assert kind_f == "fbx"
+    assert path_f.name == "model.fbx"
+    kind_g, path_g = resolve_model(tmp_path, prefer="gltf")
     assert kind_g == "gltf"
     assert path_g.name == "model.glb"
     kind2, path2 = resolve_model(tmp_path, prefer="live2d")
@@ -180,13 +184,13 @@ def test_find_vrchat(tmp_path: Path):
     glb = tmp_path / "ophelia.glb"
     glb.write_bytes(b"glb")
     assert find_vrchat(tmp_path) == glb
-    direct = tmp_path / "model.glb"
-    direct.write_bytes(b"glb")
-    assert find_vrchat(tmp_path) == direct
-    nested = tmp_path / "avatars" / "hero.gltf"
+    fbx = tmp_path / "model.fbx"
+    fbx.write_bytes(b"fbx")
+    assert find_vrchat(tmp_path) == fbx  # FBX preferred over glb
+    nested = tmp_path / "avatars" / "hero.fbx"
     nested.parent.mkdir(parents=True, exist_ok=True)
-    nested.write_text("{}", encoding="utf-8")
-    assert find_vrchat(tmp_path, "avatars/hero.gltf") == nested
+    nested.write_bytes(b"fbx")
+    assert find_vrchat(tmp_path, "avatars/hero.fbx") == nested
 
 
 def test_avatar_bridge_live2d_backend_when_model_present(tmp_path: Path):
@@ -225,6 +229,17 @@ def test_avatar_bridge_configured_vrm_wins(tmp_path: Path):
     assert state.model_url == "/avatar/mine.vrm"
 
 
+def test_avatar_bridge_vrchat_backend_when_fbx_present(tmp_path: Path):
+    (tmp_path / "model.fbx").write_bytes(b"fbx")
+    bridge = AvatarBridge(enabled=True, avatar_dir=tmp_path, backend="auto")
+    state = bridge.snapshot(label="happy", valence=0.6, arousal=0.5)
+    assert state.backend == "vrchat"
+    assert state.model_url == "/avatar/model.fbx"
+    assert state.model_ready is True
+    assert state.model_kind == "fbx"
+    assert state.vrchat.get("Joy", 0) > 0 or state.vrchat.get("happy", 0) > 0
+
+
 def test_avatar_bridge_vrchat_backend_when_glb_present(tmp_path: Path):
     (tmp_path / "model.glb").write_bytes(b"glb")
     bridge = AvatarBridge(enabled=True, avatar_dir=tmp_path, backend="auto")
@@ -236,15 +251,15 @@ def test_avatar_bridge_vrchat_backend_when_glb_present(tmp_path: Path):
     assert state.vrchat.get("Joy", 0) > 0 or state.vrchat.get("happy", 0) > 0
 
 
-def test_avatar_bridge_configured_glb_wins_over_vrm_when_forced(tmp_path: Path):
+def test_avatar_bridge_configured_fbx_wins_over_vrm_when_forced(tmp_path: Path):
     (tmp_path / "model.vrm").write_bytes(b"vrm")
-    (tmp_path / "mine.glb").write_bytes(b"glb")
+    (tmp_path / "mine.fbx").write_bytes(b"fbx")
     bridge = AvatarBridge(
         enabled=True,
         avatar_dir=tmp_path,
-        model_path="mine.glb",
+        model_path="mine.fbx",
         backend="vrchat",
     )
     state = bridge.snapshot(label="neutral", valence=0.0, arousal=0.3)
     assert state.backend == "vrchat"
-    assert state.model_url == "/avatar/mine.glb"
+    assert state.model_url == "/avatar/mine.fbx"
