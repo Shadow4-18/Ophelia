@@ -18,6 +18,7 @@ from ophelia.core.signals import Signals
 from ophelia.memory.curator import MemoryCurator
 from ophelia.memory.honcho_client import HonchoClient, load_honcho_config
 from ophelia.memory.store import MemoryStore
+from ophelia.mind.avatar import AvatarBridge
 from ophelia.mind.consciousness import ConsciousnessLoop
 from ophelia.mind.drives import DriveState
 from ophelia.mind.goals import GoalStore
@@ -78,6 +79,12 @@ class Workstation:
 
         self.psyche = PsycheState()
         self.drives = DriveState()
+        self.avatar = AvatarBridge(
+            enabled=settings.avatar_enabled,
+            avatar_dir=settings.avatar_dir,
+            model_path=settings.avatar_model,
+            backend=settings.avatar_backend,
+        )
         artifacts = settings.data_dir / "artifacts"
         self.tools = ToolRegistry(
             settings,
@@ -124,13 +131,29 @@ class Workstation:
         await self.bus.broadcast({"type": "inner", "text": text[:2000]})
 
     async def _notify_initiative(self, text: str) -> None:
+        if self.settings.avatar_enabled:
+            self.avatar.begin_speak(text or "")
+            await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
         await self.bus.broadcast({"type": "initiative", "text": text[:4000]})
         await self.bus.broadcast({"type": "chat", "role": "assistant", "text": text[:4000]})
 
     async def _status_loop(self) -> None:
         while not self.signals.terminate:
             await self.bus.broadcast({"type": "status", "data": self.status_dict()})
+            if self.settings.avatar_enabled:
+                await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
             await asyncio.sleep(2.5)
+
+    async def _avatar_loop(self) -> None:
+        """Higher-rate avatar ticks while speaking (lip sync + idle breath)."""
+        while not self.signals.terminate:
+            if self.settings.avatar_enabled and (
+                self.avatar.is_speaking or self.avatar.last() is None
+            ):
+                await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
+                await asyncio.sleep(0.08)
+            else:
+                await asyncio.sleep(0.4)
 
     async def _oauth_refresh_loop(self) -> None:
         if not self.stack.uses_xai_oauth():
@@ -162,6 +185,8 @@ class Workstation:
 
         self._tasks.append(asyncio.create_task(self._oauth_refresh_loop()))
         self._tasks.append(asyncio.create_task(self._status_loop()))
+        if self.settings.avatar_enabled:
+            self._tasks.append(asyncio.create_task(self._avatar_loop()))
 
         if self.curator:
             self._tasks.append(asyncio.create_task(self._curator_loop()))
@@ -218,12 +243,35 @@ class Workstation:
         self.drives.on_user_message()
         await self.memory.save_drives(self.drives)
         await self.signals.set_user_talking(True)
+        if self.settings.avatar_enabled:
+            self.avatar.begin_speak("")  # thinking / listening face → mouth idle
+            await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
         try:
             reply = await self.agent.run_turn(UI_CHANNEL, message)
         finally:
             await self.signals.set_user_talking(False)
+        if self.settings.avatar_enabled:
+            self.avatar.begin_speak(reply or "")
+            await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
         await self.bus.broadcast({"type": "chat", "role": "assistant", "text": reply})
         return reply
+
+    def avatar_dict(self) -> dict:
+        if not self.settings.avatar_enabled:
+            return {"enabled": False}
+        state = self.avatar.snapshot(
+            label=self.psyche.mood.label,
+            valence=self.psyche.mood.valence,
+            arousal=self.psyche.mood.arousal,
+            feelings=list(self.psyche.feelings[:6]),
+            boredom=self.drives.boredom,
+            curiosity=self.drives.curiosity,
+            social=self.drives.social,
+            expressiveness=self.drives.expressiveness,
+        )
+        data = state.to_dict()
+        data["enabled"] = True
+        return data
 
     async def history(self, limit: int = 50) -> list[dict]:
         rows = await self.memory.recent_across_channels([UI_CHANNEL], limit=limit)
@@ -267,6 +315,7 @@ class Workstation:
             "thought": (self.psyche.internal_thought or "")[:500],
             "drives": drives,
             "inner_tail": self.inner.tail(24) if self.inner else "",
+            "avatar": self.avatar_dict() if self.settings.avatar_enabled else {"enabled": False},
         }
 
     def inner_full_tail(self, lines: int = 80) -> str:

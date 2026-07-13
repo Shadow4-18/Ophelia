@@ -666,6 +666,20 @@ class Settings(BaseSettings):
     ui_port: int = Field(default=8765, alias="OPHELIA_UI_PORT")
     ui_open_browser: bool = Field(default=True, alias="OPHELIA_UI_OPEN_BROWSER")
 
+    # Avatar / Live2D / VRoid stage (workstation VTuber display)
+    avatar_enabled: bool = Field(default=True, alias="OPHELIA_AVATAR_ENABLED")
+    avatar_dir: Path = Field(default=OPHELIA_HOME / "avatar", alias="OPHELIA_AVATAR_DIR")
+    avatar_model: str | None = Field(
+        default=None,
+        alias="OPHELIA_AVATAR_MODEL",
+        description="Optional Cubism .model3.json, VRoid .vrm, or VRChat .fbx/.glb/.gltf",
+    )
+    avatar_backend: str = Field(
+        default="auto",
+        alias="OPHELIA_AVATAR_BACKEND",
+        description="auto | procedural | live2d | vroid | vrchat — auto prefers .vrm, then .fbx, then Live2D",
+    )
+
     # Public wiki/blog Ophelia owns and publishes (read-only for visitors)
     site_enabled: bool = Field(default=True, alias="OPHELIA_SITE_ENABLED")
     site_host: str = Field(default="127.0.0.1", alias="OPHELIA_SITE_HOST")
@@ -724,6 +738,8 @@ class Settings(BaseSettings):
                 self.mcp_config_path = env_home_path / "mcp.json"
             if not self.site_dir or self.site_dir == OPHELIA_HOME / "site":
                 self.site_dir = env_home_path / "site"
+            if not self.avatar_dir or self.avatar_dir == OPHELIA_HOME / "avatar":
+                self.avatar_dir = env_home_path / "avatar"
         return self
 
     def consciousness_on(self) -> bool:
@@ -938,4 +954,5 @@ def ensure_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.site_dir.mkdir(parents=True, exist_ok=True)
     (settings.site_dir / "assets").mkdir(parents=True, exist_ok=True)
+    settings.avatar_dir.mkdir(parents=True, exist_ok=True)
     OPHELIA_HOME.mkdir(parents=True, exist_ok=True)

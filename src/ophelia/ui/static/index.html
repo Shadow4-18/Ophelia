@@ -6,7 +6,16 @@
   <title>Ophelia — Workstation</title>
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -20,32 +29,24 @@
       <span id="runtimeLabel">connecting…</span>
       <span id="providerLabel">—</span>
       <button type="button" class="btn ghost" id="pauseBtn">pause mind</button>
+      <button type="button" class="btn ghost" id="panelToggle" aria-expanded="false">state</button>
     </div>
   </header>
 
-  <main class="grid">
-    <aside class="panel psyche-panel">
-      <h2>State</h2>
-      <div class="mood-ring">
-        <div class="mood-core" id="moodCore">
-          <span id="moodLabel">—</span>
+  <main class="layout">
+    <section class="stage-panel" aria-label="Avatar stage">
+      <div class="stage-atmosphere" aria-hidden="true"></div>
+      <canvas id="avatarCanvas" width="720" height="900"></canvas>
+      <canvas id="vrmCanvas" class="vrm-canvas" width="720" height="900" hidden></canvas>
+      <div class="stage-overlay">
+        <div class="stage-brand">OPHELIA</div>
+        <div class="stage-meta">
+          <span class="expr-pill" id="exprLabel">neutral</span>
+          <span class="backend-pill" id="backendLabel">procedural</span>
         </div>
+        <p class="stage-line" id="stageLine">presence online</p>
       </div>
-      <div class="metric-row">
-        <label>valence</label>
-        <div class="bar"><div class="fill valence" id="valenceBar"></div></div>
-      </div>
-      <div class="metric-row">
-        <label>arousal</label>
-        <div class="bar"><div class="fill arousal" id="arousalBar"></div></div>
-      </div>
-      <div class="chips" id="feelings"></div>
-      <h3>Drives</h3>
-      <div id="drives"></div>
-      <h3>Urges</h3>
-      <ul class="list" id="urges"></ul>
-      <p class="thought" id="thought"></p>
-    </aside>
+    </section>
 
     <section class="panel chat-panel">
       <h2>Channel</h2>
@@ -56,11 +57,37 @@
       </form>
     </section>
 
-    <aside class="panel inner-panel">
-      <h2>Inner monologue</h2>
-      <pre class="inner-stream" id="innerStream">(waiting for thoughts…)</pre>
-      <h2>System</h2>
-      <pre class="sys-log" id="sysLog"></pre>
+    <aside class="side-drawer" id="sideDrawer" hidden>
+      <div class="drawer-grid">
+        <div class="panel psyche-panel">
+          <h2>State</h2>
+          <div class="mood-ring">
+            <div class="mood-core" id="moodCore">
+              <span id="moodLabel">—</span>
+            </div>
+          </div>
+          <div class="metric-row">
+            <label>valence</label>
+            <div class="bar"><div class="fill valence" id="valenceBar"></div></div>
+          </div>
+          <div class="metric-row">
+            <label>arousal</label>
+            <div class="bar"><div class="fill arousal" id="arousalBar"></div></div>
+          </div>
+          <div class="chips" id="feelings"></div>
+          <h3>Drives</h3>
+          <div id="drives"></div>
+          <h3>Urges</h3>
+          <ul class="list" id="urges"></ul>
+          <p class="thought" id="thought"></p>
+        </div>
+        <div class="panel inner-panel">
+          <h2>Inner monologue</h2>
+          <pre class="inner-stream" id="innerStream">(waiting for thoughts…)</pre>
+          <h2>System</h2>
+          <pre class="sys-log" id="sysLog"></pre>
+        </div>
+      </div>
     </aside>
   </main>
 
@@ -68,8 +95,10 @@
     <span id="footModel">model —</span>
     <span id="footPressure">pressure —</span>
     <span id="footMind">mind active</span>
+    <span id="footAvatar">avatar —</span>
   </footer>
 
+  <script src="/static/avatar.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
