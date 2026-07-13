@@ -2035,6 +2035,50 @@ def _section_features(on_phone: bool) -> None:
     write_env_updates(updates)
     print(f"\n  Saved feature toggles.\n")
 
+    from ophelia.timeutil import configured_timezone_label, system_timezone_name, validate_timezone_name
+
+    current_tz = read_env_key("OPHELIA_TIMEZONE") or "system"
+    print(f"  Current timezone: {configured_timezone_label(current_tz)}")
+    print(f"  Host local zone:  {system_timezone_name()}")
+    tz_pick = radiolist(
+        "Clock timezone (authoritative time in every prompt)",
+        [
+            f"Follow system local time ({system_timezone_name()})",
+            "America/New_York (US Eastern)",
+            "America/Chicago (US Central)",
+            "America/Denver (US Mountain)",
+            "America/Los_Angeles (US Pacific)",
+            "UTC",
+            "Keep current / type a custom IANA name",
+        ],
+        description="Chat 'switch to EST' also works via the set_timezone tool.",
+    )
+    tz_map = {
+        0: "system",
+        1: "America/New_York",
+        2: "America/Chicago",
+        3: "America/Denver",
+        4: "America/Los_Angeles",
+        5: "UTC",
+    }
+    if tz_pick in tz_map:
+        write_env_updates({"OPHELIA_TIMEZONE": tz_map[tz_pick]})
+        print(f"\n  Saved OPHELIA_TIMEZONE={tz_map[tz_pick]}\n")
+    elif tz_pick == 6:
+        typed = prompt_text(
+            "IANA timezone, abbrev (EST), or 'system'",
+            default=current_tz,
+        ).strip()
+        if typed:
+            ok, normalized, detail = validate_timezone_name(typed)
+            if ok:
+                write_env_updates({"OPHELIA_TIMEZONE": normalized})
+                print(f"\n  Saved OPHELIA_TIMEZONE={normalized} ({detail})\n")
+            else:
+                print(f"\n  Not saved: {detail}\n")
+    else:
+        print("\n  Timezone unchanged.\n")
+
 
 def _section_health_check() -> None:
     print("\n  Running ophelia check...\n")

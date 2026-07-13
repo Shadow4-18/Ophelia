@@ -222,7 +222,7 @@ home phone:
 
 | Feature | Config | What it does |
 |---------|--------|--------------|
-| **Life context** | `OPHELIA_TIMEZONE`, `OPHELIA_WORK_DAYS`, `OPHELIA_WORK_HOURS` | Authoritative date/time + inferred owner state in every prompt (fixes wrong day/location) |
+| **Life context** | `OPHELIA_TIMEZONE` (`system`, IANA, or EST/PST/…), `OPHELIA_WORK_DAYS`, `OPHELIA_WORK_HOURS` | Authoritative date/time + inferred owner state in every prompt. Default `system` follows the host clock; chat “switch to EST” persists via the `set_timezone` tool (memory alone will not stick). |
 | **Sleep mode** | `OPHELIA_SLEEP_HOURS`, `OPHELIA_SLEEP_MODE` | Slower ticks, dreamier dreams, softer voice, blocks outreach |
 | **Wake word** | `OPHELIA_WAKE_WORD=true`, `OPHELIA_WAKE_WORD_NAME=ophelia` | Say her name → full listen → TTS reply (Termux mic) |
 | **Spontaneous voice** | `OPHELIA_SPONTANEOUS_VOICE=true` | Consciousness `message` → Telegram voice note (Kokoro) |
@@ -270,6 +270,7 @@ so you can see at a glance what's enabled and what's misconfigured.
 Example `.env` for warehouse shift (Thu–Fri–Wed–Tue nights):
 
 ```env
+# system = follow the host machine's local timezone; or pin an IANA zone
 OPHELIA_TIMEZONE=America/New_York
 OPHELIA_WORK_DAYS=Thu,Wed,Tue,Fri
 OPHELIA_WORK_HOURS=18-06

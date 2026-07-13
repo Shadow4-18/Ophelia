@@ -673,6 +673,27 @@ def _check_life_subsystems(report: SelfCheckReport, settings: Settings) -> None:
         required=False,
     )
 
+    from ophelia.timeutil import configured_timezone_label, validate_timezone_name
+
+    tz_cfg = settings.timezone or "system"
+    tz_valid, _, _tz_info = validate_timezone_name(tz_cfg)
+    report.add(
+        category="life",
+        name="Timezone setting",
+        ok=tz_valid,
+        detail=(
+            configured_timezone_label(tz_cfg)
+            if tz_valid
+            else f"invalid: {tz_cfg}"
+        ),
+        hint=(
+            ""
+            if tz_valid
+            else "set OPHELIA_TIMEZONE=America/New_York or OPHELIA_TIMEZONE=system"
+        ),
+        required=False,
+    )
+
     # Director (Tier A #1)
     if settings.director_enabled:
         report.add(

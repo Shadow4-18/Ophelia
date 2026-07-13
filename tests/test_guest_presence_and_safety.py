@@ -33,6 +33,7 @@ def test_guest_denied_blocks_phone_and_framework_control() -> None:
         "send_message_to_guest",
         "list_guests",
         "recall_guest_chat",
+        "set_timezone",
     ):
         assert name in GUEST_DENIED_TOOLS
 

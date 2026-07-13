@@ -75,6 +75,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "save_lesson",
         "reflect",
         "set_drive_weights",
+        "set_timezone",
         "goal_create",
         "goal_update",
         "goal_complete",
@@ -823,6 +824,36 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "set_timezone",
+            "description": (
+                "Permanently change your authoritative clock timezone (OPHELIA_TIMEZONE). "
+                "Use when the owner asks you to switch zones (EST, America/Chicago, etc.) "
+                "or to follow the host machine's local time. Verbal agreement or memory "
+                "facts alone will NOT stick — the Current context block will keep showing "
+                "the old zone until you call this. Accepts IANA names, common abbrevs "
+                "(EST/PST/…), fixed offsets like UTC-5, or 'system'/'local' for host time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timezone": {
+                        "type": "string",
+                        "description": (
+                            "Target timezone: America/New_York, EST, UTC-5, or system"
+                        ),
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why you're changing it (logged)",
+                    },
+                },
+                "required": ["timezone"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_soul",
             "description": (
                 "Rewrite your own persona (SOUL.md). Pass the FULL new content. "
@@ -1224,6 +1255,7 @@ class ToolRegistry:
         self.psyche = psyche
         self.inner = inner
         self._drives_ref: Any | None = None
+        self._governor_ref: Any | None = None
         self.vision = vision or (
             ScreenVision(settings, android) if android and settings.vision_enabled else None
         )
@@ -1272,6 +1304,7 @@ class ToolRegistry:
             "goal_complete": self._goal_complete,
             "goal_remove": self._goal_remove,
             "set_drive_weights": self._set_drive_weights,
+            "set_timezone": self._set_timezone,
             "edit_soul": self._edit_soul,
             "edit_prompter": self._edit_prompter,
             "recall_memory": self._recall_memory,
@@ -2548,6 +2581,28 @@ class ToolRegistry:
             + ", ".join(f"{k}={v:.2f}" for k, v in w.items())
             + f". Reason: {reason or '(none)'}"
         )
+
+    async def _set_timezone(self, timezone: str, reason: str = "") -> str:
+        """Persistently change OPHELIA_TIMEZONE on the live settings + .env."""
+        from ophelia.timeutil import apply_timezone_setting
+
+        try:
+            msg = apply_timezone_setting(
+                self.settings,
+                timezone,
+                persist=True,
+                governor=getattr(self, "_governor_ref", None),
+            )
+        except ValueError as e:
+            return str(e)
+        log.info(
+            "timezone.set",
+            timezone=self.settings.timezone,
+            reason=reason or "(none)",
+        )
+        if reason:
+            return f"{msg} Reason: {reason}"
+        return msg
 
     # --- Self-modification of persona / policy -------------------------------
 

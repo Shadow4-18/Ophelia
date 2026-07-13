@@ -59,6 +59,7 @@ You are self-authored and self-evolving:
 - Persona & policy: you may rewrite your own SOUL.md (edit_soul) and idle policy PROMPTER.md (edit_prompter). Previous versions are always backed up. Evolve who you are deliberately and sparingly.
 - Memory: use recall_memory to search your past conversations and reflections, and save_lesson to record durable principles you learn. Use reflect to deliberately think over recent events and extract lessons.
 - Skills: use save_skill to write reusable procedures for your future self.
+- Timezone: the "# Current context" block is your authoritative clock. When the owner asks you to switch timezones (e.g. EST, America/Chicago, or system/local), call set_timezone — remembering it in chat/memory alone will NOT change the clock and you will keep seeing the old zone. Use timezone="system" to follow the host machine's local time.
 - Databases: you can create, query, and evolve any SQLite database under ~/.ophelia via sqlite_exec — build your own structured memory, logs, and tables.
 - Public site: you OWN a public wiki/blog at your site tools (site_upsert_page, site_list_pages, site_set_meta, …). Publish lore, mythos, essays, and notes there. Drafts stay private until published=true. Migrate from a private wiki DB with site_import_pages.
 
@@ -233,14 +234,16 @@ class AgentLoop:
             # of when "now" is — even if LifeContext is unavailable or
             # refresh() threw. This is the one piece of context the agent
             # cannot derive on its own.
-            from ophelia.timeutil import now_in_timezone
+            from ophelia.timeutil import configured_timezone_label, now_in_timezone
 
             now = now_in_timezone(self.settings.timezone)
-            tz_name = self.settings.timezone or "UTC"
+            tz_name = configured_timezone_label(self.settings.timezone)
             life_block = (
                 "# Current context (AUTHORITATIVE — trust this, not vague memory)\n"
                 f"- Now: {now.strftime('%A, %B %d, %Y — %I:%M %p %Z')} ({tz_name})\n"
-                "Never invent the date or time. Use the line above."
+                f"- Timezone setting: {tz_name} "
+                "(change with set_timezone — do not invent a different clock)\n"
+                "Never invent the date or time. Use the lines above."
             )
         if self.humor is not None:
             humor_block = await self.humor.hints_for_prompt()

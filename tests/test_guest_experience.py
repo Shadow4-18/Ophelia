@@ -50,6 +50,7 @@ def test_identity_tools_still_denied_for_guests():
         "recall_memory",
         "sqlite_exec",
         "run_code",
+        "set_timezone",
     ):
         assert critical in GUEST_DENIED_TOOLS, critical
 

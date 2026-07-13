@@ -18,7 +18,7 @@ import structlog
 
 from ophelia.config import Settings
 from ophelia.core.signals import Signals
-from ophelia.timeutil import resolve_timezone
+from ophelia.timeutil import configured_timezone_label, resolve_timezone
 
 log = structlog.get_logger()
 
@@ -259,7 +259,10 @@ class LifeContext:
 
         return (
             f"# Current context (AUTHORITATIVE — trust this, not vague memory)\n"
-            f"- Now: {dt.strftime('%A, %B %d, %Y — %I:%M %p %Z')} ({self.settings.timezone or 'UTC'})\n"
+            f"- Now: {dt.strftime('%A, %B %d, %Y — %I:%M %p %Z')} "
+            f"({configured_timezone_label(self.settings.timezone)})\n"
+            f"- Timezone setting: {configured_timezone_label(self.settings.timezone)} "
+            f"(change with set_timezone — do not invent a different clock)\n"
             f"- Ophelia body location: {body_loc}{wifi_note}\n"
             f"- Owner likely state: **{state.replace('_', ' ')}** "
             f"(last owner message {silent_h:.1f}h ago)\n"
