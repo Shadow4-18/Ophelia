@@ -6,12 +6,15 @@ from pathlib import Path
 
 from ophelia.mind.avatar import (
     AvatarBridge,
+    animation_for,
     expression_from_mood,
     find_model3,
     find_vrchat,
     find_vrm,
+    lip_sync_frame,
     mouth_envelope,
     params_from_psyche,
+    resolve_activity,
     resolve_model,
     vrm_weights_from_expression,
     vrchat_weights_from_expression,
@@ -26,19 +29,72 @@ def test_expression_sad_from_valence():
     assert expression_from_mood(label="low", valence=-0.5, arousal=0.3) == "sad"
 
 
-def test_expression_from_feeling_keywords():
+def test_expression_from_thought_and_urges():
+    assert (
+        expression_from_mood(
+            label="neutral",
+            valence=0.0,
+            arousal=0.4,
+            thought="I feel so lonely tonight",
+        )
+        == "sad"
+    )
+    assert (
+        expression_from_mood(
+            label="neutral",
+            valence=0.1,
+            arousal=0.5,
+            urges=["want to tease", "play"],
+        )
+        == "happy"
+    )
     assert (
         expression_from_mood(
             label="neutral", valence=0.0, arousal=0.4, feelings=["shy blush"]
         )
         == "shy"
     )
+
+
+def test_expression_thinking_activity():
     assert (
         expression_from_mood(
-            label="neutral", valence=0.1, arousal=0.8, feelings=["surprised"]
+            label="neutral", valence=0.0, arousal=0.4, activity="thinking"
         )
-        == "surprised"
+        == "thinking"
     )
+
+
+def test_resolve_activity_modes():
+    assert resolve_activity(speaking=True, speak_text="hi") == "speaking"
+    assert resolve_activity(speaking=True, speak_text="", agent_thinking=True) == "thinking"
+    assert resolve_activity(speaking=False, user_talking=True) == "listening"
+    assert (
+        resolve_activity(speaking=False, seconds_since_agent=0.5) == "reacting"
+    )
+    assert resolve_activity(speaking=False) == "idle"
+
+
+def test_animation_for_activity():
+    assert animation_for("speaking", "happy") == "talk"
+    assert animation_for("thinking", "neutral") == "think"
+    assert animation_for("listening", "curious") == "listen"
+    assert animation_for("idle", "sleepy", arousal=0.1) == "idle_breathe"
+
+
+def test_lip_sync_frame_visemes_and_pause():
+    mouth, viseme, weights = lip_sync_frame("aaaaaa", 0.2)
+    assert mouth > 0.3
+    assert viseme in ("aa", "oh", "E", "ih", "ou")
+    assert sum(weights.values()) > 0
+
+    # During an explicit pause, mouth should close
+    paused = "hello [pause:1.0s] there"
+    # Estimate: "hello " ~6 chars / 14 cps ≈ 0.43s, then pause
+    m2, v2, w2 = lip_sync_frame(paused, 0.7)
+    assert m2 == 0.0
+    assert v2 == "sil"
+    assert w2.get("sil", 0) >= 0.9
 
 
 def test_expression_sleepy_from_boredom():
@@ -116,16 +172,31 @@ def test_avatar_bridge_snapshot_and_speak(tmp_path: Path):
     bridge = AvatarBridge(enabled=True, avatar_dir=tmp_path, backend="procedural")
     idle = bridge.snapshot(label="neutral", valence=0.1, arousal=0.3)
     assert idle.backend == "procedural"
+    assert idle.activity == "idle"
+    assert idle.animation in ("idle_breathe", "idle_sway")
     assert idle.expression in ("neutral", "happy", "curious", "sleepy")
     assert idle.model_url is None
     assert "happy" in idle.vrm or "neutral" in idle.vrm
 
-    bridge.begin_speak("Hello from Ophelia")
+    bridge.note_user_text("hey what's up")
+    bridge.begin_thinking()
+    thinking = bridge.snapshot(
+        label="neutral", valence=0.1, arousal=0.4, agent_thinking=True
+    )
+    assert thinking.activity == "thinking"
+    assert thinking.animation == "think"
+    assert thinking.speaking is False
+
+    bridge.begin_speak("Hello from Ophelia", source="chat")
     assert bridge.is_speaking
     talking = bridge.snapshot(label="happy", valence=0.5, arousal=0.5)
+    assert talking.activity == "speaking"
     assert talking.speaking is True
+    assert talking.animation == "talk"
     assert "ParamMouthOpenY" in talking.params
-    assert talking.vrm["aa"] >= 0
+    assert talking.vrm["aa"] >= 0 or talking.mouth_open >= 0
+    assert talking.viseme
+    assert talking.gesture.get("breath_rate", 0) > 0
 
     bridge.end_speak()
     assert bridge.is_speaking is False

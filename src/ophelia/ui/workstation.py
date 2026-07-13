@@ -132,10 +132,11 @@ class Workstation:
 
     async def _notify_initiative(self, text: str) -> None:
         if self.settings.avatar_enabled:
-            self.avatar.begin_speak(text or "")
+            self.avatar.begin_speak(text or "", source="initiative")
             await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
         await self.bus.broadcast({"type": "initiative", "text": text[:4000]})
         await self.bus.broadcast({"type": "chat", "role": "assistant", "text": text[:4000]})
+        self.signals.last_agent_message_at = time.time()
 
     async def _status_loop(self) -> None:
         while not self.signals.terminate:
@@ -145,10 +146,13 @@ class Workstation:
             await asyncio.sleep(2.5)
 
     async def _avatar_loop(self) -> None:
-        """Higher-rate avatar ticks while speaking (lip sync + idle breath)."""
+        """Higher-rate avatar ticks while speaking / thinking / reacting."""
         while not self.signals.terminate:
             if self.settings.avatar_enabled and (
-                self.avatar.is_speaking or self.avatar.last() is None
+                self.avatar.is_active
+                or self.signals.agent_thinking
+                or self.signals.user_talking
+                or self.avatar.last() is None
             ):
                 await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
                 await asyncio.sleep(0.08)
@@ -244,14 +248,18 @@ class Workstation:
         await self.memory.save_drives(self.drives)
         await self.signals.set_user_talking(True)
         if self.settings.avatar_enabled:
-            self.avatar.begin_speak("")  # thinking / listening face → mouth idle
+            self.avatar.note_user_text(message)
+            self.avatar.begin_thinking()
             await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
+        await self.signals.set_agent_thinking(True)
         try:
             reply = await self.agent.run_turn(UI_CHANNEL, message)
         finally:
+            await self.signals.set_agent_thinking(False)
             await self.signals.set_user_talking(False)
+        self.signals.last_agent_message_at = time.time()
         if self.settings.avatar_enabled:
-            self.avatar.begin_speak(reply or "")
+            self.avatar.begin_speak(reply or "", source="chat")
             await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
         await self.bus.broadcast({"type": "chat", "role": "assistant", "text": reply})
         return reply
@@ -259,6 +267,17 @@ class Workstation:
     def avatar_dict(self) -> dict:
         if not self.settings.avatar_enabled:
             return {"enabled": False}
+        now = time.time()
+        since_user = (
+            now - self.signals.last_user_message_at
+            if self.signals.last_user_message_at
+            else None
+        )
+        since_agent = (
+            now - self.signals.last_agent_message_at
+            if self.signals.last_agent_message_at
+            else None
+        )
         state = self.avatar.snapshot(
             label=self.psyche.mood.label,
             valence=self.psyche.mood.valence,
@@ -268,6 +287,12 @@ class Workstation:
             curiosity=self.drives.curiosity,
             social=self.drives.social,
             expressiveness=self.drives.expressiveness,
+            urges=list(self.psyche.urges[:4]),
+            thought=self.psyche.internal_thought or "",
+            user_talking=self.signals.user_talking,
+            agent_thinking=self.signals.agent_thinking,
+            seconds_since_user=since_user,
+            seconds_since_agent=since_agent,
         )
         data = state.to_dict()
         data["enabled"] = True

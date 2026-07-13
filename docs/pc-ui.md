@@ -19,13 +19,27 @@ ophelia ui --no-browser
 
 | Panel | Shows |
 |-------|--------|
-| **Stage** | Avatar display — procedural, Live2D, VRoid/VRM, or VRChat glTF — driven by mood + lip sync |
+| **Stage** | Avatar — context-driven expression, animations, lip sync (procedural / Live2D / VRoid / VRChat) |
 | **Channel** | Chat with Ophelia (same memory as `ui:local` session) |
 | **State** (toggle) | Mood, valence/arousal, drives, urges, last inner thought |
 | **Inner monologue** (toggle) | Live stream from `~/.ophelia/data/inner_monologue.md` |
 | **Status bar** | Model, initiative pressure, consciousness, avatar backend |
 
 Consciousness runs in the background — spontaneous messages appear in chat (highlighted) and animate the avatar. **Pause mind** stops outreach without stopping the server. Use **state** in the top bar to open psyche + inner panels.
+
+### Performance (expressions · animations · lip sync)
+
+The avatar bus is driven by psyche **and** the active conversation:
+
+| Field | Meaning |
+|-------|---------|
+| `activity` | `idle` \| `listening` \| `thinking` \| `speaking` \| `reacting` |
+| `animation` | Gesture id (`idle_breathe`, `think`, `talk`, `nod`, `react`, …) |
+| `expression` | From mood, feelings, urges, inner thought, and the current chat turn |
+| `viseme` / `visemes` | Approximate lip shapes (honors `[pause:Xs]` in spoken text) |
+| `gesture` | Breath rate, sway, lean-in, nod, blink rate for the stage |
+
+Flow: user message → listening/thinking → reply with lip sync → brief reacting → idle. Initiative lines set `speak_source=initiative`.
 
 ## Avatar / Live2D / VRoid / VRChat
 

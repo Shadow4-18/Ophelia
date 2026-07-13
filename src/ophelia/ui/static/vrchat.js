@@ -227,7 +227,8 @@ export class VrchatStage {
     const lower = name.toLowerCase();
     for (const m of this._morphs) {
       if (m.name === name || m.nameLower === lower) {
-        m.mesh.morphTargetInfluences[m.index] = target;
+        const cur = m.mesh.morphTargetInfluences[m.index] || 0;
+        m.mesh.morphTargetInfluences[m.index] = cur * 0.55 + target * 0.45;
       }
     }
   }
@@ -240,10 +241,11 @@ export class VrchatStage {
   }
 
   _applyPose(params) {
+    const g = this._state?.gesture || {};
     const ax = (params?.ParamAngleX || 0) + this._pointer.x * 10;
-    const ay = (params?.ParamAngleY || 0) + this._pointer.y * -8;
+    const ay = (params?.ParamAngleY || 0) + this._pointer.y * -8 + (g.nod || 0) * 10;
     const az = params?.ParamAngleZ || 0;
-    const bodyX = params?.ParamBodyAngleX || 0;
+    const bodyX = (params?.ParamBodyAngleX || 0) + (g.lean_in || 0) * 6;
     const breath = params?.ParamBreath ?? 0.5;
 
     const head = this._bones.head;
