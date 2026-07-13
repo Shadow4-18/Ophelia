@@ -1,6 +1,6 @@
 # PC Workstation UI
 
-Neuro-style **command center** in your browser — chat, live mood/drives, inner monologue stream. No Telegram required.
+Neuro-style **command center** in your browser — avatar stage, chat, live mood/drives, inner monologue. No Telegram required.
 
 ## Launch
 
@@ -19,12 +19,34 @@ ophelia ui --no-browser
 
 | Panel | Shows |
 |-------|--------|
-| **State** | Mood, valence/arousal, drives, urges, last inner thought |
+| **Stage** | Live2D-ready avatar (procedural by default) driven by mood + lip sync |
 | **Channel** | Chat with Ophelia (same memory as `ui:local` session) |
-| **Inner monologue** | Live stream from `~/.ophelia/data/inner_monologue.md` |
-| **Status bar** | Model, initiative pressure, consciousness on/paused |
+| **State** (toggle) | Mood, valence/arousal, drives, urges, last inner thought |
+| **Inner monologue** (toggle) | Live stream from `~/.ophelia/data/inner_monologue.md` |
+| **Status bar** | Model, initiative pressure, consciousness, avatar backend |
 
-Consciousness runs in the background — spontaneous messages appear in chat (highlighted). **Pause mind** stops outreach without stopping the server.
+Consciousness runs in the background — spontaneous messages appear in chat (highlighted) and animate the avatar. **Pause mind** stops outreach without stopping the server. Use **state** in the top bar to open psyche + inner panels.
+
+## Avatar / Live2D
+
+The workstation ships a **procedural** VTuber-style stage that reads the same parameter bus a Cubism model would (`ParamMouthOpenY`, `ParamAngleX`, …). Mood, drives, and speaking state stream over WebSocket (`avatar` events) and `GET /api/avatar`.
+
+### Drop in a Cubism model
+
+```text
+~/.ophelia/avatar/
+  model.model3.json
+  …textures / motions…
+```
+
+```env
+OPHELIA_AVATAR_ENABLED=true
+OPHELIA_AVATAR_DIR=~/.ophelia/avatar
+OPHELIA_AVATAR_MODEL=model.model3.json
+OPHELIA_AVATAR_BACKEND=auto   # auto | procedural | live2d
+```
+
+Model files are served at `/avatar/…`. Cubism Core is **not** bundled (Live2D license); with `backend=auto` the UI stays procedural until you load Cubism/PIXI yourself. The parameter bus is ready either way — VTube Studio / custom bridges can subscribe to the same `/api/avatar` + `/ws` events.
 
 ## Env
 
@@ -32,6 +54,7 @@ Consciousness runs in the background — spontaneous messages appear in chat (hi
 OPHELIA_UI_HOST=127.0.0.1
 OPHELIA_UI_PORT=8765
 OPHELIA_UI_OPEN_BROWSER=true
+OPHELIA_AVATAR_ENABLED=true
 ```
 
 Configure a provider first — see [pc-setup.md](pc-setup.md).
@@ -43,6 +66,9 @@ Configure a provider first — see [pc-setup.md](pc-setup.md).
 | Platform | PC browser | Phone/desktop app |
 | Phone tools | off by default | N/A on PC |
 | Consciousness | yes | yes |
+| Avatar stage | yes (procedural / Live2D-ready) | no |
 | Voice STT/TTS | no (yet) | yes (xAI) |
 
 Use **both**: run `ophelia ui` on PC and `ophelia run` on phone with Telegram — separate channels unless you unify later.
+
+See also: [neuro-ensemble.md](neuro-ensemble.md) (avatar mind roadmap).

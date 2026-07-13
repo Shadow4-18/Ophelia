@@ -7,10 +7,15 @@ const chatForm = $("chatForm");
 const chatInput = $("chatInput");
 const sendBtn = $("sendBtn");
 const pauseBtn = $("pauseBtn");
+const panelToggle = $("panelToggle");
+const sideDrawer = $("sideDrawer");
 
 let ws = null;
 let paused = false;
 let sending = false;
+
+const stage = new OpheliaAvatarStage($("avatarCanvas"));
+stage.start();
 
 function appendMessage(role, content, extraClass = "") {
   const div = document.createElement("div");
@@ -28,6 +33,22 @@ function logSystem(text) {
 function pct(v, min = 0, max = 1) {
   const n = Math.max(min, Math.min(max, Number(v) || 0));
   return `${((n - min) / (max - min)) * 100}%`;
+}
+
+function applyAvatar(data) {
+  if (!data) return;
+  stage.apply(data);
+  $("exprLabel").textContent = data.expression || "neutral";
+  $("backendLabel").textContent = data.backend || "procedural";
+  $("footAvatar").textContent = data.enabled === false
+    ? "avatar off"
+    : `avatar ${data.backend || "procedural"}${data.speaking ? " · speaking" : ""}`;
+  const line = data.speaking
+    ? "speaking…"
+    : data.expression
+      ? `${data.expression} presence`
+      : "presence online";
+  $("stageLine").textContent = line;
 }
 
 function renderStatus(data) {
@@ -79,6 +100,8 @@ function renderStatus(data) {
   $("thought").textContent = data.thought ? `"${data.thought}"` : "";
   paused = !!data.consciousness_paused;
   pauseBtn.textContent = paused ? "resume mind" : "pause mind";
+
+  if (data.avatar) applyAvatar(data.avatar);
 }
 
 function connect() {
@@ -106,6 +129,9 @@ function connect() {
     switch (msg.type) {
       case "status":
         renderStatus(msg.data);
+        break;
+      case "avatar":
+        applyAvatar(msg.data);
         break;
       case "chat":
         appendMessage(msg.role === "user" ? "user" : "assistant", msg.text || msg.content || "");
@@ -144,6 +170,7 @@ chatForm.addEventListener("submit", async (e) => {
   typing.textContent = "Ophelia";
   messagesEl.appendChild(typing);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+  $("stageLine").textContent = "thinking…";
 
   try {
     const r = await fetch("/api/chat", {
@@ -153,7 +180,15 @@ chatForm.addEventListener("submit", async (e) => {
     });
     const data = await r.json();
     typing.remove();
-    if (data.reply) appendMessage("assistant", data.reply);
+    // Reply also arrives via WS; avoid duplicate if already streamed
+    if (data.reply) {
+      const last = messagesEl.lastElementChild;
+      const already =
+        last &&
+        last.classList.contains("assistant") &&
+        last.textContent === data.reply;
+      if (!already) appendMessage("assistant", data.reply);
+    }
   } catch (err) {
     typing.remove();
     appendMessage("system", `Error: ${err.message}`, "system");
@@ -172,6 +207,15 @@ pauseBtn.addEventListener("click", async () => {
   logSystem(paused ? "consciousness paused" : "consciousness resumed");
 });
 
+panelToggle.addEventListener("click", () => {
+  const open = sideDrawer.hasAttribute("hidden");
+  if (open) sideDrawer.removeAttribute("hidden");
+  else sideDrawer.setAttribute("hidden", "");
+  panelToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  panelToggle.textContent = open ? "hide state" : "state";
+  document.body.classList.toggle("drawer-open", open);
+});
+
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -179,5 +223,17 @@ chatInput.addEventListener("keydown", (e) => {
   }
 });
 
+function resizeCanvas() {
+  const canvas = $("avatarCanvas");
+  const panel = canvas.parentElement;
+  const rect = panel.getBoundingClientRect();
+  const cssW = Math.max(280, Math.floor(rect.width));
+  const cssH = Math.max(360, Math.floor(rect.height));
+  canvas.width = cssW;
+  canvas.height = cssH;
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
 connect();
 chatInput.focus();

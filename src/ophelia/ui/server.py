@@ -40,6 +40,10 @@ def create_app(workstation: Workstation) -> FastAPI:
     async def status() -> dict[str, Any]:
         return workstation.status_dict()
 
+    @app.get("/api/avatar")
+    async def avatar() -> dict[str, Any]:
+        return workstation.avatar_dict()
+
     @app.get("/api/history")
     async def history() -> list[dict]:
         return await workstation.history()
@@ -77,6 +81,8 @@ def create_app(workstation: Workstation) -> FastAPI:
         await workstation.bus.connect(ws)
         try:
             await ws.send_json({"type": "status", "data": workstation.status_dict()})
+            if workstation.settings.avatar_enabled:
+                await ws.send_json({"type": "avatar", "data": workstation.avatar_dict()})
             hist = await workstation.history()
             for row in hist:
                 await ws.send_json(
@@ -96,6 +102,14 @@ def create_app(workstation: Workstation) -> FastAPI:
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    avatar_dir = workstation.settings.avatar_dir
+    if avatar_dir.is_dir():
+        app.mount(
+            "/avatar",
+            StaticFiles(directory=str(avatar_dir)),
+            name="avatar",
+        )
 
     return app
 
