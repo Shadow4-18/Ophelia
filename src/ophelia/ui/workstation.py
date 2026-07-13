@@ -94,6 +94,7 @@ class Workstation:
             vision=self.vision,
             games=self.games,
         )
+        self.tools._governor_ref = self.governor
         self.agent = AgentLoop(
             settings,
             self.memory,
@@ -178,6 +179,8 @@ class Workstation:
         self.drives = await self.memory.load_drives()
         self.agent.psyche = self.psyche
         self.agent.drives = self.drives
+        self.tools._drives_ref = self.drives
+        self.tools._governor_ref = self.governor
 
         if self.stack.uses_xai_oauth():
             xai = self.stack.xai_backend()

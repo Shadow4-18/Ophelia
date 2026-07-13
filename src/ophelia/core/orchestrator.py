@@ -117,6 +117,7 @@ class Orchestrator:
             psyche=self.psyche,
         )
         self.tools._drives_ref = self.drives
+        self.tools._governor_ref = self.governor
         self.agent = AgentLoop(
             settings,
             self.memory,

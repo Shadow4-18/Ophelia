@@ -16,7 +16,7 @@ from ophelia.timeutil import resolve_timezone
 class InitiativeGovernor:
     max_spontaneous_per_hour: int = 4
     quiet_hours: str = ""  # e.g. "23-08" = 11pm to 8am
-    timezone: str = "UTC"
+    timezone: str = "system"
     log_path: Path = field(default_factory=lambda: OPHELIA_HOME / "data" / "initiative_log.jsonl")
     _recent: list[float] = field(default_factory=list)
 
@@ -25,7 +25,7 @@ class InitiativeGovernor:
         return cls(
             max_spontaneous_per_hour=settings.max_spontaneous_per_hour,
             quiet_hours=settings.quiet_hours or "",
-            timezone=settings.timezone or "UTC",
+            timezone=settings.timezone or "system",
             log_path=settings.data_dir / "initiative_log.jsonl",
         )
 

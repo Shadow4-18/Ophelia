@@ -505,9 +505,12 @@ class Settings(BaseSettings):
 
     # Life context — authoritative time/schedule/presence (phone is stationary at home)
     timezone: str = Field(
-        default="UTC",
+        default="system",
         alias="OPHELIA_TIMEZONE",
-        description="IANA timezone e.g. America/New_York",
+        description=(
+            "Clock timezone: IANA name (America/New_York), common abbrev "
+            "(EST), or 'system' to follow the host local timezone"
+        ),
     )
     work_days: str = Field(
         default="",

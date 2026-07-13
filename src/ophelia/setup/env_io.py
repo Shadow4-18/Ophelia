@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -11,6 +12,10 @@ _ENV_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
 def env_path() -> Path:
+    """Resolve the live .env path, honoring OPHELIA_HOME if set after import."""
+    home = os.environ.get("OPHELIA_HOME")
+    if home:
+        return Path(home).expanduser() / ".env"
     return OPHELIA_HOME / ".env"
 
 
