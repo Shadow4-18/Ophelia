@@ -142,7 +142,9 @@ export class VrmStage {
     const em = this.vrm?.expressionManager;
     if (!em) return;
     try {
-      em.setValue(name, Math.max(0, Math.min(1, value)));
+      const cur = typeof em.getValue === "function" ? em.getValue(name) : 0;
+      const next = cur * 0.55 + Math.max(0, Math.min(1, value)) * 0.45;
+      em.setValue(name, next);
     } catch {
       /* preset missing on some models */
     }
@@ -157,10 +159,11 @@ export class VrmStage {
 
   _applyPose(params) {
     if (!this.vrm?.humanoid) return;
+    const g = this._state?.gesture || {};
     const ax = (params?.ParamAngleX || 0) + this._pointer.x * 10;
-    const ay = (params?.ParamAngleY || 0) + this._pointer.y * -8;
+    const ay = (params?.ParamAngleY || 0) + this._pointer.y * -8 + (g.nod || 0) * 10;
     const az = params?.ParamAngleZ || 0;
-    const bodyX = params?.ParamBodyAngleX || 0;
+    const bodyX = (params?.ParamBodyAngleX || 0) + (g.lean_in || 0) * 6;
     const breath = params?.ParamBreath ?? 0.5;
 
     const head = this.vrm.humanoid.getNormalizedBoneNode("head");

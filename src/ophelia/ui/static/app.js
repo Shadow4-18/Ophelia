@@ -39,21 +39,28 @@ function applyAvatar(data) {
   if (!data) return;
   stage.apply(data);
   $("exprLabel").textContent = data.expression || "neutral";
-  $("backendLabel").textContent = data.backend || "procedural";
+  const backend = data.backend || "procedural";
+  const activity = data.activity || (data.speaking ? "speaking" : "idle");
+  $("backendLabel").textContent = `${backend} · ${activity}`;
   $("footAvatar").textContent = data.enabled === false
     ? "avatar off"
-    : `avatar ${data.backend || "procedural"}${data.speaking ? " · speaking" : ""}`;
-  const line = data.speaking
-    ? "speaking…"
-    : (data.backend === "vroid" || data.backend === "vrchat") && !stage._webgl?.ready
-      ? (stage._webgl?.loading || stage._webglLoading
-          ? `loading ${data.backend === "vrchat" ? "VRChat" : "VRoid"}…`
-          : (stage._webgl?.error
-              ? `${data.backend} load failed`
-              : `${data.expression || "neutral"} presence`))
-      : data.expression
-        ? `${data.expression} presence`
-        : "presence online";
+    : `avatar ${backend} · ${activity}${data.animation ? ` · ${data.animation}` : ""}`;
+  let line;
+  if (data.speaking || activity === "speaking") {
+    line = data.viseme && data.viseme !== "sil" ? `speaking · ${data.viseme}` : "speaking…";
+  } else if (activity === "thinking") {
+    line = data.thought_snippet ? `thinking — ${data.thought_snippet.slice(0, 48)}` : "thinking…";
+  } else if (activity === "listening") {
+    line = "listening…";
+  } else if (activity === "reacting") {
+    line = `${data.expression || "neutral"} reaction`;
+  } else if ((backend === "vroid" || backend === "vrchat") && !stage._webgl?.ready) {
+    line = stage._webgl?.loading || stage._webglLoading
+      ? `loading ${backend === "vrchat" ? "VRChat" : "VRoid"}…`
+      : (stage._webgl?.error ? `${backend} load failed` : `${data.expression || "neutral"} presence`);
+  } else {
+    line = data.expression ? `${data.expression} presence` : "presence online";
+  }
   $("stageLine").textContent = line;
 }
 

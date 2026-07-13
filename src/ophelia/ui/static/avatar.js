@@ -29,11 +29,15 @@
       this.params = { ...DEFAULT_PARAMS };
       this.expression = "neutral";
       this.speaking = false;
+      this.activity = "idle";
+      this.animation = "idle_breathe";
+      this.gesture = {};
       this.backend = "procedural";
       this.modelUrl = null;
       this.pointer = { x: 0, y: 0 };
       this._blinkUntil = 0;
       this._nextBlink = performance.now() + 2800;
+      this._blinkRate = 1;
       this._raf = 0;
       this._live2d = null;
       this._vrm = null;
@@ -76,13 +80,22 @@
       if (!state || state.enabled === false) return;
       this.expression = state.expression || "neutral";
       this.speaking = !!state.speaking;
+      this.activity = state.activity || (this.speaking ? "speaking" : "idle");
+      this.animation = state.animation || "idle_breathe";
+      this.gesture = state.gesture || {};
       this.backend = state.backend || "procedural";
       this.modelUrl = state.model_url || null;
+      this._blinkRate = Number(this.gesture.blink_rate) || 1;
       if (state.params) {
         this.params = { ...DEFAULT_PARAMS, ...state.params };
       }
       if (typeof state.mouth_open === "number") {
         this.params.ParamMouthOpenY = state.mouth_open;
+      }
+      // Prefer server eye openness when present
+      if (typeof state.blink === "number") {
+        this.params.ParamEyeLOpen = state.blink;
+        this.params.ParamEyeROpen = state.blink;
       }
       if ((this.backend === "vroid" || this.backend === "vrchat") && this.modelUrl) {
         this._ensureWebgl(state);
@@ -165,9 +178,10 @@
     }
 
     _tickBlink(now) {
+      const rate = Math.max(0.4, this._blinkRate || 1);
       if (now >= this._nextBlink) {
-        this._blinkUntil = now + 140;
-        this._nextBlink = now + 2400 + Math.random() * 3200;
+        this._blinkUntil = now + (this.activity === "thinking" ? 180 : 140);
+        this._nextBlink = now + (2400 + Math.random() * 3200) / rate;
       }
     }
 
@@ -189,12 +203,14 @@
       ctx.fillRect(0, 0, w, h);
 
       const breath = this._p("ParamBreath");
+      const lean = Number(this.gesture.lean_in) || 0;
+      const nodG = Number(this.gesture.nod) || 0;
       const ax = this._p("ParamAngleX") + this.pointer.x * 8;
-      const ay = this._p("ParamAngleY") + this.pointer.y * -6;
+      const ay = this._p("ParamAngleY") + this.pointer.y * -6 + nodG * 6;
       const az = (this._p("ParamAngleZ") * Math.PI) / 180;
-      const bodyX = this._p("ParamBodyAngleX");
+      const bodyX = this._p("ParamBodyAngleX") + lean * 6;
       const cx = w * 0.5 + bodyX * 2.2;
-      const cy = h * 0.58 + (breath - 0.5) * 10;
+      const cy = h * 0.58 + (breath - 0.5) * 10 - lean * 8;
       const scale = Math.min(w / 720, h / 900) * 1.15;
 
       ctx.save();

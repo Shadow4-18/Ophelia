@@ -154,10 +154,10 @@ Each mind gets its own dataset; director learns routing from session logs.
 3. **Reaction** — small fast model + vision hooks for games
 4. **Voice mind** — decouple TTS emotion from chat LLM
 5. **Avatar bridge** — VTube Studio / similar via MCP or custom tool
-   - **Partial (now):** workstation stage + psyche → Live2D params + VRoid/VRM + VRChat glTF morphs + WS `/api/avatar`
+   - **Partial (now):** workstation stage + psyche/conversation → expressions, activity animations, lip sync (visemes + pause tags) + WS `/api/avatar`
    - **VRoid:** drop a `.vrm` in `~/.ophelia/avatar` — browser loads three-vrm
    - **VRChat:** drop the avatar `.fbx` (Unity humanoid) — morph visemes + bone look; `.glb`/`.gltf` also accepted
-   - **Still planned:** Cubism runtime packaging, VTube Studio plugin, viseme-accurate lip sync from TTS audio
+   - **Still planned:** Cubism runtime packaging, VTube Studio plugin, audio-accurate lip sync from TTS playback
 
 Code stub for planned roles: `src/ophelia/mind/ensemble.py` (types only until ensemble is enabled).
 Avatar parameter bus: `src/ophelia/mind/avatar.py`.
