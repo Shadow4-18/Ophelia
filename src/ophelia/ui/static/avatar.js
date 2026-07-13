@@ -1,9 +1,8 @@
 /**
- * Ophelia avatar stage — procedural Live2D-style presence + Cubism hook.
+ * Ophelia avatar stage — procedural presence + Live2D hook + VRoid/VRM.
  *
- * Consumes the same parameter bus the server emits (ParamAngleX, ParamMouthOpenY, …).
- * Drop a Cubism model under ~/.ophelia/avatar and optionally load Cubism/PIXI
- * scripts to upgrade from procedural to live2d without changing the event bus.
+ * Consumes the same parameter bus the server emits (ParamAngleX, ParamMouthOpenY, …)
+ * plus VRM expression weights. Drop a Cubism model or VRoid .vrm under ~/.ophelia/avatar.
  */
 (function (global) {
   const DEFAULT_PARAMS = {
@@ -23,8 +22,9 @@
   };
 
   class AvatarStage {
-    constructor(canvas) {
+    constructor(canvas, vrmCanvas) {
       this.canvas = canvas;
+      this.vrmCanvas = vrmCanvas || null;
       this.ctx = canvas.getContext("2d");
       this.params = { ...DEFAULT_PARAMS };
       this.expression = "neutral";
@@ -36,6 +36,9 @@
       this._nextBlink = performance.now() + 2800;
       this._raf = 0;
       this._live2d = null;
+      this._vrm = null;
+      this._vrmLoading = false;
+      this._useVrm = false;
       this._running = false;
 
       canvas.addEventListener("pointermove", (e) => {
@@ -55,7 +58,7 @@
       const loop = (t) => {
         this._raf = requestAnimationFrame(loop);
         this._tickBlink(t);
-        this.draw(t);
+        if (!this._useVrm) this.draw(t);
       };
       this._raf = requestAnimationFrame(loop);
     }
@@ -63,6 +66,7 @@
     stop() {
       this._running = false;
       cancelAnimationFrame(this._raf);
+      this._vrm?.stop?.();
     }
 
     apply(state) {
@@ -77,26 +81,73 @@
       if (typeof state.mouth_open === "number") {
         this.params.ParamMouthOpenY = state.mouth_open;
       }
-      if (this.backend === "live2d" && this.modelUrl && !this._live2d) {
-        this._tryLoadLive2D(this.modelUrl);
+      if (this.backend === "vroid" && this.modelUrl) {
+        this._ensureVrm(state);
+      } else {
+        this._showProcedural();
+        if (this.backend === "live2d" && this.modelUrl && !this._live2d) {
+          this._tryLoadLive2D(this.modelUrl);
+        }
+      }
+    }
+
+    _showProcedural() {
+      this._useVrm = false;
+      this.canvas.hidden = false;
+      if (this.vrmCanvas) this.vrmCanvas.hidden = true;
+      this._vrm?.stop?.();
+    }
+
+    _showVrm() {
+      this._useVrm = true;
+      this.canvas.hidden = true;
+      if (this.vrmCanvas) this.vrmCanvas.hidden = false;
+      this._vrm?.start?.();
+      this._vrm?.resize?.();
+    }
+
+    async _ensureVrm(state) {
+      if (!this.vrmCanvas) {
+        this._showProcedural();
+        return;
+      }
+      if (this._vrm) {
+        this._showVrm();
+        this._vrm.apply(state);
+        return;
+      }
+      if (this._vrmLoading) return;
+      this._vrmLoading = true;
+      try {
+        const mod = await import("/static/vrm.js");
+        this._vrm = await mod.createVrmStage(this.vrmCanvas);
+        this._showVrm();
+        this._vrm.apply(state);
+        this._vrm.start();
+      } catch (err) {
+        console.warn("VRoid/VRM stage failed; falling back to procedural", err);
+        this.backend = "procedural";
+        this._showProcedural();
+      } finally {
+        this._vrmLoading = false;
       }
     }
 
     async _tryLoadLive2D(url) {
-      // Cubism Core is proprietary — only activate if the host page loaded it.
       if (!global.Live2DCubismCore && !global.PIXI) {
-        this.backend = "procedural";
         return;
       }
       try {
-        // Placeholder hook: real PIXI/cubism wiring can replace this later.
         this._live2d = { url, ready: false };
         console.info("Live2D runtime detected; model URL ready:", url);
       } catch (err) {
         console.warn("Live2D load failed; staying procedural", err);
-        this.backend = "procedural";
         this._live2d = null;
       }
+    }
+
+    resize() {
+      if (this._useVrm && this._vrm) this._vrm.resize();
     }
 
     _tickBlink(now) {
@@ -116,7 +167,6 @@
       const h = this.canvas.height;
       ctx.clearRect(0, 0, w, h);
 
-      // Soft stage glow
       const g = ctx.createRadialGradient(w * 0.5, h * 0.42, 40, w * 0.5, h * 0.5, w * 0.55);
       g.addColorStop(0, "rgba(140, 70, 190, 0.22)");
       g.addColorStop(0.55, "rgba(40, 24, 70, 0.18)");
@@ -147,7 +197,6 @@
     _drawBody(ctx, breath) {
       ctx.save();
       ctx.translate(0, 40 + (breath - 0.5) * 6);
-      // Dress / torso silhouette
       const body = ctx.createLinearGradient(0, -40, 0, 220);
       body.addColorStop(0, "#2a1a3a");
       body.addColorStop(0.45, "#1a1228");
@@ -161,7 +210,6 @@
       ctx.quadraticCurveTo(0, 10, -54, -20);
       ctx.fill();
 
-      // Collar accent
       ctx.strokeStyle = "rgba(196, 77, 255, 0.55)";
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -181,13 +229,11 @@
       const ballX = this._p("ParamEyeBallX") + this.pointer.x * 0.25;
       const ballY = this._p("ParamEyeBallY") + this.pointer.y * 0.2;
 
-      // Hair back
       ctx.fillStyle = "#1a0f28";
       ctx.beginPath();
       ctx.ellipse(0, -118, 92, 108, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // Face
       const skin = ctx.createLinearGradient(-40, -160, 40, -40);
       skin.addColorStop(0, "#f3d7c8");
       skin.addColorStop(1, "#e2b7a8");
@@ -196,7 +242,6 @@
       ctx.ellipse(0, -108, 68, 78, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // Bangs
       ctx.fillStyle = "#241433";
       ctx.beginPath();
       ctx.moveTo(-70, -150);
@@ -207,7 +252,6 @@
       ctx.quadraticCurveTo(-50, -120, -70, -150);
       ctx.fill();
 
-      // Side locks
       ctx.beginPath();
       ctx.moveTo(-72, -120);
       ctx.quadraticCurveTo(-95, -40, -78, 30);
@@ -219,7 +263,6 @@
       ctx.quadraticCurveTo(60, -20, 58, -90);
       ctx.fill();
 
-      // Blush for shy / happy
       if (this.expression === "shy" || this.expression === "happy" || mouthForm > 0.35) {
         ctx.fillStyle = "rgba(230, 110, 140, 0.28)";
         ctx.beginPath();
@@ -242,7 +285,6 @@
     _drawEye(ctx, x, y, open, ballX, ballY, brow) {
       ctx.save();
       ctx.translate(x, y);
-      // Brow
       ctx.strokeStyle = "#2a1838";
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
@@ -251,7 +293,6 @@
       ctx.quadraticCurveTo(0, -22 - brow * 14, 14, -16 - brow * 8);
       ctx.stroke();
 
-      // Lid clip via scale
       ctx.beginPath();
       ctx.ellipse(0, 0, 15, 11 * open, 0, 0, Math.PI * 2);
       ctx.clip();
@@ -271,7 +312,6 @@
       ctx.fill();
       ctx.restore();
 
-      // Lash line
       ctx.strokeStyle = "#1c1028";
       ctx.lineWidth = 2;
       ctx.beginPath();

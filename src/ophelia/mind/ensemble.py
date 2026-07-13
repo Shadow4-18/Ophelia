@@ -23,8 +23,8 @@ ActiveRole = Literal[
 ]
 
 # Minds to add for streaming / Neuro parity.
-# `avatar` has a partial bridge (psyche → Live2D params + workstation stage);
-# full VTube Studio / Cubism runtime remains planned.
+# `avatar` has a partial bridge (psyche → Live2D / VRoid params + workstation stage);
+# full VTube Studio plugin remains planned.
 PlannedMind = Literal[
     "director",
     "filter",

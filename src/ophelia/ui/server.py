@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from ophelia.ui.workstation import Workstation
 log = structlog.get_logger()
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# VRoid / VRM exports are glTF binary containers
+mimetypes.add_type("model/gltf-binary", ".vrm")
 
 
 class ChatRequest(BaseModel):

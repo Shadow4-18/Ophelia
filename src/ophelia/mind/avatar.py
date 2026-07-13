@@ -1,9 +1,13 @@
-"""Avatar bridge — psyche → Live2D / VTuber expression parameters.
+"""Avatar bridge — psyche → Live2D / VRoid (VRM) / VTuber expression parameters.
 
 Maps Ophelia's mood, drives, and speaking state into a stable parameter
-bus the workstation UI (and a future VTube Studio / Cubism client) can
-consume. No Cubism SDK is bundled; the browser procedural stage uses these
-params directly, and a real `.model3.json` can ride the same bus.
+bus the workstation UI can consume:
+
+- Live2D Cubism ids (ParamMouthOpenY, …) for 2D models / procedural stage
+- VRM 1.0 expression weights for VRoid Studio exports (.vrm)
+
+No Cubism SDK is bundled. VRM loads in-browser via three.js + @pixiv/three-vrm
+from CDN when a .vrm is present under the avatar directory.
 """
 
 from __future__ import annotations
@@ -31,8 +35,30 @@ PARAM_MOUTH_FORM = "ParamMouthForm"
 PARAM_BODY_ANGLE_X = "ParamBodyAngleX"
 PARAM_BREATH = "ParamBreath"
 
+# VRM 1.0 preset expression names (VRoid Studio exports these).
+VRM_PRESETS = (
+    "happy",
+    "angry",
+    "sad",
+    "relaxed",
+    "surprised",
+    "aa",
+    "ih",
+    "ou",
+    "ee",
+    "oh",
+    "blink",
+    "blinkLeft",
+    "blinkRight",
+    "lookUp",
+    "lookDown",
+    "lookLeft",
+    "lookRight",
+    "neutral",
+)
 
 ExpressionId = str  # happy | sad | angry | shy | surprised | thinking | neutral | sleepy | curious
+AvatarBackend = str  # procedural | live2d | vroid
 
 
 @dataclass
@@ -44,12 +70,14 @@ class AvatarState:
     mouth_open: float = 0.0  # 0..1
     blink: float = 1.0  # 1 = open, 0 = closed
     params: dict[str, float] = field(default_factory=dict)
+    vrm: dict[str, float] = field(default_factory=dict)
     label: str = "neutral"
     valence: float = 0.0
     arousal: float = 0.3
-    backend: str = "procedural"  # procedural | live2d
+    backend: AvatarBackend = "procedural"
     model_url: str | None = None
     model_ready: bool = False
+    model_kind: str | None = None  # model3 | vrm
     updated_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,15 +88,28 @@ def resolve_avatar_dir(settings_avatar_dir: Path | None = None) -> Path:
     return Path(settings_avatar_dir) if settings_avatar_dir else (OPHELIA_HOME / "avatar")
 
 
+def _resolve_configured(root: Path, configured: str | None) -> Path | None:
+    if not configured:
+        return None
+    candidate = Path(configured)
+    if not candidate.is_absolute():
+        candidate = root / configured
+    return candidate if candidate.is_file() else None
+
+
 def find_model3(avatar_dir: Path, configured: str | None = None) -> Path | None:
     """Locate a Cubism model3.json under the avatar directory."""
     root = resolve_avatar_dir(avatar_dir)
-    if configured:
-        candidate = Path(configured)
-        if not candidate.is_absolute():
-            candidate = root / configured
-        if candidate.is_file():
-            return candidate
+    configured_path = _resolve_configured(root, configured)
+    if configured_path and configured_path.suffix.lower() == ".json" and configured_path.name.endswith(
+        ".model3.json"
+    ):
+        return configured_path
+    if configured_path and configured_path.name.endswith(".model3.json"):
+        return configured_path
+    # Only honor configured when it points at model3; otherwise scan.
+    if configured and configured_path is None and str(configured).lower().endswith(".model3.json"):
+        return None
     if not root.is_dir():
         return None
     direct = root / "model.model3.json"
@@ -76,6 +117,66 @@ def find_model3(avatar_dir: Path, configured: str | None = None) -> Path | None:
         return direct
     matches = sorted(root.rglob("*.model3.json"))
     return matches[0] if matches else None
+
+
+def find_vrm(avatar_dir: Path, configured: str | None = None) -> Path | None:
+    """Locate a VRoid / VRM model under the avatar directory."""
+    root = resolve_avatar_dir(avatar_dir)
+    configured_path = _resolve_configured(root, configured)
+    if configured_path and configured_path.suffix.lower() == ".vrm":
+        return configured_path
+    if configured and str(configured).lower().endswith(".vrm") and configured_path is None:
+        return None
+    if not root.is_dir():
+        return None
+    for name in ("model.vrm", "ophelia.vrm", "avatar.vrm"):
+        direct = root / name
+        if direct.is_file():
+            return direct
+    matches = sorted(root.rglob("*.vrm"))
+    return matches[0] if matches else None
+
+
+def resolve_model(
+    avatar_dir: Path,
+    configured: str | None = None,
+    *,
+    prefer: str = "auto",
+) -> tuple[str | None, Path | None]:
+    """Return (kind, path) where kind is 'vrm' | 'model3' | None."""
+    root = resolve_avatar_dir(avatar_dir)
+    prefer = (prefer or "auto").lower()
+    configured_path = _resolve_configured(root, configured)
+    if configured_path:
+        suffix = configured_path.suffix.lower()
+        name = configured_path.name.lower()
+        if suffix == ".vrm":
+            return "vrm", configured_path
+        if name.endswith(".model3.json"):
+            return "model3", configured_path
+
+    vrm = find_vrm(root, None)
+    model3 = find_model3(root, None)
+
+    if prefer in ("vroid", "vrm"):
+        if vrm:
+            return "vrm", vrm
+        if model3:
+            return "model3", model3
+        return None, None
+    if prefer == "live2d":
+        if model3:
+            return "model3", model3
+        if vrm:
+            return "vrm", vrm
+        return None, None
+
+    # auto: VRoid/VRM first (full 3D body), then Live2D, else none
+    if vrm:
+        return "vrm", vrm
+    if model3:
+        return "model3", model3
+    return None, None
 
 
 def _clamp(v: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -204,6 +305,72 @@ def params_from_psyche(
     return expr, params
 
 
+def vrm_weights_from_expression(
+    expression: ExpressionId,
+    *,
+    mouth_open: float = 0.0,
+    eye_open: float = 1.0,
+    params: dict[str, float] | None = None,
+    speaking: bool = False,
+) -> dict[str, float]:
+    """Map Ophelia expression + lip sync onto VRM 1.0 preset weights."""
+    params = params or {}
+    weights = {name: 0.0 for name in VRM_PRESETS}
+
+    # Emotion presets (mutually soft — one primary)
+    emotion_map = {
+        "happy": "happy",
+        "angry": "angry",
+        "sad": "sad",
+        "surprised": "surprised",
+        "sleepy": "relaxed",
+        "thinking": "relaxed",
+        "curious": "surprised",
+        "shy": "happy",
+        "neutral": "neutral",
+    }
+    preset = emotion_map.get(expression, "neutral")
+    if preset == "neutral":
+        weights["neutral"] = 1.0
+    else:
+        weights[preset] = 0.85 if expression != "shy" else 0.45
+        if expression == "shy":
+            weights["happy"] = 0.35
+        if expression == "curious":
+            weights["surprised"] = 0.4
+            weights["relaxed"] = 0.2
+
+    # Mouth / visemes
+    open_y = _clamp(mouth_open, 0.0, 1.0)
+    if speaking or open_y > 0.05:
+        weights["aa"] = open_y * 0.9
+        weights["oh"] = open_y * 0.35
+        form = float(params.get(PARAM_MOUTH_FORM, 0.0))
+        if form > 0.25:
+            weights["ee"] = min(0.5, form * 0.4)
+        elif form < -0.2:
+            weights["ou"] = min(0.45, abs(form) * 0.4)
+
+    # Blink from eye openness (1 = open → blink 0)
+    blink = _clamp(1.0 - eye_open, 0.0, 1.0)
+    if blink > 0.05:
+        weights["blink"] = blink
+
+    # Look direction from eye ball / head
+    ball_x = float(params.get(PARAM_EYE_BALL_X, 0.0))
+    ball_y = float(params.get(PARAM_EYE_BALL_Y, 0.0))
+    if ball_x > 0.08:
+        weights["lookRight"] = min(1.0, ball_x * 2.5)
+    elif ball_x < -0.08:
+        weights["lookLeft"] = min(1.0, abs(ball_x) * 2.5)
+    if ball_y > 0.08:
+        weights["lookUp"] = min(1.0, ball_y * 2.5)
+    elif ball_y < -0.08:
+        weights["lookDown"] = min(1.0, abs(ball_y) * 2.5)
+
+    return weights
+
+
 def mouth_envelope(text: str, elapsed: float, *, cps: float = 14.0) -> float:
     """Approximate lip-sync mouth open from spoken text + elapsed seconds."""
     clean = "".join(ch for ch in (text or "") if ch.isalnum() or ch.isspace())
@@ -249,14 +416,32 @@ class AvatarBridge:
         self._last: AvatarState | None = None
 
     def model_file(self) -> Path | None:
-        return find_model3(self.avatar_dir, self.model_path)
+        _kind, path = resolve_model(
+            self.avatar_dir, self.model_path, prefer=self.backend_pref
+        )
+        return path
+
+    def model_kind(self) -> str | None:
+        kind, _path = resolve_model(
+            self.avatar_dir, self.model_path, prefer=self.backend_pref
+        )
+        return kind
 
     def resolved_backend(self) -> str:
-        if self.backend_pref == "live2d":
-            return "live2d"
-        if self.backend_pref == "procedural":
+        pref = self.backend_pref
+        if pref == "procedural":
             return "procedural"
-        return "live2d" if self.model_file() else "procedural"
+        kind = self.model_kind()
+        if pref in ("vroid", "vrm"):
+            return "vroid" if kind == "vrm" else ("live2d" if kind == "model3" else "procedural")
+        if pref == "live2d":
+            return "live2d" if kind == "model3" else ("vroid" if kind == "vrm" else "procedural")
+        # auto
+        if kind == "vrm":
+            return "vroid"
+        if kind == "model3":
+            return "live2d"
+        return "procedural"
 
     def model_url(self) -> str | None:
         path = self.model_file()
@@ -265,7 +450,7 @@ class AvatarBridge:
         try:
             rel = path.relative_to(self.avatar_dir)
         except ValueError:
-            rel = path.name
+            rel = Path(path.name)
         return f"/avatar/{rel.as_posix()}"
 
     def begin_speak(self, text: str = "") -> None:
@@ -325,19 +510,30 @@ class AvatarBridge:
             mouth_open=mouth,
         )
         backend = self.resolved_backend()
+        kind = self.model_kind()
         model_url = self.model_url()
+        eye_open = float(params.get(PARAM_EYE_L_OPEN, 1.0))
+        vrm = vrm_weights_from_expression(
+            expr,
+            mouth_open=mouth,
+            eye_open=eye_open,
+            params=params,
+            speaking=self._speaking,
+        )
         state = AvatarState(
             expression=expr,
             speaking=self._speaking,
             mouth_open=mouth,
-            blink=params.get(PARAM_EYE_L_OPEN, 1.0),
+            blink=eye_open,
             params=params,
+            vrm=vrm,
             label=label or expr,
             valence=valence,
             arousal=arousal,
             backend=backend,
             model_url=model_url,
-            model_ready=bool(model_url) and backend == "live2d",
+            model_ready=bool(model_url) and backend in ("live2d", "vroid"),
+            model_kind=kind,
             updated_at=time.time(),
         )
         self._last = state

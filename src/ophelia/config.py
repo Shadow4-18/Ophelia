@@ -666,18 +666,18 @@ class Settings(BaseSettings):
     ui_port: int = Field(default=8765, alias="OPHELIA_UI_PORT")
     ui_open_browser: bool = Field(default=True, alias="OPHELIA_UI_OPEN_BROWSER")
 
-    # Avatar / Live2D stage (workstation VTuber display)
+    # Avatar / Live2D / VRoid stage (workstation VTuber display)
     avatar_enabled: bool = Field(default=True, alias="OPHELIA_AVATAR_ENABLED")
     avatar_dir: Path = Field(default=OPHELIA_HOME / "avatar", alias="OPHELIA_AVATAR_DIR")
     avatar_model: str | None = Field(
         default=None,
         alias="OPHELIA_AVATAR_MODEL",
-        description="Optional path to a Cubism .model3.json (absolute or under avatar_dir)",
+        description="Optional Cubism .model3.json or VRoid .vrm (absolute or under avatar_dir)",
     )
     avatar_backend: str = Field(
         default="auto",
         alias="OPHELIA_AVATAR_BACKEND",
-        description="auto | procedural | live2d — auto uses Live2D when a model file is present",
+        description="auto | procedural | live2d | vroid — auto prefers .vrm then Live2D when present",
     )
 
     # Public wiki/blog Ophelia owns and publishes (read-only for visitors)

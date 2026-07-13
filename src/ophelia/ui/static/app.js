@@ -14,7 +14,7 @@ let ws = null;
 let paused = false;
 let sending = false;
 
-const stage = new OpheliaAvatarStage($("avatarCanvas"));
+const stage = new OpheliaAvatarStage($("avatarCanvas"), $("vrmCanvas"));
 stage.start();
 
 function appendMessage(role, content, extraClass = "") {
@@ -45,9 +45,11 @@ function applyAvatar(data) {
     : `avatar ${data.backend || "procedural"}${data.speaking ? " · speaking" : ""}`;
   const line = data.speaking
     ? "speaking…"
-    : data.expression
-      ? `${data.expression} presence`
-      : "presence online";
+    : data.backend === "vroid" && !stage._vrm?.ready
+      ? (stage._vrm?.loading || stage._vrmLoading ? "loading VRoid…" : (stage._vrm?.error ? "VRoid load failed" : `${data.expression || "neutral"} presence`))
+      : data.expression
+        ? `${data.expression} presence`
+        : "presence online";
   $("stageLine").textContent = line;
 }
 
@@ -225,12 +227,18 @@ chatInput.addEventListener("keydown", (e) => {
 
 function resizeCanvas() {
   const canvas = $("avatarCanvas");
+  const vrm = $("vrmCanvas");
   const panel = canvas.parentElement;
   const rect = panel.getBoundingClientRect();
   const cssW = Math.max(280, Math.floor(rect.width));
   const cssH = Math.max(360, Math.floor(rect.height));
   canvas.width = cssW;
   canvas.height = cssH;
+  if (vrm) {
+    vrm.width = cssW;
+    vrm.height = cssH;
+  }
+  stage.resize();
 }
 
 window.addEventListener("resize", resizeCanvas);

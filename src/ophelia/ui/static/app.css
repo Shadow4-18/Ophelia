@@ -147,12 +147,24 @@ body.drawer-open .layout {
   }
 }
 
-#avatarCanvas {
+#avatarCanvas,
+.vrm-canvas {
   position: relative;
   z-index: 1;
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.vrm-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.vrm-canvas[hidden],
+#avatarCanvas[hidden] {
+  display: none !important;
 }
 
 .stage-overlay {
