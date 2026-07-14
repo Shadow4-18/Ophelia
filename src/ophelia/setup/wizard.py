@@ -157,6 +157,34 @@ def _check_wake_lock_hint() -> tuple[bool, str]:
     return False, "run once per session: termux-wake-lock"
 
 
+def _check_public_site() -> tuple[bool, str]:
+    """Optional: Cloudflare Pages deploy credentials for her public wiki."""
+    from ophelia.setup.env_io import read_env_key
+    from ophelia.site.cloudflare import deploy_ready
+
+    public = read_env_key("OPHELIA_SITE_PUBLIC_URL")
+    cf = deploy_ready(
+        account_id=read_env_key("CLOUDFLARE_ACCOUNT_ID") or None,
+        api_token=read_env_key("CLOUDFLARE_API_TOKEN") or None,
+        project=read_env_key("OPHELIA_SITE_CF_PROJECT") or None,
+    )
+    if cf["ready"] and public:
+        return True, f"deploy ready → {public}"
+    if cf["ready"]:
+        return False, "CF ready — set OPHELIA_SITE_PUBLIC_URL (ophelia setup → Public site)"
+    if any(
+        read_env_key(k)
+        for k in (
+            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_ACCOUNT_ID",
+            "OPHELIA_SITE_CF_PROJECT",
+            "OPHELIA_SITE_PUBLIC_URL",
+        )
+    ):
+        return False, f"incomplete — missing: {', '.join(cf['missing'])}"
+    return False, "optional — ophelia setup → Public site / Cloudflare Pages"
+
+
 def _pip_install_cmd() -> str:
     root = _repo_root()
     if (_repo_root() / "pyproject.toml").is_file():
@@ -271,6 +299,19 @@ def _steps_phone() -> list[SetupStep]:
         ),
         SetupStep(
             9,
+            "Public site / Cloudflare Pages (optional)",
+            "Her wiki/blog on your custom domain — she deploys with site_deploy.",
+            [
+                "ophelia setup    # Public site / Cloudflare Pages",
+                "pip install blake3",
+                "ophelia site deploy",
+            ],
+            _check_public_site,
+            optional=True,
+            manual_note="Full guide: docs/site.md",
+        ),
+        SetupStep(
+            10,
             "Health check",
             "Confirms version, deps, providers, Telegram, and body.",
             ["ophelia check"],
@@ -278,7 +319,7 @@ def _steps_phone() -> list[SetupStep]:
             manual_note="Re-run after fixing each FAIL. PC: ophelia check --chat-only",
         ),
         SetupStep(
-            10,
+            11,
             "Run Ophelia",
             "Long-lived session in tmux.",
             [
@@ -287,7 +328,7 @@ def _steps_phone() -> list[SetupStep]:
                 "ophelia run",
                 "# Detach: Ctrl+B then D. Reattach: tmux attach -t ophelia",
             ],
-            lambda: (False, "start when steps 1-9 look good"),
+            lambda: (False, "start when steps 1-10 look good"),
             manual_note="Ctrl+C to stop. Use /pause in Telegram to quiet outreach.",
         ),
     ]
@@ -397,6 +438,19 @@ def _steps_pc() -> list[SetupStep]:
         ),
         SetupStep(
             9,
+            "Public site / Cloudflare Pages (optional)",
+            "Her wiki/blog on your custom domain — she deploys with site_deploy.",
+            [
+                "ophelia setup    # Public site / Cloudflare Pages",
+                "pip install blake3",
+                "ophelia site deploy",
+            ],
+            _check_public_site,
+            optional=True,
+            manual_note="Full guide: docs/site.md",
+        ),
+        SetupStep(
+            10,
             "Daily use",
             "You're ready.",
             [

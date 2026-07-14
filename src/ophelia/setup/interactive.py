@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
@@ -40,6 +42,7 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
                 "Web search (DeepSeek/OpenAI have no built-in search)",
                 "Image generation (SFW + NSFW backends)",
                 "Voice / TTS (ElevenLabs, Kokoro local, OpenAI, xAI)",
+                "Public site / Cloudflare Pages (her wiki + custom domain)",
                 "Persona (SOUL.md)",
                 "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
                 "Features (consciousness, games, ...)",
@@ -62,19 +65,21 @@ def run_interactive_setup(*, phone: bool | None = None) -> int:
         elif idx == 4:
             _section_tts()
         elif idx == 5:
-            _section_persona()
+            _section_public_site()
         elif idx == 6:
-            _section_phone_body(on_phone)
+            _section_persona()
         elif idx == 7:
-            _section_features(on_phone)
+            _section_phone_body(on_phone)
         elif idx == 8:
-            _section_health_check()
+            _section_features(on_phone)
         elif idx == 9:
+            _section_health_check()
+        elif idx == 10:
             print()
             run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-        elif idx == 10:
+        elif idx == 11:
             break
-        if idx != 10:
+        if idx != 11:
             pause()
 
     print()
@@ -2005,6 +2010,177 @@ def _section_tts() -> None:
     if provider == "kokoro":
         print("  Reminder: bake mixes with `ophelia tts combine` + KOKORO_VOICES_DIR.")
         print("  Inline FastAPI mixes skip L2 renorm (muffled/peaky). Termux Kokoros: presets only.")
+
+
+def _normalize_site_public_url(raw: str) -> str:
+    """Strip whitespace and ensure https:// for bare domains."""
+    url = (raw or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if "://" not in url:
+        url = "https://" + url
+    return url
+
+
+def _section_public_site() -> None:
+    """Configure Ophelia's wiki/blog + Cloudflare Pages deploy credentials."""
+    from ophelia.site.cloudflare import deploy_ready
+
+    enabled = (read_env_key("OPHELIA_SITE_ENABLED") or "true").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    public = read_env_key("OPHELIA_SITE_PUBLIC_URL") or ""
+    account = read_env_key("CLOUDFLARE_ACCOUNT_ID") or ""
+    token_set = bool(read_env_key("CLOUDFLARE_API_TOKEN"))
+    project = read_env_key("OPHELIA_SITE_CF_PROJECT") or ""
+    branch = read_env_key("OPHELIA_SITE_CF_BRANCH") or "main"
+    cf = deploy_ready(
+        account_id=account or None,
+        api_token=read_env_key("CLOUDFLARE_API_TOKEN") or None,
+        project=project or None,
+    )
+
+    print()
+    print("  Public wiki/blog Ophelia owns and publishes.")
+    print(f"  Site server:     {'on' if enabled else 'off'} (local :8788 with ophelia run)")
+    print(f"  Public URL:      {public or '(not set)'}")
+    print(f"  CF project:      {project or '(not set)'}")
+    print(f"  CF account ID:   {'set' if account else '(not set)'}")
+    print(f"  CF API token:    {'set' if token_set else '(not set)'}")
+    print(
+        f"  Deploy ready:    {'yes' if cf['ready'] else 'no — ' + ', '.join(cf['missing'])}"
+    )
+    print()
+
+    enable_pick = radiolist(
+        "Enable her public site server?",
+        [
+            "Yes — serve wiki/blog on :8788 (and with ophelia run)",
+            "No — disable local site server",
+            "Keep current",
+        ],
+        selected=0 if enabled else 1,
+        description="She still needs Cloudflare credentials below to push to your domain.",
+    )
+    if enable_pick < 0:
+        return
+
+    updates: dict[str, str | None] = {}
+    if enable_pick == 0:
+        updates["OPHELIA_SITE_ENABLED"] = "true"
+    elif enable_pick == 1:
+        updates["OPHELIA_SITE_ENABLED"] = "false"
+
+    url = prompt_text(
+        "Public site URL (custom domain, e.g. https://ophelia.example.com)",
+        default=public,
+        hint="Bare domains get https:// added. Leave blank to clear.",
+    )
+    if url is None:
+        return
+    url = _normalize_site_public_url(url)
+    updates["OPHELIA_SITE_PUBLIC_URL"] = url or None
+
+    print()
+    print("  Cloudflare Pages — token needs Account → Cloudflare Pages → Edit")
+    print("  Create at: https://dash.cloudflare.com/profile/api-tokens")
+    print()
+
+    acct = prompt_text(
+        "CLOUDFLARE_ACCOUNT_ID (Workers & Pages overview → right sidebar)",
+        default=account,
+        hint="Leave blank to clear.",
+    )
+    if acct is None:
+        return
+    updates["CLOUDFLARE_ACCOUNT_ID"] = acct.strip() or None
+
+    proj = prompt_text(
+        "OPHELIA_SITE_CF_PROJECT (Pages project name attached to your domain)",
+        default=project,
+        hint="Leave blank to clear.",
+    )
+    if proj is None:
+        return
+    updates["OPHELIA_SITE_CF_PROJECT"] = proj.strip() or None
+
+    tok_hint = "(leave blank to keep existing)" if token_set else "(paste new token)"
+    tok = prompt_text(
+        f"CLOUDFLARE_API_TOKEN {tok_hint}",
+        secret=True,
+        default="",
+        hint="Token is shown only once in Cloudflare. Blank keeps the current value.",
+    )
+    if tok is None:
+        return
+    if tok.strip():
+        updates["CLOUDFLARE_API_TOKEN"] = tok.strip()
+
+    br = prompt_text(
+        "OPHELIA_SITE_CF_BRANCH (production branch, usually main)",
+        default=branch or "main",
+    )
+    if br is None:
+        return
+    updates["OPHELIA_SITE_CF_BRANCH"] = br.strip() or "main"
+
+    create_pick = radiolist(
+        "Create the Pages project automatically if it is missing?",
+        [
+            "No — project already exists (recommended)",
+            "Yes — create on first site_deploy if missing",
+            "Keep current",
+        ],
+        selected=0,
+    )
+    if create_pick == 0:
+        updates["OPHELIA_SITE_CF_CREATE_PROJECT"] = "false"
+    elif create_pick == 1:
+        updates["OPHELIA_SITE_CF_CREATE_PROJECT"] = "true"
+
+    touched = write_env_updates(updates)
+    print(f"\n  Saved: {', '.join(touched) if touched else '(no changes)'}")
+
+    cf2 = deploy_ready(
+        account_id=read_env_key("CLOUDFLARE_ACCOUNT_ID") or None,
+        api_token=read_env_key("CLOUDFLARE_API_TOKEN") or None,
+        project=read_env_key("OPHELIA_SITE_CF_PROJECT") or None,
+    )
+    pub = read_env_key("OPHELIA_SITE_PUBLIC_URL") or ""
+    if cf2["ready"]:
+        print("  Deploy ready: yes — she can call site_deploy")
+        if pub:
+            print(f"  Public URL:   {pub}")
+    else:
+        print(f"  Deploy not ready yet — missing: {', '.join(cf2['missing'])}")
+
+    needs_blake3 = (not cf2.get("blake3")) and any(
+        "blake3" in m for m in (cf2.get("missing") or [])
+    )
+    if needs_blake3:
+        pip_pick = radiolist(
+            "blake3 is needed for API deploy (or install wrangler). Install blake3 now?",
+            ["Yes — pip install blake3", "Skip"],
+            selected=0,
+        )
+        if pip_pick == 0:
+            print("\n  Running: pip install blake3 …")
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "blake3"],
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                print("  blake3 installed.")
+            else:
+                print(f"  pip failed: {(proc.stderr or proc.stdout or '')[-400:]}")
+                print("  Or: npm i -g wrangler")
+
+    print("\n  Next: restart Ophelia, then tell her to publish a page and site_deploy.")
+    print("  Manual: ophelia site deploy")
 
 
 def _section_features(on_phone: bool) -> None:
