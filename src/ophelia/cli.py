@@ -41,14 +41,78 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
 
 def cmd_site(args: argparse.Namespace) -> int:
-    """Run Ophelia's public wiki/blog alone (without the always-on agent)."""
+    """Serve / export / deploy Ophelia's public wiki/blog."""
     settings = Settings()
     ensure_dirs(settings)
+    action = getattr(args, "site_cmd", None) or "serve"
+
+    if action == "export":
+        from ophelia.site.store import SiteStore
+
+        async def _export() -> dict:
+            store = SiteStore(settings.site_dir)
+            await store.init()
+            return await store.export_static()
+
+        manifest = asyncio.run(_export())
+        print(f"Exported {manifest.get('pages', 0)} pages → {manifest.get('path')}")
+        return 0
+
+    if action == "deploy":
+        from ophelia.site.cloudflare import (
+            CloudflarePagesError,
+            deploy_directory,
+            deploy_ready,
+        )
+        from ophelia.site.store import SiteStore
+
+        cf = deploy_ready(
+            account_id=settings.cloudflare_account_id,
+            api_token=settings.cloudflare_api_token,
+            project=settings.site_cf_project,
+        )
+        if not cf["ready"]:
+            print("Cloudflare deploy not configured. Add to ~/.ophelia/.env:")
+            for m in cf["missing"]:
+                print(f"  {m}")
+            print("Token: Cloudflare dashboard → My Profile → API Tokens →")
+            print("  Create Token → template 'Edit Cloudflare Workers' or custom")
+            print("  with Account → Cloudflare Pages → Edit.")
+            return 1
+
+        async def _export() -> tuple:
+            store = SiteStore(settings.site_dir)
+            await store.init()
+            manifest = await store.export_static()
+            return store, manifest
+
+        store, manifest = asyncio.run(_export())
+        print(f"Exported {manifest.get('pages', 0)} pages → {store.export_dir}")
+        try:
+            result = deploy_directory(
+                store.export_dir,
+                account_id=settings.cloudflare_account_id or "",
+                api_token=settings.cloudflare_api_token or "",
+                project=settings.site_cf_project or "",
+                branch=settings.site_cf_branch or "main",
+                create_project=bool(settings.site_cf_create_project),
+                on_progress=print,
+            )
+        except CloudflarePagesError as e:
+            print(f"Deploy failed: {e}", file=sys.stderr)
+            return 1
+        public = (settings.site_public_url or "").strip() or result.url
+        print(f"Deployed via {result.method}: {result.url or 'ok'}")
+        if public:
+            print(f"Public URL: {public}")
+        return 0
+
     from ophelia.site.server import run_site
 
     print(f"Ophelia site: http://{settings.site_host}:{settings.site_port}/")
     print(f"Content:      {settings.site_dir}")
     print("She edits this via site_* tools while `ophelia run` is up.")
+    print("Deploy to Cloudflare: ophelia site deploy  (needs CF token in .env)")
     try:
         asyncio.run(run_site(settings))
     except KeyboardInterrupt:
@@ -1171,10 +1235,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_ui.set_defaults(func=cmd_ui)
 
-    sub.add_parser(
+    p_site = sub.add_parser(
         "site",
-        help="Serve Ophelia's public wiki/blog (also starts with `ophelia run`)",
-    ).set_defaults(func=cmd_site)
+        help="Ophelia's public wiki/blog (serve locally, export, or deploy to Cloudflare)",
+    )
+    site_sub = p_site.add_subparsers(dest="site_cmd")
+    site_sub.add_parser("serve", help="Serve the site locally (default)").set_defaults(
+        func=cmd_site, site_cmd="serve"
+    )
+    site_sub.add_parser(
+        "export", help="Export published pages to ~/.ophelia/site/export/"
+    ).set_defaults(func=cmd_site, site_cmd="export")
+    site_sub.add_parser(
+        "deploy",
+        help="Export + upload to Cloudflare Pages (needs CLOUDFLARE_* in .env)",
+    ).set_defaults(func=cmd_site, site_cmd="deploy")
+    p_site.set_defaults(func=cmd_site, site_cmd="serve")
 
     p_chat = sub.add_parser("chat", help="One-shot chat message (no always-on loop)")
     p_chat.add_argument("message")
