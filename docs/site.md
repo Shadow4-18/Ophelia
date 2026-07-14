@@ -4,19 +4,25 @@ Ophelia owns a wiki/blog under `~/.ophelia/site/`. She edits it with `site_*`
 tools. Visitors can read published pages locally (`ophelia site` / port **8788**)
 or on your custom domain after a Cloudflare Pages deploy.
 
-## Give her deploy access
+## Give her deploy access (menu — recommended)
 
-1. **Cloudflare API token**  
-   Dashboard → My Profile → API Tokens → Create Token  
-   Permission: **Account → Cloudflare Pages → Edit**  
-   (Account Resources: include your account)
+```bash
+ophelia setup
+# → Public site / Cloudflare Pages (her wiki + custom domain)
+```
 
-2. **Account ID** — Workers & Pages overview (right sidebar) or any domain's
-   Overview page.
+The menu walks you through:
 
-3. **Pages project name** — the project you already attached to your domain.
+1. Enable the local site server  
+2. Public URL (your custom domain)  
+3. `CLOUDFLARE_ACCOUNT_ID`  
+4. `OPHELIA_SITE_CF_PROJECT` (Pages project name)  
+5. `CLOUDFLARE_API_TOKEN` (Account → Cloudflare Pages → Edit)  
+6. Optional `pip install blake3`
 
-4. Put this in `~/.ophelia/.env`:
+Then restart Ophelia.
+
+## Manual `.env` (same keys)
 
 ```bash
 OPHELIA_SITE_ENABLED=true
@@ -28,14 +34,13 @@ OPHELIA_SITE_CF_PROJECT=your-pages-project-name
 # OPHELIA_SITE_CF_BRANCH=main
 ```
 
-5. Install the hash helper (or use wrangler instead):
+Token: Dashboard → My Profile → API Tokens → Create Token →  
+**Account → Cloudflare Pages → Edit**.
 
 ```bash
 pip install blake3
 # optional alternate: npm i -g wrangler
 ```
-
-6. Restart Ophelia (`ophelia update` / restart `ophelia run`).
 
 ## Usage
 
