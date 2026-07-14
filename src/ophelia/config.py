@@ -971,5 +971,6 @@ def ensure_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.site_dir.mkdir(parents=True, exist_ok=True)
     (settings.site_dir / "assets").mkdir(parents=True, exist_ok=True)
+    (settings.site_dir / "www").mkdir(parents=True, exist_ok=True)
     settings.avatar_dir.mkdir(parents=True, exist_ok=True)
     OPHELIA_HOME.mkdir(parents=True, exist_ok=True)

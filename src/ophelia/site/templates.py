@@ -63,6 +63,7 @@ def _shell(
     base_path: str = "",
     static_prefix: str = "",
     description: str = "",
+    extras: dict[str, bool] | None = None,
 ) -> str:
     site = _esc(meta.get("site_title", "Ophelia"))
     tagline = _esc(meta.get("tagline", ""))
@@ -70,6 +71,19 @@ def _shell(
     desc = _esc(description or tagline)
     css_href = f"{static_prefix.rstrip('/')}/static/site.css" if static_prefix else "/static/site.css"
     page_title = f"{_esc(title)} · {site}" if title and title != meta.get("site_title") else site
+    extras = extras or {}
+    theme_prefix = f"{static_prefix.rstrip('/')}/" if static_prefix else "/"
+    theme_links = ""
+    if extras.get("theme_css"):
+        theme_links += (
+            f'\n<link rel="stylesheet" href="{html.escape(theme_prefix + "theme.css", quote=True)}">'
+        )
+    custom_head = meta.get("custom_head") or ""
+    theme_scripts = ""
+    if extras.get("theme_js"):
+        theme_scripts = (
+            f'\n<script src="{html.escape(theme_prefix + "theme.js", quote=True)}" defer></script>'
+        )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,7 +95,8 @@ def _shell(
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{html.escape(css_href, quote=True)}">
+<link rel="stylesheet" href="{html.escape(css_href, quote=True)}">{theme_links}
+{custom_head}
 </head>
 <body>
 <div class="atmosphere" aria-hidden="true"></div>
@@ -91,7 +106,7 @@ def _shell(
 </main>
 <footer class="footer">
   <p>{footer}</p>
-</footer>
+</footer>{theme_scripts}
 </body>
 </html>
 """
@@ -116,6 +131,7 @@ def render_home(
     *,
     base_path: str = "",
     static_prefix: str = "",
+    extras: dict[str, bool] | None = None,
 ) -> str:
     featured = [p for p in pages if p.get("featured")][:6]
     recent = pages[:12]
@@ -150,6 +166,7 @@ def render_home(
         body="\n".join(sections),
         base_path=base_path,
         static_prefix=static_prefix,
+        extras=extras,
     )
 
 
@@ -160,6 +177,7 @@ def render_list(
     heading: str,
     base_path: str = "",
     static_prefix: str = "",
+    extras: dict[str, bool] | None = None,
 ) -> str:
     static = bool(static_prefix)
 
@@ -181,6 +199,7 @@ def render_list(
         body=body,
         base_path=base_path,
         static_prefix=static_prefix,
+        extras=extras,
     )
 
 
@@ -191,9 +210,12 @@ def render_page(
     *,
     base_path: str = "",
     static_prefix: str = "",
+    extras: dict[str, bool] | None = None,
+    raw_html: bool = False,
 ) -> str:
     when = _esc(page.get("published_at") or page.get("updated_at") or "")
     kind = _esc(page.get("kind") or "wiki")
+    prose_class = "prose prose-html" if raw_html else "prose"
     body = f"""
 <article class="entry">
   <header class="page-head">
@@ -202,7 +224,7 @@ def render_page(
     {f'<p class="lede">{_esc(page.get("summary"))}</p>' if page.get("summary") else ''}
     {_tags_html(str(page.get("tags") or ""))}
   </header>
-  <div class="prose">
+  <div class="{prose_class}">
 {body_html}
   </div>
 </article>"""
@@ -213,13 +235,18 @@ def render_page(
         base_path=base_path,
         static_prefix=static_prefix,
         description=str(page.get("summary") or ""),
+        extras=extras,
     )
 
 
-def render_not_found(meta: dict[str, str]) -> str:
+def render_not_found(
+    meta: dict[str, str],
+    *,
+    extras: dict[str, bool] | None = None,
+) -> str:
     body = """
 <header class="page-head">
   <h1>Not found</h1>
   <p class="lede">This page is not in the archive — or it is not published yet.</p>
 </header>"""
-    return _shell(meta, title="Not found", body=body)
+    return _shell(meta, title="Not found", body=body, extras=extras)

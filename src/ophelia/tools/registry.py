@@ -93,6 +93,10 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "site_add_asset",
         "site_export_static",
         "site_deploy",
+        "site_write_file",
+        "site_read_file",
+        "site_list_files",
+        "site_delete_file",
         "run_code",
         "recall_memory",
         "list_inbox_images",
@@ -597,9 +601,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "site_upsert_page",
             "description": (
-                "Create or update a page on YOUR public wiki/blog. "
-                "Use kind=wiki for lore/mythos entries, kind=blog for posts, kind=page for static pages. "
-                "Write body_md in Markdown. Set published=true to make it visible to visitors."
+                "Create or update a structured wiki/blog page. "
+                "body_format=markdown (default) or html for raw HTML in the body. "
+                "For a fully custom site (own layouts/CSS/JS), prefer site_write_file "
+                "under www/ (e.g. index.html, css/main.css, js/app.js)."
             ),
             "parameters": {
                 "type": "object",
@@ -607,7 +612,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "title": {"type": "string"},
                     "body_md": {
                         "type": "string",
-                        "description": "Full page body in Markdown",
+                        "description": "Page body (Markdown or HTML depending on body_format)",
                     },
                     "slug": {
                         "type": "string",
@@ -627,6 +632,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "description": "If true, visible on the public site",
                     },
                     "featured": {"type": "boolean"},
+                    "body_format": {
+                        "type": "string",
+                        "enum": ["markdown", "html"],
+                        "description": "markdown (default) or html for full HTML body",
+                    },
                 },
                 "required": ["title", "body_md"],
             },
@@ -649,7 +659,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "site_set_meta",
             "description": (
-                "Set site-wide branding: site_title, tagline, author, footer."
+                "Set site-wide branding: site_title, tagline, author, footer, "
+                "custom_head (raw HTML for <head>), home_slug (make that published "
+                "page the landing at / — e.g. home_slug=about). "
+                "For a fully custom home, prefer site_write_file path=index.html."
             ),
             "parameters": {
                 "type": "object",
@@ -658,7 +671,85 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "tagline": {"type": "string"},
                     "author": {"type": "string"},
                     "footer": {"type": "string"},
+                    "custom_head": {
+                        "type": "string",
+                        "description": "Raw HTML injected into <head> (extra CSS/JS links, meta, etc.)",
+                    },
+                    "home_slug": {
+                        "type": "string",
+                        "description": (
+                            "Slug of a published page to use as / "
+                            "(e.g. 'about'). Empty clears back to wiki listing home. "
+                            "Ignored if www/index.html exists."
+                        ),
+                    },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_write_file",
+            "description": (
+                "Write a file into YOUR freeform site tree (~/.ophelia/site/www/). "
+                "Full HTML, CSS, and JS allowed — e.g. index.html, css/style.css, js/app.js, "
+                "theme.css / theme.js (theme.* also restyles the built-in wiki chrome). "
+                "www/index.html replaces the default home page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path under www/, e.g. index.html or css/main.css",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file contents (UTF-8 text)",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_read_file",
+            "description": "Read a file from your www/ site tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_list_files",
+            "description": "List files under www/ (optional subdirectory prefix).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional subdirectory, e.g. css or js",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_delete_file",
+            "description": "Delete a file from your www/ site tree.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
             },
         },
     },
@@ -1339,6 +1430,10 @@ class ToolRegistry:
             "site_add_asset": self._site_add_asset,
             "site_export_static": self._site_export_static,
             "site_deploy": self._site_deploy,
+            "site_write_file": self._site_write_file,
+            "site_read_file": self._site_read_file,
+            "site_list_files": self._site_list_files,
+            "site_delete_file": self._site_delete_file,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
             "phone_tap": self._phone_tap,
@@ -2262,13 +2357,14 @@ class ToolRegistry:
         )
         if cf["ready"]:
             hint = (
-                "Publish with site_upsert_page(published=true), then call site_deploy "
-                "to push the static export to Cloudflare Pages (your public domain)."
+                "Landing / priority: (1) www/index.html via site_write_file, "
+                "(2) site_set_meta(home_slug='about'), (3) default wiki listing. "
+                "Then call site_deploy to push to Cloudflare Pages."
             )
         else:
             missing = ", ".join(cf["missing"]) or "credentials"
             hint = (
-                "Publish with site_upsert_page(published=true). "
+                "Landing / priority: www/index.html > home_slug > wiki listing. "
                 f"Cloudflare deploy not ready — missing: {missing}. "
                 "Owner must set CLOUDFLARE_API_TOKEN (Pages Edit), "
                 "CLOUDFLARE_ACCOUNT_ID, OPHELIA_SITE_CF_PROJECT, and "
@@ -2319,6 +2415,7 @@ class ToolRegistry:
         tags: str = "",
         published: bool | None = None,
         featured: bool = False,
+        body_format: str = "markdown",
     ) -> str:
         store = await self._site_store()
         try:
@@ -2331,6 +2428,7 @@ class ToolRegistry:
                 tags=tags or "",
                 published=published,
                 featured=bool(featured),
+                body_format=body_format or "markdown",
             )
         except Exception as e:
             return f"site_upsert_page error: {e}"
@@ -2361,6 +2459,8 @@ class ToolRegistry:
         tagline: str = "",
         author: str = "",
         footer: str = "",
+        custom_head: str = "",
+        home_slug: str | None = None,
     ) -> str:
         store = await self._site_store()
         kwargs = {}
@@ -2372,10 +2472,78 @@ class ToolRegistry:
             kwargs["author"] = author
         if footer:
             kwargs["footer"] = footer
+        if custom_head:
+            kwargs["custom_head"] = custom_head
+        # Allow explicitly clearing home_slug with empty string
+        if home_slug is not None:
+            kwargs["home_slug"] = (home_slug or "").strip().lower()
         if not kwargs:
-            return "Nothing to update — pass site_title, tagline, author, and/or footer."
+            return (
+                "Nothing to update — pass site_title, tagline, author, footer, "
+                "custom_head, and/or home_slug."
+            )
         meta = await store.set_meta(**kwargs)
-        return json.dumps({"ok": True, "meta": meta}, indent=2)
+        note = None
+        hs = (meta.get("home_slug") or "").strip()
+        if hs:
+            note = (
+                f"Landing / is now the published page '{hs}' "
+                "(unless www/index.html exists — that always wins). "
+                "Re-export/redeploy to update Cloudflare."
+            )
+        return json.dumps({"ok": True, "meta": meta, "note": note}, indent=2)
+
+    async def _site_write_file(self, path: str, content: str) -> str:
+        store = await self._site_store()
+        try:
+            info = store.write_www_file(path, content)
+        except Exception as e:
+            return f"site_write_file error: {e}"
+        return json.dumps(
+            {
+                "ok": True,
+                **info,
+                "public_url": f"{self._site_url()}{info['url']}",
+                "note": (
+                    "Live on your site immediately. "
+                    "index.html becomes the home page; theme.css/theme.js restyle wiki chrome."
+                ),
+            },
+            indent=2,
+        )
+
+    async def _site_read_file(self, path: str) -> str:
+        store = await self._site_store()
+        try:
+            info = store.read_www_file(path)
+        except Exception as e:
+            return f"site_read_file error: {e}"
+        # Cap huge files in tool output
+        content = info.get("content") or ""
+        if len(content) > 12000:
+            info = {
+                **info,
+                "content": content[:12000],
+                "truncated": True,
+                "note": "Content truncated in tool result; file on disk is complete.",
+            }
+        return json.dumps(info, indent=2)
+
+    async def _site_list_files(self, prefix: str = "") -> str:
+        store = await self._site_store()
+        try:
+            files = store.list_www_files(prefix)
+        except Exception as e:
+            return f"site_list_files error: {e}"
+        return json.dumps({"count": len(files), "files": files}, indent=2)
+
+    async def _site_delete_file(self, path: str) -> str:
+        store = await self._site_store()
+        try:
+            ok = store.delete_www_file(path)
+        except Exception as e:
+            return f"site_delete_file error: {e}"
+        return "Deleted." if ok else f"No file at www/{path}."
 
     async def _site_import_pages(self, pages_json: str) -> str:
         store = await self._site_store()
