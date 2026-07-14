@@ -693,6 +693,20 @@ class Settings(BaseSettings):
         alias="OPHELIA_SITE_PUBLIC_URL",
         description="Optional public URL (tunnel/Pages) told to Ophelia in tool results",
     )
+    # Cloudflare Pages Direct Upload — lets her push ~/.ophelia/site/export to the live domain
+    cloudflare_api_token: str | None = Field(default=None, alias="CLOUDFLARE_API_TOKEN")
+    cloudflare_account_id: str | None = Field(default=None, alias="CLOUDFLARE_ACCOUNT_ID")
+    site_cf_project: str | None = Field(
+        default=None,
+        alias="OPHELIA_SITE_CF_PROJECT",
+        description="Cloudflare Pages project name for site_deploy",
+    )
+    site_cf_branch: str = Field(default="main", alias="OPHELIA_SITE_CF_BRANCH")
+    site_cf_create_project: bool = Field(
+        default=False,
+        alias="OPHELIA_SITE_CF_CREATE_PROJECT",
+        description="If true, create the Pages project on first deploy when missing",
+    )
 
     web_search_enabled: bool = Field(default=True, alias="OPHELIA_WEB_SEARCH")
     # Web search backend. duckduckgo needs no key (free, less reliable);

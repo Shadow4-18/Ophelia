@@ -92,6 +92,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "site_import_pages",
         "site_add_asset",
         "site_export_static",
+        "site_deploy",
         "run_code",
         "recall_memory",
         "list_inbox_images",
@@ -712,7 +713,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "site_export_static",
             "description": (
                 "Export published pages as static HTML under ~/.ophelia/site/export/ "
-                "for GitHub Pages / Cloudflare Pages / any static host."
+                "for GitHub Pages / Cloudflare Pages / any static host. "
+                "Prefer site_deploy when Cloudflare credentials are configured — "
+                "that exports AND uploads to your live domain."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_deploy",
+            "description": (
+                "Export published pages and upload them to Cloudflare Pages so your "
+                "custom domain goes live / updates. Requires CLOUDFLARE_API_TOKEN, "
+                "CLOUDFLARE_ACCOUNT_ID, and OPHELIA_SITE_CF_PROJECT in ~/.ophelia/.env. "
+                "Call this after publishing or editing pages when you want the public "
+                "site to match. Narrating 'deployed' without this tool does nothing."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -1321,6 +1338,7 @@ class ToolRegistry:
             "site_import_pages": self._site_import_pages,
             "site_add_asset": self._site_add_asset,
             "site_export_static": self._site_export_static,
+            "site_deploy": self._site_deploy,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
             "phone_tap": self._phone_tap,
@@ -2232,19 +2250,37 @@ class ToolRegistry:
         return f"http://{self.settings.site_host}:{self.settings.site_port}"
 
     async def _site_status(self) -> str:
+        from ophelia.site.cloudflare import deploy_ready
+
         store = await self._site_store()
         st = await store.status(public_url=self._site_url())
         enabled = "yes" if self.settings.site_enabled else "no (OPHELIA_SITE_ENABLED=false)"
+        cf = deploy_ready(
+            account_id=self.settings.cloudflare_account_id,
+            api_token=self.settings.cloudflare_api_token,
+            project=self.settings.site_cf_project,
+        )
+        if cf["ready"]:
+            hint = (
+                "Publish with site_upsert_page(published=true), then call site_deploy "
+                "to push the static export to Cloudflare Pages (your public domain)."
+            )
+        else:
+            missing = ", ".join(cf["missing"]) or "credentials"
+            hint = (
+                "Publish with site_upsert_page(published=true). "
+                f"Cloudflare deploy not ready — missing: {missing}. "
+                "Owner must set CLOUDFLARE_API_TOKEN (Pages Edit), "
+                "CLOUDFLARE_ACCOUNT_ID, OPHELIA_SITE_CF_PROJECT, and "
+                "OPHELIA_SITE_PUBLIC_URL in ~/.ophelia/.env."
+            )
         return json.dumps(
             {
                 **st,
                 "server_enabled": enabled,
-                "hint": (
-                    "Publish with site_upsert_page(published=true). "
-                    "Visitors only see published pages. "
-                    "For a public URL from Termux/PC, put a tunnel in front of this port "
-                    "and set OPHELIA_SITE_PUBLIC_URL."
-                ),
+                "cloudflare": cf,
+                "public_url": self._site_url(),
+                "hint": hint,
             },
             indent=2,
             default=str,
@@ -2369,6 +2405,66 @@ class ToolRegistry:
         except Exception as e:
             return f"site_export_static error: {e}"
         return json.dumps({"ok": True, **manifest}, indent=2, default=str)
+
+    async def _site_deploy(self) -> str:
+        from ophelia.site.cloudflare import (
+            CloudflarePagesError,
+            deploy_directory_async,
+            deploy_ready,
+        )
+
+        cf = deploy_ready(
+            account_id=self.settings.cloudflare_account_id,
+            api_token=self.settings.cloudflare_api_token,
+            project=self.settings.site_cf_project,
+        )
+        if not cf["ready"]:
+            missing = ", ".join(cf["missing"]) or "credentials"
+            return (
+                "site_deploy not configured. Owner must add to ~/.ophelia/.env: "
+                f"{missing}. Token needs Cloudflare Pages:Edit. "
+                "Also set OPHELIA_SITE_PUBLIC_URL to the custom domain."
+            )
+        store = await self._site_store()
+        try:
+            manifest = await store.export_static()
+        except Exception as e:
+            return f"site_deploy export error: {e}"
+        try:
+            result = await deploy_directory_async(
+                store.export_dir,
+                account_id=self.settings.cloudflare_account_id or "",
+                api_token=self.settings.cloudflare_api_token or "",
+                project=self.settings.site_cf_project or "",
+                branch=self.settings.site_cf_branch or "main",
+                create_project=bool(self.settings.site_cf_create_project),
+            )
+        except CloudflarePagesError as e:
+            return f"site_deploy error: {e}"
+        except Exception as e:
+            return f"site_deploy error: {type(e).__name__}: {e}"
+        public = self._site_url()
+        return json.dumps(
+            {
+                "ok": True,
+                "exported_pages": manifest.get("pages"),
+                "export_path": manifest.get("path"),
+                "project": result.project,
+                "method": result.method,
+                "files": result.files,
+                "uploaded": result.uploaded,
+                "duration_sec": round(result.duration, 2),
+                "deployment_url": result.url or None,
+                "public_url": public,
+                "note": (
+                    f"Live site should be at {public}. "
+                    "If the custom domain was already attached in Cloudflare, "
+                    "visitors see this export after CDN refresh."
+                ),
+            },
+            indent=2,
+            default=str,
+        )
 
     async def _text_to_speech(
         self, text: str, voice_id: str = "", speed: float | None = None

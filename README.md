@@ -610,7 +610,7 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 life-loop regressions (humor scoring, life-context inference, wake availability,
 mood→behavior knobs, director parsing, curator reconciliation, autonomous resume).
 
-**Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
+**Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [public site / Cloudflare](docs/site.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
 
 ## Termux (optional pocket host)
 
