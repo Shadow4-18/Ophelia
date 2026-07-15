@@ -205,12 +205,19 @@ class ChannelSession:
         # text carries the inbound media filename; we capture it explicitly too.
         if logger:
             inbound_media = self._extract_inbound_media(text, settings)
+            media_kind = None
+            if inbound_media:
+                from ophelia.channels.inbound_media import classify_attachment
+
+                media_kind = classify_attachment(filename=inbound_media) or "file"
+                if media_kind == "image":
+                    media_kind = "photo"  # keep chat-log convention
             inbound_entry = {
                 "channel": channel,
                 "direction": "in",
                 "text": text,
                 "media_path": inbound_media,
-                "media_kind": "photo" if inbound_media else None,
+                "media_kind": media_kind,
                 "sender_id": sender_id,
                 "is_owner": is_owner,
                 "role": "user",

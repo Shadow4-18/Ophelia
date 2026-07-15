@@ -100,6 +100,7 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "run_code",
         "recall_memory",
         "list_inbox_images",
+        "list_inbox_files",
         "list_guests",
         "send_message_to_guest",
         "set_guest_rapport",
@@ -372,7 +373,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "paths sorted newest-first. Use this to find a source image "
                 "for generate_video image-to-video, or to re-examine a sent "
                 "photo. Only files modified within the lookback window are "
-                "returned (default 24h)."
+                "returned (default 24h). For videos/zips use list_inbox_files."
             ),
             "parameters": {
                 "type": "object",
@@ -387,6 +388,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "number",
                         "minimum": 0.1,
                         "description": "Only include files newer than this many hours (default 24).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_inbox_files",
+            "description": (
+                "List recent files the user sent over chat — images, videos, "
+                "zips, and other saved attachments under telegram_media / "
+                "discord_media. Returns absolute paths newest-first. Use this "
+                "when they sent a video or zip for your website "
+                "(then site_add_asset with that path)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["all", "image", "video", "file"],
+                        "description": "Filter by type (default all).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                    "within_hours": {
+                        "type": "number",
+                        "minimum": 0.1,
                     },
                 },
             },
@@ -779,15 +812,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "site_add_asset",
             "description": (
-                "Copy an image/file into the public site assets folder. "
-                "Returns a /assets/... URL you can embed in Markdown."
+                "Copy an image/video/file into the public site assets folder. "
+                "Returns a /assets/... URL you can embed in HTML/Markdown "
+                "(e.g. <video src=\"/assets/clip.mp4\">). "
+                "For files the user just sent, use the path from "
+                "'[User sent a video/file — saved to …]' or list_inbox_files."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Local file path (e.g. under ~/.ophelia)",
+                        "description": "Local file path (e.g. under ~/.ophelia/data/telegram_media)",
                     },
                     "filename": {
                         "type": "string",
@@ -1401,6 +1437,7 @@ class ToolRegistry:
             "search_civitai_models": self._search_civitai_models,
             "generate_video": self._generate_video,
             "list_inbox_images": self._list_inbox_images,
+            "list_inbox_files": self._list_inbox_files,
             "text_to_speech": self._text_to_speech,
             "send_file": self._send_file,
             "run_code": self._run_code,
@@ -1799,7 +1836,72 @@ class ToolRegistry:
         for p in candidates:
             lines.append(f"  {p}")
         lines.append(
-            "Pass any of these as `image` to generate_video for image-to-video."
+            "Pass any of these as `image` to generate_video for image-to-video. "
+            "For videos/zips use list_inbox_files."
+        )
+        return "\n".join(lines)
+
+    async def _list_inbox_files(
+        self,
+        kind: str = "all",
+        limit: int = 10,
+        within_hours: float = 24.0,
+    ) -> str:
+        """List recent inbound chat files (images, videos, zips, …)."""
+        import time as _time
+        from pathlib import Path
+
+        from ophelia.channels.inbound_media import (
+            FILE_EXTS,
+            IMAGE_EXTS,
+            VIDEO_EXTS,
+            classify_attachment,
+        )
+
+        data_dir = Path(self.settings.data_dir)
+        want = (kind or "all").strip().lower()
+        if want not in ("all", "image", "video", "file"):
+            want = "all"
+        cutoff = _time.time() - within_hours * 3600.0
+        candidates: list[tuple[Path, str]] = []
+        for sub in ("telegram_media", "discord_media"):
+            d = data_dir / sub
+            if not d.is_dir():
+                continue
+            for p in d.iterdir():
+                if not p.is_file() or not p.name.startswith("in_"):
+                    continue
+                classified = classify_attachment(filename=p.name)
+                if classified is None:
+                    # Still list unknown inbound files as "file"
+                    if p.suffix.lower() in (IMAGE_EXTS | VIDEO_EXTS | FILE_EXTS):
+                        classified = "file"
+                    else:
+                        continue
+                if want != "all" and classified != want:
+                    continue
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        candidates.append((p, classified))
+                except OSError:
+                    continue
+        if not candidates:
+            return (
+                f"No inbound {want if want != 'all' else 'files'} in the last "
+                f"{within_hours:.1f}h. Ask the user to resend the video/zip "
+                "(as a chat attachment), then call this again."
+            )
+        candidates.sort(key=lambda t: t[0].stat().st_mtime, reverse=True)
+        candidates = candidates[: max(1, min(int(limit or 10), 50))]
+        lines = [
+            f"Recent inbound files (newest first, {len(candidates)}, kind={want}):"
+        ]
+        for p, k in candidates:
+            size_kb = p.stat().st_size / 1024.0
+            lines.append(f"  [{k}] {p}  ({size_kb:.0f} KiB)")
+        lines.append(
+            "Pass a path to site_add_asset to publish it on your site, "
+            "or send_file to relay it."
         )
         return "\n".join(lines)
 

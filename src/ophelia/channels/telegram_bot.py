@@ -714,41 +714,54 @@ class TelegramGateway:
     async def on_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.document:
             return
+        from ophelia.channels.inbound_media import (
+            classify_attachment,
+            inbound_prompt_label,
+            safe_inbound_ext,
+        )
+
         doc = update.message.document
         mime = (doc.mime_type or "").lower()
-        name = (doc.file_name or "").lower()
-        if not mime.startswith("image/") and not name.endswith(
-            (".png", ".jpg", ".jpeg", ".webp", ".gif")
-        ):
+        name = doc.file_name or ""
+        kind = classify_attachment(filename=name, mime=mime)
+        if kind is None:
             await update.message.reply_text(
-                "I can read photos/images sent as pictures or image files — not other document types yet."
+                "I can save images, videos, and common files (zip/pdf/txt/…) — "
+                f"not `{Path(name).suffix or mime or 'unknown'}` yet."
             )
             return
         user = update.effective_user
         caption = (update.message.caption or "").strip()
-        admission = await self._admit_chat(
-            user, update, context, preview=caption or "(sent an image file)"
-        )
+        preview = caption or f"(sent a {inbound_prompt_label(kind)})"
+        admission = await self._admit_chat(user, update, context, preview=preview)
         if admission != "ok":
             return
         self._remember_user(user.id)
         channel = f"telegram:{user.id}"
-        log.info("telegram.document_image", user=user.id, mime=mime)
+        log.info("telegram.document", user=user.id, mime=mime, kind=kind, name=name[:80])
         await update.message.chat.send_action("typing")
         try:
             self._media_dir.mkdir(parents=True, exist_ok=True)
-            ext = Path(name).suffix or ".jpg"
+            ext = safe_inbound_ext(name, kind=kind)
             path = self._media_dir / f"in_{update.message.message_id}{ext}"
             file = await doc.get_file()
             await file.download_to_drive(str(path))
-            description = await self._describe_saved_image(path, caption)
-            # Surface the absolute path — the agent can pass it to tools that
-            # need the image (e.g. generate_video for image-to-video).
-            prompt = (
-                f"[User sent an image file — saved to {path}]\n"
-                f"Caption: {caption or '(none)'}\n\n"
-                f"Vision analysis:\n{description}"
-            )
+            label = inbound_prompt_label(kind)
+            if kind == "image":
+                description = await self._describe_saved_image(path, caption)
+                prompt = (
+                    f"[User sent an image file — saved to {path}]\n"
+                    f"Caption: {caption or '(none)'}\n\n"
+                    f"Vision analysis:\n{description}"
+                )
+            else:
+                prompt = (
+                    f"[User sent a {label} — saved to {path}]\n"
+                    f"Filename: {name or path.name}\n"
+                    f"Caption: {caption or '(none)'}\n"
+                    f"Use site_add_asset(path=\"{path}\") to put it on your public site, "
+                    "list_inbox_files to find recent uploads, or send_file to relay it."
+                )
             await self.session.handle_chat(
                 channel,
                 prompt,
@@ -758,7 +771,61 @@ class TelegramGateway:
             )
         except Exception as e:
             log.exception("telegram.document_error")
-            await update.message.reply_text(f"Image error: {e}")
+            await update.message.reply_text(
+                f"Couldn't save that {inbound_prompt_label(kind)}: {e}. "
+                "Telegram bots often reject files over ~20MB — try a smaller file or zip."
+            )
+        await self._maybe_attach_continue(update, context, channel)
+
+    async def on_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Native Telegram video (not sent as a document)."""
+        if not update.message:
+            return
+        video = update.message.video or update.message.video_note or update.message.animation
+        if not video:
+            return
+        user = update.effective_user
+        caption = (update.message.caption or "").strip()
+        admission = await self._admit_chat(
+            user, update, context, preview=caption or "(sent a video)"
+        )
+        if admission != "ok":
+            return
+        self._remember_user(user.id)
+        channel = f"telegram:{user.id}"
+        log.info("telegram.video", user=user.id, caption=caption[:80] if caption else "")
+        await update.message.chat.send_action("typing")
+        try:
+            self._media_dir.mkdir(parents=True, exist_ok=True)
+            # video_note has no file_name; animation is often .mp4
+            name = getattr(video, "file_name", None) or ""
+            mime = getattr(video, "mime_type", None) or "video/mp4"
+            from ophelia.channels.inbound_media import safe_inbound_ext
+
+            ext = safe_inbound_ext(name, kind="video", default=".mp4")
+            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            file = await video.get_file()
+            await file.download_to_drive(str(path))
+            prompt = (
+                f"[User sent a video — saved to {path}]\n"
+                f"Caption: {caption or '(none)'}\n"
+                f"MIME: {mime}\n"
+                f"Use site_add_asset(path=\"{path}\") to put it on your public site, "
+                "list_inbox_files to find recent uploads, or send_file to relay it."
+            )
+            await self.session.handle_chat(
+                channel,
+                prompt,
+                lambda t: self._send_reply(update, context, channel, t),
+                media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+                log_context=self._telegram_log_context(user),
+            )
+        except Exception as e:
+            log.exception("telegram.video_error")
+            await update.message.reply_text(
+                f"Couldn't save that video: {e}. "
+                "Telegram bots often reject videos over ~20MB — compress or send as a smaller zip."
+            )
         await self._maybe_attach_continue(update, context, channel)
 
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1145,7 +1212,14 @@ class TelegramGateway:
         )
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
-        app.add_handler(MessageHandler(filters.Document.IMAGE, self.on_document))
+        app.add_handler(
+            MessageHandler(
+                filters.VIDEO | filters.VIDEO_NOTE | filters.ANIMATION,
+                self.on_video,
+            )
+        )
+        # All documents (images, video files, zip, …) — on_document classifies
+        app.add_handler(MessageHandler(filters.Document.ALL, self.on_document))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
         # Tier B #8: stickers are a strong humor signal — a sticker reacting
         # to a joke counts as positive feedback even when the owner doesn't

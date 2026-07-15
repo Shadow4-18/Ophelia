@@ -448,6 +448,12 @@ class SiteStore:
         lower = name.lower()
         if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
             mime = "image/" + lower.rsplit(".", 1)[-1].replace("jpg", "jpeg")
+        elif lower.endswith((".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v")):
+            mime = "video/" + lower.rsplit(".", 1)[-1].replace("mov", "quicktime")
+        elif lower.endswith(".zip"):
+            mime = "application/zip"
+        elif lower.endswith(".pdf"):
+            mime = "application/pdf"
         now = utc_now()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(

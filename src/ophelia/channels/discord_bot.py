@@ -368,13 +368,12 @@ class DiscordGateway:
             async def _media_reply(path: Path, caption: str) -> bool:
                 return await gw._send_discord_file(message, path, caption)
 
-            # Capture image attachments: download, run vision, and fold the
-            # saved absolute paths into the prompt so the agent can use them
-            # (e.g. pass to generate_video for image-to-video).
-            image_prompt = await gw._save_and_describe_image_attachments(message)
+            # Capture attachments: images get vision; videos/zips are saved
+            # with an absolute path so she can site_add_asset / relay them.
+            media_prompt = await gw._save_and_describe_attachments(message)
             prompt_text = message.content.strip()
-            if image_prompt:
-                prompt_text = f"{image_prompt}\n\n{prompt_text}" if prompt_text else image_prompt
+            if media_prompt:
+                prompt_text = f"{media_prompt}\n\n{prompt_text}" if prompt_text else media_prompt
 
             async with message.channel.typing():
                 await gw.session.handle_chat(
@@ -388,45 +387,71 @@ class DiscordGateway:
         self._bot = bot
         return bot
 
-    async def _save_and_describe_image_attachments(self, message) -> str | None:
-        """Download any image attachments on a Discord message, run vision on
-        each, and return a prompt fragment listing the saved absolute paths
-        (so the agent can pass them to media tools like generate_video).
+    async def _save_and_describe_attachments(self, message) -> str | None:
+        """Download inbound Discord attachments (images, videos, zip/docs).
 
-        Non-image attachments are ignored. Returns None if there are no image
-        attachments.
+        Images also get a vision description. Non-images are saved and the
+        absolute path is surfaced so tools like site_add_asset can use them.
         """
-        image_attachments = [
-            a for a in message.attachments
-            if (a.content_type or "").startswith("image/")
-            or Path(a.filename).suffix.lower()
-            in (".png", ".jpg", ".jpeg", ".webp", ".gif")
-        ]
-        if not image_attachments:
+        from ophelia.channels.inbound_media import (
+            classify_attachment,
+            inbound_prompt_label,
+            safe_inbound_ext,
+        )
+
+        wanted = []
+        for a in message.attachments:
+            kind = classify_attachment(
+                filename=a.filename or "",
+                mime=a.content_type or "",
+            )
+            if kind:
+                wanted.append((a, kind))
+        if not wanted:
             return None
 
         from ophelia.media.vision_input import describe_image_file
 
         self._media_dir.mkdir(parents=True, exist_ok=True)
         parts: list[str] = []
-        for att in image_attachments:
-            ext = Path(att.filename).suffix.lower() or ".png"
+        caption = (message.content or "").strip()
+        for att, kind in wanted:
+            ext = safe_inbound_ext(att.filename or "", kind=kind)
             path = self._media_dir / f"in_{message.id}_{att.id}{ext}"
             try:
                 await att.save(str(path))
             except Exception as e:
                 log.warning("discord.attachment_save_failed", att=att.id, error=str(e))
                 continue
-            caption = (message.content or "").strip()
-            description = await describe_image_file(self.settings, path, question=caption or (
-                "The user sent this image on Discord. Describe it and respond to what they likely want."
-            ))
-            parts.append(
-                f"[User sent an image — saved to {path}]\n"
-                f"Caption: {caption or '(none)'}\n\n"
-                f"Vision analysis:\n{description}"
-            )
+            label = inbound_prompt_label(kind)
+            if kind == "image":
+                description = await describe_image_file(
+                    self.settings,
+                    path,
+                    question=caption
+                    or (
+                        "The user sent this image on Discord. Describe it and "
+                        "respond to what they likely want."
+                    ),
+                )
+                parts.append(
+                    f"[User sent an image — saved to {path}]\n"
+                    f"Caption: {caption or '(none)'}\n\n"
+                    f"Vision analysis:\n{description}"
+                )
+            else:
+                parts.append(
+                    f"[User sent a {label} — saved to {path}]\n"
+                    f"Filename: {att.filename or path.name}\n"
+                    f"Caption: {caption or '(none)'}\n"
+                    f"Use site_add_asset(path=\"{path}\") to put it on your public site, "
+                    "list_inbox_files to find recent uploads, or send_file to relay it."
+                )
         return "\n\n".join(parts) if parts else None
+
+    async def _save_and_describe_image_attachments(self, message) -> str | None:
+        """Backward-compatible alias — now saves videos/files too."""
+        return await self._save_and_describe_attachments(message)
 
     async def _send_discord_media(self, message, text: str) -> None:
         """Send media artifacts detected in a reply blob (Image/Video/TTS saved to ...)."""
