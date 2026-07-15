@@ -52,11 +52,13 @@ def test_prompter_example_has_contradiction_tolerance():
     assert "contradict" in text
 
 
-def test_prompter_example_output_is_default():
-    """The new PROMPTER should frame output as the default, not silence."""
+def test_prompter_example_conversation_presence_and_tick_heartbeat():
+    """PROMPTER: presence in conversation; quiet heartbeat on autonomous ticks."""
     src = Path(__file__).resolve().parents[1] / "PROMPTER.example.md"
     text = src.read_text(encoding="utf-8").lower()
-    assert "output is the default" in text
+    assert "presence is the default" in text
+    assert "heartbeat, not a summons" in text
+    assert "output is the default" not in text
 
 
 def test_prompter_example_no_skip_token_instruction():
@@ -71,13 +73,13 @@ def test_prompter_example_no_skip_token_instruction():
 
 
 def test_base_prompt_has_presence_language():
-    """BASE_PROMPT in agent_loop should now mention presence / contradiction
-    tolerance / output-as-default."""
+    """BASE_PROMPT: contradiction ok; ticks are a heartbeat; no SKIP tokens."""
     from ophelia.core.agent_loop import BASE_PROMPT
 
     low = BASE_PROMPT.lower()
     assert "contradict" in low
-    assert "output is the default" in low
+    assert "heartbeat" in low
+    assert "stillness" in low
     # Should explicitly call out compliance tokens like SKIP as unwanted.
     assert "skip" in low or "compliance token" in low
 
@@ -320,3 +322,22 @@ def test_fast_tick_skip_logic_present():
     src = inspect.getsource(ConsciousnessLoop._tick)
     assert "fast_tick_skip" in src
     assert "pressure" in src
+    # Heartbeat band is wider than the old 0.22 summons threshold.
+    assert "0.35" in src
+
+
+def test_consciousness_prompt_is_heartbeat_not_summons():
+    from ophelia.mind.consciousness import CONSCIOUSNESS_PROMPT
+
+    assert "heartbeat" in CONSCIOUSNESS_PROMPT.lower()
+    assert "not a summons" in CONSCIOUSNESS_PROMPT.lower() or "not a demand" in CONSCIOUSNESS_PROMPT.lower()
+    assert "presence is the default" not in CONSCIOUSNESS_PROMPT
+    assert "stillness" in CONSCIOUSNESS_PROMPT.lower()
+
+
+def test_prompter_marks_ticks_as_heartbeat():
+    from ophelia.mind.prompter import DEFAULT_PROMPTER, PROMPTER_VERSION
+
+    assert PROMPTER_VERSION >= 3
+    assert "heartbeat, not a summons" in DEFAULT_PROMPTER.lower()
+    assert "Output is the default" not in DEFAULT_PROMPTER

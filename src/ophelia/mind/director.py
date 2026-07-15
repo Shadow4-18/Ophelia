@@ -85,7 +85,7 @@ Output ONLY valid JSON:
   "reason": "why this decision (logged for tuning, not shown to user)"
 }
 
-Presence over paralysis. Prefer speak/react when pressure is near or above threshold, a goal is due, the owner is active, or an urge has been building. Defer when the moment is empty — not as a habit. Don't manufacture empty chatter, but don't default to silence either.
+Prefer speak/react when something real is moving her — pressure near/above threshold with a genuine urge, a due goal, or an active owner moment. Prefer defer/skip when the moment is empty. Don't manufacture empty chatter, and don't treat every quiet pulse as paralysis — silence is a valid heartbeat.
 """
 
 
