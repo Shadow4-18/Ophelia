@@ -545,6 +545,13 @@ class Orchestrator:
         await self._notify_inner(text)
 
     async def start(self) -> None:
+        from ophelia.core.crashlog import install_asyncio_handler
+
+        try:
+            install_asyncio_handler()
+        except Exception:
+            pass
+
         await self.memory.init()
         self.psyche = await self.memory.load_psyche()
         self.drives = await self.memory.load_drives()

@@ -124,6 +124,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     settings = Settings()
     ensure_dirs(settings)
 
+    from ophelia.core.crashlog import install_all, write_crash
+
+    install_all()
+
     # Single-instance guard: refuse to start a second `ophelia run` next to an
     # already-running one (e.g. a Termux:Boot/tmux instance). Two instances
     # fight over the Telegram bot token AND double-run consciousness/dream/
@@ -153,12 +157,29 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 0
         except Exception as e:
             attempts += 1
+            path = write_crash(
+                e,
+                where="ophelia.run",
+                attempt=attempts,
+                extra={"restart": restart, "max_restarts": max_restarts},
+            )
             log = structlog.get_logger()
-            log.exception("ophelia.crashed", attempt=attempts, error=str(e))
+            log.exception(
+                "ophelia.crashed", attempt=attempts, error=str(e), crash_log=str(path)
+            )
             if attempts > max_restarts:
-                print(f"ophelia crashed {attempts} times; giving up. Last error: {e}", file=sys.stderr)
+                print(
+                    f"ophelia crashed {attempts} times; giving up. Last error: {e}",
+                    file=sys.stderr,
+                )
+                print(f"Crash log: {path}", file=sys.stderr)
+                print("  View: ophelia crash", file=sys.stderr)
                 return 1
-            print(f"ophelia crashed (attempt {attempts}): {e}. Restarting in 5s...", file=sys.stderr)
+            print(
+                f"ophelia crashed (attempt {attempts}): {e}. Restarting in 5s...",
+                file=sys.stderr,
+            )
+            print(f"Crash log: {path}  (ophelia crash)", file=sys.stderr)
             import time as _t
 
             _t.sleep(5)
@@ -470,9 +491,14 @@ def _control_file(name: str) -> Path:
 
 def cmd_status(_: argparse.Namespace) -> int:
     """Show Ophelia's current autonomous state from the heartbeat file."""
+    from ophelia.core.crashlog import crash_log_summary
+
     hb = OPHELIA_HOME / "data" / "heartbeat.json"
     if not hb.is_file():
         print("No heartbeat — Ophelia is not running (or hasn't written one yet).")
+        summary = crash_log_summary()
+        if summary:
+            print(f"  crashlog: {summary}")
         return 1
     import json
 
@@ -496,6 +522,31 @@ def cmd_status(_: argparse.Namespace) -> int:
         f"  consciousness: {data.get('consciousness', False)}  dream: {data.get('dream', False)}",
     ]
     print("\n".join(lines))
+    summary = crash_log_summary()
+    if summary:
+        print(f"  crashlog: {summary}")
+    return 0
+
+
+def cmd_crash(args: argparse.Namespace) -> int:
+    """Show the last framework crash (survives tmux/terminal close)."""
+    from ophelia.core.crashlog import crash_log_path, last_crash_excerpt
+
+    path = crash_log_path()
+    if getattr(args, "path", False):
+        print(path)
+        return 0 if path.is_file() else 1
+    if not path.is_file():
+        print(f"No crash log yet at {path}")
+        print("Crashes from `ophelia run` are appended here automatically.")
+        return 0
+    text = last_crash_excerpt(max_chars=int(getattr(args, "chars", 12000) or 12000))
+    if not text.strip():
+        print(f"Crash log is empty: {path}")
+        return 0
+    print(f"# {path}\n")
+    print(text.rstrip())
+    print()
     return 0
 
 
@@ -1108,6 +1159,10 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from ophelia.core.crashlog import install_all
+
+    install_all()
+
     parser = argparse.ArgumentParser(
         prog="ophelia",
         description="Ophelia - willful autonomous AI. Run with no args for the menu.",
@@ -1261,6 +1316,22 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="Show live autonomy state (mood, drives, pressure)").set_defaults(
         func=cmd_status
     )
+    p_crash = sub.add_parser(
+        "crash",
+        help="Show last framework crash (from ~/.ophelia/crash.log — survives terminal close)",
+    )
+    p_crash.add_argument(
+        "--path",
+        action="store_true",
+        help="Print crash log path only",
+    )
+    p_crash.add_argument(
+        "--chars",
+        type=int,
+        default=12000,
+        help="Max characters of the log tail to print (default 12000)",
+    )
+    p_crash.set_defaults(func=cmd_crash)
     sub.add_parser("pause", help="Pause autonomy outreach on a running Ophelia").set_defaults(
         func=cmd_pause
     )
