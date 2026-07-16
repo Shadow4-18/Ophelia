@@ -374,9 +374,114 @@ class Workstation:
                 "image": self.stack.model("image"),
                 "video": self.stack.model("video"),
             },
+            "providers": {
+                "chat": self.stack.name("chat"),
+                "consciousness": self.stack.name("consciousness"),
+                "vision": self.stack.name("vision"),
+                "image": self.stack.name("image"),
+                "video": self.stack.name("video"),
+            },
+            "selectable_roles": ["chat", "consciousness", "vision", "curator"],
             "chat_model": self.stack.model("chat"),
             "chat_provider": self.stack.name("chat"),
         }
+
+    async def select_model(
+        self,
+        role: str,
+        model: str,
+        *,
+        persist: bool = True,
+    ) -> dict:
+        """Switch the active model for a role at runtime (and optionally in .env)."""
+        role = (role or "chat").strip().lower()
+        model = (model or "").strip()
+        allowed = {"chat", "consciousness", "vision", "curator"}
+        if role not in allowed:
+            raise ValueError(f"role must be one of {sorted(allowed)}")
+        if not model:
+            raise ValueError("model is required")
+
+        provider = self.stack.name(role)  # type: ignore[arg-type]
+        env_key, attr = self._model_setting_for(provider, role)
+        setattr(self.settings, attr, model)
+        # OpenAI-compatible backends cache model at build time; drop them.
+        self.stack._backends.clear()
+
+        persisted: list[str] = []
+        if persist:
+            from ophelia.setup.env_io import write_env_updates
+
+            persisted = write_env_updates({env_key: model})
+
+        log.info(
+            "workstation.model_selected",
+            role=role,
+            model=model,
+            provider=provider,
+            env_key=env_key,
+            persisted=bool(persisted),
+        )
+        await self.bus.broadcast({"type": "status", "data": self.status_dict()})
+        await self.bus.broadcast({"type": "system", "text": f"model · {role} → {model}"})
+        info = await self.models_info()
+        info["selected"] = {
+            "role": role,
+            "model": model,
+            "provider": provider,
+            "env_key": env_key,
+            "persisted": bool(persisted),
+        }
+        return info
+
+    @staticmethod
+    def _model_setting_for(provider: str, role: str) -> tuple[str, str]:
+        """Return (env_key, settings_attr) for a provider/role model override."""
+        if provider == "ollama":
+            mapping = {
+                "chat": ("OLLAMA_MODEL", "ollama_model"),
+                "consciousness": ("OLLAMA_CONSCIOUSNESS_MODEL", "ollama_consciousness_model"),
+                "vision": ("OLLAMA_VISION_MODEL", "ollama_vision_model"),
+                "curator": ("OLLAMA_CURATOR_MODEL", "ollama_curator_model"),
+            }
+            return mapping[role]
+        if provider in ("xai", "xai-oauth"):
+            mapping = {
+                "chat": ("XAI_MODEL", "xai_model"),
+                "consciousness": ("XAI_CONSCIOUSNESS_MODEL", "xai_consciousness_model"),
+                "vision": ("XAI_VISION_MODEL", "vision_model"),
+                "curator": ("XAI_CURATOR_MODEL", "xai_curator_model"),
+            }
+            return mapping[role]
+        if provider == "openai":
+            mapping = {
+                "chat": ("OPENAI_MODEL", "openai_model"),
+                "consciousness": ("OPENAI_CONSCIOUSNESS_MODEL", "openai_consciousness_model"),
+                "vision": ("OPENAI_VISION_MODEL", "openai_vision_model"),
+                "curator": ("OPENAI_CURATOR_MODEL", "openai_curator_model"),
+            }
+            return mapping[role]
+        if provider == "deepseek":
+            mapping = {
+                "chat": ("DEEPSEEK_MODEL", "deepseek_model"),
+                "consciousness": ("DEEPSEEK_CONSCIOUSNESS_MODEL", "deepseek_consciousness_model"),
+                "vision": ("DEEPSEEK_VISION_MODEL", "deepseek_vision_model"),
+                "curator": ("DEEPSEEK_CURATOR_MODEL", "deepseek_curator_model"),
+            }
+            return mapping[role]
+        if provider == "compat":
+            mapping = {
+                "chat": ("OPHELIA_COMPAT_MODEL", "compat_model"),
+                "consciousness": (
+                    "OPHELIA_COMPAT_CONSCIOUSNESS_MODEL",
+                    "compat_consciousness_model",
+                ),
+                "vision": ("OPHELIA_COMPAT_VISION_MODEL", "compat_vision_model"),
+                "curator": ("OPHELIA_COMPAT_CURATOR_MODEL", "compat_curator_model"),
+            }
+            return mapping[role]
+        # Fallback: treat as Ollama chat model so local installs always work.
+        return ("OLLAMA_MODEL", "ollama_model")
 
     async def compare_models(self, message: str, models: list[str]) -> dict:
         """Run the same prompt against multiple Ollama model names (no tools)."""
