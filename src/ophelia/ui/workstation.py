@@ -132,11 +132,19 @@ class Workstation:
         await self.bus.broadcast({"type": "inner", "text": text[:2000]})
 
     async def _notify_initiative(self, text: str) -> None:
+        from ophelia.channels.proactive_filter import (
+            is_outreach_junk,
+            strip_consciousness_tick_leak,
+        )
+
+        cleaned = strip_consciousness_tick_leak(text or "")
+        if not cleaned or is_outreach_junk(cleaned):
+            return
         if self.settings.avatar_enabled:
-            self.avatar.begin_speak(text or "", source="initiative")
+            self.avatar.begin_speak(cleaned or "", source="initiative")
             await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
-        await self.bus.broadcast({"type": "initiative", "text": text[:4000]})
-        await self.bus.broadcast({"type": "chat", "role": "assistant", "text": text[:4000]})
+        await self.bus.broadcast({"type": "initiative", "text": cleaned[:4000]})
+        await self.bus.broadcast({"type": "chat", "role": "assistant", "text": cleaned[:4000]})
         self.signals.last_agent_message_at = time.time()
 
     async def _status_loop(self) -> None:
@@ -260,11 +268,20 @@ class Workstation:
         finally:
             await self.signals.set_agent_thinking(False)
             await self.signals.set_user_talking(False)
+        from ophelia.channels.proactive_filter import (
+            is_outreach_junk,
+            strip_consciousness_tick_leak,
+        )
+
+        reply = strip_consciousness_tick_leak(reply or "")
+        if not reply or is_outreach_junk(reply):
+            reply = ""
         self.signals.last_agent_message_at = time.time()
         if self.settings.avatar_enabled:
             self.avatar.begin_speak(reply or "", source="chat")
             await self.bus.broadcast({"type": "avatar", "data": self.avatar_dict()})
-        await self.bus.broadcast({"type": "chat", "role": "assistant", "text": reply})
+        if reply:
+            await self.bus.broadcast({"type": "chat", "role": "assistant", "text": reply})
         return reply
 
     def avatar_dict(self) -> dict:

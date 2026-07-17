@@ -1,12 +1,15 @@
 """Tests for proactive outreach junk filtering."""
 
 from ophelia.channels.proactive_filter import (
+    has_creative_tool_intent,
+    is_consciousness_tick_payload,
     is_outreach_junk,
     is_stillness_mood_label,
     is_tick_status_noise,
     proactive_chunks,
+    strip_consciousness_tick_leak,
 )
-from ophelia.mind.consciousness import _soften_silent_tick
+from ophelia.mind.consciousness import _promote_declared_action, _soften_silent_tick
 
 
 def test_skip_and_no_response_are_junk():
@@ -83,3 +86,84 @@ def test_soften_does_not_touch_non_silent_actions():
     }
     out = _soften_silent_tick(tick, prior_mood_label="curious")
     assert out["internal_thought"] == "holding stillness is wrong here"
+
+
+TICK_JSON = (
+    "{\n"
+    '  "internal_thought": "",\n'
+    '  "mood": {"valence": 0.45, "arousal": 0.55, "label": "determined"},\n'
+    '  "action": "silent"\n'
+    "}"
+)
+
+
+def test_consciousness_tick_json_is_outreach_junk():
+    assert is_consciousness_tick_payload(TICK_JSON)
+    assert is_outreach_junk(TICK_JSON)
+    assert is_outreach_junk("[consciousness]\n" + TICK_JSON)
+    assert is_tick_status_noise(TICK_JSON)
+
+
+def test_strip_tick_leak_keeps_prose_drops_json():
+    mixed = (
+        "Sent. This time I used Illustrious with explicit dark-gothic details.\n\n"
+        f"[consciousness]\n{TICK_JSON}"
+    )
+    cleaned = strip_consciousness_tick_leak(mixed)
+    assert "Illustrious" in cleaned
+    assert "internal_thought" not in cleaned
+    assert '"action"' not in cleaned
+    assert not is_consciousness_tick_payload(cleaned)
+
+
+def test_strip_tick_leak_pure_json_becomes_empty():
+    assert strip_consciousness_tick_leak(TICK_JSON) == ""
+    assert strip_consciousness_tick_leak("[consciousness] " + TICK_JSON) == ""
+
+
+def test_proactive_chunks_strip_embedded_tick_json():
+    mixed = f"hey check this [[break]] {TICK_JSON}"
+    assert proactive_chunks(mixed) == ["hey check this"]
+
+
+def test_has_creative_tool_intent():
+    assert has_creative_tool_intent("generate_image of myself nsfw")
+    assert has_creative_tool_intent("draw an image with Illustrious")
+    assert has_creative_tool_intent("make a selfie")
+    assert not has_creative_tool_intent("just thinking about music")
+
+
+def test_promote_message_with_tool_intent_to_act():
+    tick = {
+        "action": "message",
+        "internal_thought": "need a better selfie",
+        "tool_intent": "generate_image nsfw gothic look",
+        "outward_message": "Sent. regenerating now",
+    }
+    out = _promote_declared_action(tick)
+    assert out["action"] == "act"
+
+
+def test_promote_silent_with_explicit_creative_tool_intent():
+    tick = {
+        "action": "silent",
+        "internal_thought": "",
+        "tool_intent": "generate_image pony nsfw",
+    }
+    out = _promote_declared_action(tick)
+    assert out["action"] == "act"
+
+
+def test_promote_leaves_true_silent_alone():
+    tick = {
+        "action": "silent",
+        "internal_thought": "quiet for a bit",
+        "tool_intent": "",
+    }
+    out = _promote_declared_action(tick)
+    assert out["action"] == "silent"
+
+
+def test_promote_leaves_act_alone():
+    tick = {"action": "act", "tool_intent": "generate_image"}
+    assert _promote_declared_action(tick)["action"] == "act"

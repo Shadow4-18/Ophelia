@@ -328,15 +328,28 @@ class ChannelSession:
             out = await self.agent.run_turn(
                 channel, text, is_owner=is_owner, system_extra=turn_extra
             )
+            from ophelia.channels.proactive_filter import (
+                is_outreach_junk,
+                strip_consciousness_tick_leak,
+            )
+
+            # Models sometimes echo consciousness-tick JSON into chat replies
+            # after seeing raw ticks in history. Strip before the owner sees it.
+            out = strip_consciousness_tick_leak(out or "")
+            if not out or is_outreach_junk(out):
+                out = ""
             # Only the owner's messages shape her drives/will. Guests don't.
             if is_owner:
                 self.drives.on_user_message()
                 await self.memory.save_drives(self.drives)
             self.signals.last_agent_message_at = time.time()
             for i, chunk in enumerate(split_messages(out)):
+                cleaned = strip_consciousness_tick_leak(chunk)
+                if not cleaned or is_outreach_junk(cleaned):
+                    continue
                 if i:
                     await asyncio.sleep(1.2)
-                await _logged_reply(chunk)
+                await _logged_reply(cleaned)
             # Tier B #8: track jokes/quips in her normal chat replies (owner
             # only) so her humor can be calibrated from everyday conversation,
             # not just spontaneous outreach.
