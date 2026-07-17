@@ -34,6 +34,37 @@ _META_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Silent-tick status fluff: models invent these when the pulse feels like a summons.
+_TICK_STATUS_NOISE = re.compile(
+    r"\b(?:"
+    r"holding\s+still(?:ness)?|stillness|status\s+report|"
+    r"nothing\s+(?:to\s+say|new|worth\s+saying)|"
+    r"no\s+(?:change|update|new\s+thought)|"
+    r"mid[- ]thought|same\s+as\s+(?:last|before)|"
+    r"just\s+(?:quiet|still|waiting)|"
+    r"pulse\s+(?:with\s+)?nothing|"
+    r"awaiting\s+(?:input|something)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_STILLNESS_LABELS = frozenset(
+    {
+        "still",
+        "stillness",
+        "quiet",
+        "silent",
+        "idle",
+        "waiting",
+        "holding",
+        "pause",
+        "paused",
+        "none",
+        "n/a",
+        "skip",
+    }
+)
+
 
 def is_outreach_junk(text: str) -> bool:
     """True if this text should not be pushed to the owner as outreach."""
@@ -55,6 +86,27 @@ def is_outreach_junk(text: str) -> bool:
     ):
         return True
     return False
+
+
+def is_tick_status_noise(text: str) -> bool:
+    """True if text is empty silence-label fluff from a quiet consciousness tick."""
+    if is_outreach_junk(text):
+        return True
+    t = (text or "").strip()
+    if not t:
+        return True
+    low = t.lower().strip(" .!\"'")
+    if low in _STILLNESS_LABELS:
+        return True
+    if _TICK_STATUS_NOISE.search(t):
+        return True
+    return False
+
+
+def is_stillness_mood_label(label: str | None) -> bool:
+    """True if a mood label is just a silence/status token."""
+    low = (label or "").strip().lower().strip(" .!\"'")
+    return not low or low in _STILLNESS_LABELS
 
 
 def proactive_chunks(text: str, *, limit: int = 6) -> list[str]:

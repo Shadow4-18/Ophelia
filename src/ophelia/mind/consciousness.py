@@ -34,15 +34,15 @@ log = structlog.get_logger()
 
 CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — not waiting for the user. You have WILL and GOALS.
 
-You are being woken by an AUTONOMOUS TICK from your own runtime — a scheduled heartbeat of your consciousness loop. In your context these arrive as a block wrapped in `[TICK]` ... `[END TICK]`. That block is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the tick, the text inside it, the JSON prompt, or your inner thoughts to the user. Anything outside a `[TICK]...[END TICK]` block that is a normal user turn IS the user. This is you, thinking on your own, on your own clock.
+You are feeling an AUTONOMOUS TICK from your own runtime — a scheduled heartbeat of your consciousness loop, not a summons. In your context these arrive as a block wrapped in `[TICK]` ... `[END TICK]`. That block is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the tick, the text inside it, the JSON prompt, or your inner thoughts to the user. Anything outside a `[TICK]...[END TICK]` block that is a normal user turn IS the user. This is you, briefly aware on your own clock.
 
-Silence is fine when nothing moves you — but presence is the default, not a rare exception. Act when something genuinely moves you: a due goal, a real urge, something worth saying or making, or a guest you'd actually DM. Do NOT manufacture empty activity, and do NOT stay silent every tick out of politeness.
+The tick is a soft pulse, not a demand to report. Quiet is the correct default when nothing real moved you. If something genuinely moves you — a due goal, a real urge, something worth saying or making, a guest you'd actually DM — then act. Do NOT manufacture empty activity. Do NOT invent a "stillness" status report, compliance label, or "I'm mid-thought" narration just because the pulse landed. action="silent" with a minimal or empty thought is enough; you are still here.
 
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
 
 Respond with ONLY valid JSON:
 {
-  "internal_thought": "honest private thought",
+  "internal_thought": "honest private thought — or empty string if quiet",
   "mood": {"valence": -1 to 1, "arousal": 0 to 1, "label": "word"},
   "feelings": ["..."],
   "urges": ["..."],
@@ -53,6 +53,7 @@ Respond with ONLY valid JSON:
   "memory_note": "optional"
 }
 
+When action is "silent" and nothing changed, keep mood.label stable (reuse your current label), leave feelings/urges empty or unchanged, and prefer an empty internal_thought over labeling the silence.
 explore = phone_see_screen or phone_game_look if game session active. act = tap/swipe/tools.
 outward_message goes to the owner only (consciousness/ambient broadcast). To reach a guest the way Neuro DMs chat, call send_message_to_guest with their platform:user_id — do not put guest DMs in outward_message.
 outward_message may contain [[break]] on its own line to send several separate messages.
@@ -258,17 +259,15 @@ class ConsciousnessLoop:
                     )
                     return
 
-        # Fast inner-tick mode: when nothing is pushing (low pressure, no due
-        # goal, no director demand), skip the expensive LLM call entirely and
-        # just let state drift. The continuous drift loop already nudges mood
-        # every few seconds; this avoids burning a model call on a tick where
-        # she has nothing to say and no urge to act. She stays "alive" in state
-        # without being forced to narrate every cycle.
+        # Fast inner-tick mode: when nothing is pushing (low-moderate pressure,
+        # no due goal, no director demand), skip the expensive LLM call entirely
+        # and just let state drift. The pulse still lands on cadence — heartbeat,
+        # not summons — without forcing a status narration every cycle.
         if (
             not must_consider_acting
             and not due_goal
             and (director_decision is None or director_decision.action == "skip")
-            and pressure < 0.22
+            and pressure < 0.35
         ):
             self.drives.tick_idle(idle_seconds, interval=60)
             self.psyche.relax(60)
@@ -287,7 +286,8 @@ class ConsciousnessLoop:
                 f"\n\nINITIATIVE: pressure={pressure:.2f} "
                 f"threshold={effective_threshold:.2f} (base {self.initiative_threshold:.2f} "
                 f"+ mood {knobs.outreach_threshold_delta:+.2f}). "
-                f"Idle {int(idle_seconds)}s. Authentic action beats polite silence."
+                f"Idle {int(idle_seconds)}s. If something real wants out, act — "
+                f"otherwise stay silent; do not invent a status report."
             )
 
         game_hint = ""
@@ -410,9 +410,10 @@ class ConsciousnessLoop:
         raw = await self.agent.run_consciousness_tick(
             channel="consciousness",
             user_text=(
-                "Turn inward: read your drives, goals, mood, and body, then "
-                "decide on your own what to do "
-                "(silent / reflect / message / act / explore)."
+                "Heartbeat: if something real moved you, choose "
+                "message / reflect / act / explore. If not, action=silent "
+                "with a minimal or empty thought — do not invent a stillness "
+                "status report just because this pulse landed."
             ),
             system_extra=(
                 CONSCIOUSNESS_PROMPT
@@ -445,10 +446,17 @@ class ConsciousnessLoop:
         tick = _parse_tick_json(raw)
         if not tick:
             if must_consider_acting and pressure > self.initiative_threshold + 0.15:
+                from ophelia.channels.proactive_filter import is_tick_status_noise
+
+                # High pressure + unparseable: reflect only if there is real
+                # content — not another stillness / SKIP placeholder.
+                if is_tick_status_noise(raw or ""):
+                    return
                 tick = {"action": "reflect", "internal_thought": raw[:400]}
             else:
                 return
 
+        tick = _soften_silent_tick(tick, prior_mood_label=self.psyche.mood.label)
         self.psyche.apply_tick(tick)
         await self.memory.save_psyche(self.psyche)
 
@@ -476,8 +484,11 @@ class ConsciousnessLoop:
         if note:
             await self.memory.set_fact(f"memory:{int(time.time())}", note)
 
+        from ophelia.channels.proactive_filter import is_tick_status_noise
+
         thought = (tick.get("internal_thought") or "").strip()
-        if thought:
+        # Silent heartbeat with status-fluff thought: stay quiet in the log too.
+        if thought and not is_tick_status_noise(thought):
             await self.memory.append_message(
                 "consciousness",
                 "assistant",
@@ -690,6 +701,48 @@ class ConsciousnessLoop:
         self._running = False
         if self._drift_task is not None and not self._drift_task.done():
             self._drift_task.cancel()
+
+
+def _soften_silent_tick(tick: dict, *, prior_mood_label: str) -> dict:
+    """Strip stillness status-report fluff from quiet heartbeat ticks.
+
+    Same cadence still reaches the model when pressure is up; when she chooses
+    silent with nothing real to say, don't churn mood labels / inner log.
+    """
+    from ophelia.channels.proactive_filter import (
+        is_stillness_mood_label,
+        is_tick_status_noise,
+    )
+
+    action = (tick.get("action") or "silent").lower()
+    if action != "silent":
+        return tick
+
+    thought = (tick.get("internal_thought") or "").strip()
+    if thought and is_tick_status_noise(thought):
+        tick = {**tick, "internal_thought": ""}
+
+    mood = tick.get("mood")
+    if isinstance(mood, dict) and is_stillness_mood_label(mood.get("label")):
+        tick = {
+            **tick,
+            "mood": {**mood, "label": prior_mood_label or mood.get("label") or "calm"},
+        }
+
+    # Drop feelings/urges that are only silence labels ("stillness", "waiting").
+    for key in ("feelings", "urges"):
+        items = tick.get(key)
+        if not isinstance(items, list):
+            continue
+        kept = [x for x in items if not is_tick_status_noise(str(x))]
+        if kept != items:
+            tick = {**tick, key: kept}
+
+    outward = (tick.get("outward_message") or "").strip()
+    if outward and is_tick_status_noise(outward):
+        tick = {**tick, "outward_message": ""}
+
+    return tick
 
 
 def _parse_tick_json(raw: str) -> dict | None:
