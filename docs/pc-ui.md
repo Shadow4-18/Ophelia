@@ -21,11 +21,29 @@ ophelia ui --no-browser
 |-------|--------|
 | **Stage** | Avatar — context-driven expression, animations, lip sync (procedural / Live2D / VRoid / VRChat) |
 | **Channel** | Chat with Ophelia (same memory as `ui:local` session) |
+| **Models** (toggle) | Installed Ollama models, role routing, switch chat/consciousness/vision/curator, optional compare |
 | **State** (toggle) | Mood, valence/arousal, drives, urges, last inner thought |
-| **Inner monologue** (toggle) | Live stream from `~/.ophelia/data/inner_monologue.md` |
+| **Inner** (toggle) | Live stream from `~/.ophelia/data/inner_monologue.md` + system log |
 | **Status bar** | Model, initiative pressure, consciousness, avatar backend |
 
-Consciousness runs in the background — spontaneous messages appear in chat (highlighted) and animate the avatar. **Pause mind** stops outreach without stopping the server. Use **state** in the top bar to open psyche + inner panels.
+Consciousness runs in the background — spontaneous messages appear in chat (highlighted) and animate the avatar. **Pause mind** stops outreach without stopping the server. Use **models** / **state** in the top bar to open the side drawer (tabs: Models · State · Inner).
+
+On narrow screens the **channel** is primary; the stage stays a short strip above chat. Connection status shows **live** (WebSocket), **http · live** (polling fallback), or **reconnecting…**.
+
+### Switch models from the UI
+
+1. Click **models** in the top bar.
+2. Choose a **role** (chat, consciousness, vision, curator) and an installed model (or type a model id).
+3. **Use model** applies immediately. With **Save to ~/.ophelia/.env** checked (default), the matching env key is updated (`OLLAMA_MODEL`, `OLLAMA_CONSCIOUSNESS_MODEL`, … — or the cloud provider’s model key when that provider is active).
+
+API:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/models` | Installed + recommended + current routing |
+| `POST` | `/api/models/select` | `{ "role", "model", "persist": true }` |
+| `POST` | `/api/compare` | Same prompt on up to 4 Ollama models (no tools) |
+| `GET` | `/api/status` | Snapshot used for HTTP status polling when WS is down |
 
 ### Performance (expressions · animations · lip sync)
 

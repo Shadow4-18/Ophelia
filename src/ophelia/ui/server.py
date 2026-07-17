@@ -36,6 +36,12 @@ class CompareRequest(BaseModel):
     models: list[str] = []
 
 
+class SelectModelRequest(BaseModel):
+    role: str = "chat"
+    model: str
+    persist: bool = True
+
+
 def create_app(workstation: Workstation) -> FastAPI:
     app = FastAPI(title="Ophelia Workstation", docs_url=None, redoc_url=None)
 
@@ -62,6 +68,17 @@ def create_app(workstation: Workstation) -> FastAPI:
     @app.get("/api/models")
     async def models_info() -> dict[str, Any]:
         return await workstation.models_info()
+
+    @app.post("/api/models/select")
+    async def select_model(body: SelectModelRequest) -> dict[str, Any]:
+        try:
+            return await workstation.select_model(
+                body.role, body.model, persist=body.persist
+            )
+        except ValueError as e:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.post("/api/compare")
     async def compare(body: CompareRequest) -> dict[str, Any]:

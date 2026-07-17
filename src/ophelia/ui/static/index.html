@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Ophelia — Workstation</title>
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -21,15 +21,16 @@
   <div class="scanlines" aria-hidden="true"></div>
   <header class="topbar">
     <div class="brand">
-      <span class="status-dot" id="statusDot"></span>
+      <span class="status-dot" id="statusDot" title="Connection"></span>
       <h1>OPHELIA</h1>
       <span class="tag">workstation</span>
     </div>
     <div class="topbar-meta">
-      <span id="runtimeLabel">connecting…</span>
-      <span id="providerLabel">—</span>
+      <span id="connLabel" class="conn-label">connecting…</span>
+      <span id="providerLabel" class="hide-narrow">—</span>
       <button type="button" class="btn ghost" id="pauseBtn">pause mind</button>
-      <button type="button" class="btn ghost" id="panelToggle" aria-expanded="false">state</button>
+      <button type="button" class="btn ghost" id="modelsToggle" aria-expanded="false" aria-controls="sideDrawer">models</button>
+      <button type="button" class="btn ghost" id="panelToggle" aria-expanded="false" aria-controls="sideDrawer">state</button>
     </div>
   </header>
 
@@ -58,8 +59,69 @@
     </section>
 
     <aside class="side-drawer" id="sideDrawer" hidden>
-      <div class="drawer-grid">
-        <div class="panel psyche-panel">
+      <div class="drawer-tabs" role="tablist" aria-label="Workstation panels">
+        <button type="button" class="drawer-tab active" role="tab" id="tabModels" aria-selected="true" data-tab="models">Models</button>
+        <button type="button" class="drawer-tab" role="tab" id="tabState" aria-selected="false" data-tab="state">State</button>
+        <button type="button" class="drawer-tab" role="tab" id="tabInner" aria-selected="false" data-tab="inner">Inner</button>
+      </div>
+      <div class="drawer-panels">
+        <div class="panel models-panel drawer-pane active" id="paneModels" role="tabpanel" aria-labelledby="tabModels">
+          <h2>Models</h2>
+          <p class="hint" id="modelsHint">Pick which Ollama (or cloud) model handles chat and mind.</p>
+          <div class="model-routing" id="modelRouting"></div>
+          <label class="field">
+            <span>Role</span>
+            <select id="modelRole">
+              <option value="chat">chat</option>
+              <option value="consciousness">consciousness</option>
+              <option value="vision">vision</option>
+              <option value="curator">curator</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="modelSelect"></select>
+          </label>
+          <label class="field custom-model">
+            <span>Or type a model id</span>
+            <input type="text" id="modelCustom" placeholder="e.g. llama3.2:1b" autocomplete="off" />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="modelPersist" checked />
+            <span>Save to ~/.ophelia/.env</span>
+          </label>
+          <div class="row-actions">
+            <button type="button" class="btn primary" id="modelApplyBtn">Use model</button>
+            <button type="button" class="btn ghost" id="modelRefreshBtn">Refresh</button>
+          </div>
+          <p class="model-status" id="modelStatus" aria-live="polite"></p>
+
+          <h3>Compare</h3>
+          <p class="hint">Run the same prompt on up to two installed models (no tools).</p>
+          <label class="field">
+            <span>Prompt</span>
+            <input type="text" id="comparePrompt" placeholder="Say hello in one line" autocomplete="off" />
+          </label>
+          <div class="compare-picks">
+            <label class="field">
+              <span>A</span>
+              <select id="compareA"></select>
+            </label>
+            <label class="field">
+              <span>B</span>
+              <select id="compareB"></select>
+            </label>
+          </div>
+          <button type="button" class="btn ghost" id="compareBtn">Compare</button>
+          <div class="compare-results" id="compareResults"></div>
+
+          <h3>Installed</h3>
+          <ul class="list model-list" id="installedList"></ul>
+          <h3>Recommended</h3>
+          <ul class="list model-list" id="recommendedList"></ul>
+        </div>
+
+        <div class="panel psyche-panel drawer-pane" id="paneState" role="tabpanel" aria-labelledby="tabState" hidden>
           <h2>State</h2>
           <div class="mood-ring">
             <div class="mood-core" id="moodCore">
@@ -81,7 +143,8 @@
           <ul class="list" id="urges"></ul>
           <p class="thought" id="thought"></p>
         </div>
-        <div class="panel inner-panel">
+
+        <div class="panel inner-panel drawer-pane" id="paneInner" role="tabpanel" aria-labelledby="tabInner" hidden>
           <h2>Inner monologue</h2>
           <pre class="inner-stream" id="innerStream">(waiting for thoughts…)</pre>
           <h2>System</h2>
