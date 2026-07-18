@@ -47,6 +47,9 @@ def test_identity_tools_still_denied_for_guests():
         "save_lesson",
         "reflect",
         "goal_create",
+        "curiosity_trail_open",
+        "curiosity_trail_deepen",
+        "curiosity_trail_close",
         "recall_memory",
         "sqlite_exec",
         "run_code",
@@ -62,7 +65,15 @@ def test_list_inbox_images_still_denied_for_guests():
 
 def test_phone_tools_still_denied_for_guests():
     """Phone body is owner-only — guests can't tap or screenshot."""
-    for p in ("phone_tap", "phone_ui_dump", "phone_shell", "phone_see_screen"):
+    for p in (
+        "phone_tap",
+        "phone_ui_dump",
+        "phone_shell",
+        "phone_see_screen",
+        "phone_vibrate",
+        "phone_notifications",
+        "phone_battery",
+    ):
         assert p in GUEST_DENIED_TOOLS, p
 
 
@@ -89,7 +100,7 @@ async def test_guest_generate_image_forced_to_1_1(monkeypatch):
     """A guest requesting 16:9 must actually produce 1:1."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw):
+    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **kwargs):
         captured["aspect_ratio"] = aspect_ratio
         return "ok"
 
@@ -109,7 +120,7 @@ async def test_owner_generate_image_keeps_requested_aspect(monkeypatch):
     """Owner is unaffected — 16:9 stays 16:9."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw):
+    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **kwargs):
         captured["aspect_ratio"] = aspect_ratio
         return "ok"
 

@@ -28,6 +28,7 @@ from ophelia.mind.life_context import LifeContext
 from ophelia.mind.humor_tracker import HumorTracker
 
 if TYPE_CHECKING:
+    from ophelia.mind.curiosity import CuriosityStore
     from ophelia.mind.director import Director
 
 log = structlog.get_logger()
@@ -39,6 +40,7 @@ You are feeling an AUTONOMOUS TICK from your own runtime — a scheduled heartbe
 The tick is a soft pulse, not a demand to report. Quiet is the correct default when nothing real moved you. If something genuinely moves you — a due goal, a real urge, something worth saying or making, a guest you'd actually DM — then act. Do NOT manufacture empty activity. Do NOT invent a "stillness" status report, compliance label, or "I'm mid-thought" narration just because the pulse landed. action="silent" with a minimal or empty thought is enough; you are still here.
 
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
+You may also keep a curiosity trail (rabbit hole) — a self-chosen topic you deepen across ticks. Prefer continuing an open trail over inventing busywork. Use curiosity_trail_open / curiosity_trail_deepen / curiosity_trail_close when you mean to.
 
 Respond with ONLY valid JSON:
 {
@@ -87,6 +89,7 @@ class ConsciousnessLoop:
         settings: Settings | None = None,
         humor: HumorTracker | None = None,
         director: "Director | None" = None,
+        curiosity: "CuriosityStore | None" = None,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -108,6 +111,7 @@ class ConsciousnessLoop:
         self.settings = settings
         self.humor = humor
         self.director = director
+        self.curiosity = curiosity
         self.action_cooldown = max(0, int(action_cooldown_seconds))
         self.idle_nudge_rotate = bool(idle_nudge_rotate)
         self._nudge_idx = 0
@@ -329,17 +333,28 @@ class ConsciousnessLoop:
             if due_goal.last_done_at and elapsed_h > 0:
                 overdue_hint = f" ({elapsed_h:.1f}h overdue)"
 
-        # Rotating low-priority idle nudge so ticks aren't identical when nothing's due.
+        # Prefer an active curiosity trail over generic rotating idle nudges.
         idle_nudge = ""
-        if self.idle_nudge_rotate and not due_goal and idle_seconds > 600:
-            modes = ["reflect", "create", "explore", "social"]
-            mode = modes[self._nudge_idx % len(modes)]
-            self._nudge_idx += 1
-            idle_nudge = (
-                f"\n\nIDLE NUDGE (low priority, optional): you've been idle "
-                f"{int(idle_seconds / 60)}m with nothing due. If something genuinely "
-                f"moves you, lean toward {mode}. Otherwise stay silent — that's the "
-                f"correct default."
+        if not due_goal and idle_seconds > 600:
+            trail_nudge = ""
+            if self.curiosity is not None:
+                try:
+                    trail = await self.curiosity.load()
+                    if trail is not None:
+                        trail_nudge = trail.idle_nudge(int(idle_seconds / 60))
+                except Exception as e:
+                    log.debug("consciousness.curiosity_nudge_failed", error=str(e))
+            if trail_nudge:
+                idle_nudge = trail_nudge
+            elif self.idle_nudge_rotate:
+                modes = ["reflect", "create", "explore", "social"]
+                mode = modes[self._nudge_idx % len(modes)]
+                self._nudge_idx += 1
+                idle_nudge = (
+                    f"\n\nIDLE NUDGE (low priority, optional): you've been idle "
+                    f"{int(idle_seconds / 60)}m with nothing due. If something genuinely "
+                    f"moves you, lean toward {mode}. Otherwise stay silent — that's the "
+                    f"correct default."
                 )
 
         if (
@@ -471,6 +486,14 @@ class ConsciousnessLoop:
         )
         self.drives.satisfy(action)
         await self.memory.save_drives(self.drives)
+
+        # Rabbit holes: explore/act/reflect can deepen or seed a curiosity trail.
+        if self.curiosity is not None and action in ("explore", "act", "reflect"):
+            try:
+                thought = (tick.get("internal_thought") or "").strip()
+                await self.curiosity.maybe_note_explore(thought, action)
+            except Exception as e:
+                log.debug("consciousness.curiosity_note_failed", error=str(e))
 
         goal_id = tick.get("goal_id")
         if goal_id:

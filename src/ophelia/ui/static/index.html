@@ -19,6 +19,14 @@
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
+  <div id="bootSplash" class="boot-splash" role="status" aria-live="polite">
+    <div class="boot-core">
+      <div class="boot-ring" aria-hidden="true"></div>
+      <div class="boot-mark">Ø</div>
+      <h1 class="boot-brand">OPHELIA</h1>
+      <p class="boot-line">waking the body…</p>
+    </div>
+  </div>
   <header class="topbar">
     <div class="brand">
       <span class="status-dot" id="statusDot" title="Connection"></span>
@@ -54,8 +62,10 @@
       <div class="messages" id="messages"></div>
       <form class="composer" id="chatForm">
         <textarea id="chatInput" rows="2" placeholder="Talk to Ophelia…" autocomplete="off"></textarea>
+        <button type="button" class="btn ghost mic-btn" id="micBtn" title="Hold to talk" aria-pressed="false">mic</button>
         <button type="submit" class="btn primary" id="sendBtn">Send</button>
       </form>
+      <audio id="voicePlayer" hidden></audio>
     </section>
 
     <aside class="side-drawer" id="sideDrawer" hidden>

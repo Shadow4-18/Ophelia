@@ -80,6 +80,9 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "goal_update",
         "goal_complete",
         "goal_remove",
+        "curiosity_trail_open",
+        "curiosity_trail_deepen",
+        "curiosity_trail_close",
         "save_skill",
         "sqlite_list_databases",
         "sqlite_exec",
@@ -116,6 +119,9 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "phone_shell",
         "phone_swipe",
         "phone_key",
+        "phone_vibrate",
+        "phone_notifications",
+        "phone_battery",
         "phone_game_look",
         "phone_game_open",
     }
@@ -1038,6 +1044,62 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "curiosity_trail_open",
+            "description": (
+                "Open a self-chosen rabbit hole (curiosity trail) — not a cadenced goal. "
+                "Use when something pulls you and you want to keep exploring it across "
+                "idle ticks. Prefer one active trail at a time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "What you're curious about"},
+                    "next_step": {
+                        "type": "string",
+                        "description": "Optional next pull / angle to chase",
+                    },
+                    "note": {"type": "string", "description": "Optional starting note"},
+                },
+                "required": ["topic"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "curiosity_trail_deepen",
+            "description": (
+                "Deepen the active curiosity trail — record a note and optional next step. "
+                "At max depth the trail auto-satisfies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "next_step": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "curiosity_trail_close",
+            "description": "Close the active curiosity trail (satisfied or abandoned).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "satisfied | abandoned | or a short note",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_drive_weights",
             "description": (
                 "Reshape your own will: adjust how strongly each drive contributes to your "
@@ -1491,6 +1553,7 @@ class ToolRegistry:
         self.memory = memory
         self.psyche = psyche
         self.inner = inner
+        self.curiosity: Any | None = None
         self._drives_ref: Any | None = None
         self._governor_ref: Any | None = None
         self.vision = vision or (
@@ -1541,6 +1604,9 @@ class ToolRegistry:
             "goal_update": self._goal_update,
             "goal_complete": self._goal_complete,
             "goal_remove": self._goal_remove,
+            "curiosity_trail_open": self._curiosity_trail_open,
+            "curiosity_trail_deepen": self._curiosity_trail_deepen,
+            "curiosity_trail_close": self._curiosity_trail_close,
             "set_drive_weights": self._set_drive_weights,
             "set_timezone": self._set_timezone,
             "edit_soul": self._edit_soul,
@@ -1574,6 +1640,9 @@ class ToolRegistry:
             "phone_shell": self._phone_shell,
             "phone_swipe": self._phone_swipe,
             "phone_key": self._phone_key,
+            "phone_vibrate": self._phone_vibrate,
+            "phone_notifications": self._phone_notifications,
+            "phone_battery": self._phone_battery,
             "phone_game_look": self._phone_game_look,
             "phone_game_open": self._phone_game_open,
             "list_guests": self._list_guests,
@@ -3083,6 +3152,49 @@ class ToolRegistry:
             return f"Removed goal '{id}'."
         return f"No goal found with id '{id}'."
 
+    async def _curiosity_trail_open(
+        self,
+        topic: str,
+        next_step: str = "",
+        note: str = "",
+    ) -> str:
+        if self.curiosity is None:
+            return "Curiosity store unavailable."
+        try:
+            trail = await self.curiosity.open(topic, next_step=next_step, note=note)
+        except ValueError as e:
+            return f"Could not open trail: {e}"
+        return (
+            f"Opened curiosity trail: {trail.topic} "
+            f"(depth {trail.depth}). Next: {trail.next_step or 'follow the pull'}."
+        )
+
+    async def _curiosity_trail_deepen(
+        self,
+        next_step: str = "",
+        note: str = "",
+    ) -> str:
+        if self.curiosity is None:
+            return "Curiosity store unavailable."
+        try:
+            trail = await self.curiosity.deepen(next_step=next_step, note=note)
+        except ValueError as e:
+            return f"Could not deepen trail: {e}"
+        if trail.status != "active":
+            return f"Trail '{trail.topic}' reached depth {trail.depth} and is now {trail.status}."
+        return (
+            f"Deepened '{trail.topic}' to depth {trail.depth}. "
+            f"Next: {trail.next_step or 'keep going'}."
+        )
+
+    async def _curiosity_trail_close(self, reason: str = "satisfied") -> str:
+        if self.curiosity is None:
+            return "Curiosity store unavailable."
+        trail = await self.curiosity.close(reason=reason or "satisfied")
+        if not trail:
+            return "No active curiosity trail."
+        return f"Closed trail '{trail.topic}' ({trail.status})."
+
     # --- Self-tuning will ----------------------------------------------------
 
     async def _set_drive_weights(
@@ -3330,6 +3442,157 @@ class ToolRegistry:
         if reason:
             return reason
         return await self.android.key(key)
+
+    async def _phone_vibrate(self, duration_ms: int = 200) -> str:
+        """Buzz the phone — Termux:API first, then shell vibrator service.
+
+        Works on Termux without Shizuku when termux-vibrate is installed.
+        """
+        import asyncio
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        dur = max(50, min(2000, int(duration_ms or 200)))
+        if is_termux() and shutil.which("termux-vibrate"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-vibrate",
+                "-d",
+                str(dur),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                return f"Vibrated {dur}ms (termux-vibrate)."
+        reason = self._phone_unavailable_reason()
+        if self.android and not reason:
+            cmd = (
+                f"cmd vibrator vibrate {dur} 2>/dev/null || "
+                f"service call vibrator 1 i32 {dur} 2>/dev/null || "
+                f"echo fail"
+            )
+            out = (await self.android.shell(cmd) or "").strip()
+            if out and "fail" not in out.lower():
+                return f"Vibrated {dur}ms (shell)."
+            if out:
+                return f"Vibrate attempted via shell: {out[:120]}"
+        return (
+            "Could not vibrate — need Termux:API (termux-vibrate) or a working "
+            "phone shell bridge."
+        )
+
+    async def _phone_notifications(self, limit: int = 12) -> str:
+        """List recent notifications without a full screen vision pass."""
+        import asyncio
+        import json
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        lim = max(1, min(40, int(limit or 12)))
+        if is_termux() and shutil.which("termux-notification-list"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-notification-list",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = (stderr or b"").decode("utf-8", errors="replace")[:200]
+                return f"termux-notification-list failed: {err or proc.returncode}"
+            raw = (stdout or b"").decode("utf-8", errors="replace").strip()
+            if not raw:
+                return "No notifications listed (empty)."
+            try:
+                items = json.loads(raw)
+            except json.JSONDecodeError:
+                return raw[:2000]
+            if not isinstance(items, list):
+                return raw[:2000]
+            lines = []
+            for item in items[:lim]:
+                if not isinstance(item, dict):
+                    continue
+                app = item.get("packageName") or item.get("id") or "?"
+                title = item.get("title") or ""
+                content = item.get("content") or item.get("text") or ""
+                lines.append(f"- [{app}] {title}: {content}"[:220])
+            if not lines:
+                return "No notifications listed."
+            return f"Recent notifications ({len(lines)}):\n" + "\n".join(lines)
+
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return (
+                reason
+                + " Also: install Termux:API and grant notification access for "
+                "termux-notification-list."
+            )
+        # Fallback: dumpsys notification (noisy but better than nothing).
+        out = await self.android.shell(
+            "dumpsys notification --noredact 2>/dev/null | head -n 80"
+        )
+        text = (out or "").strip()
+        if not text:
+            return "No notification dump available."
+        return "Notification dump (truncated):\n" + text[:2500]
+
+    async def _phone_battery(self) -> str:
+        """Read battery / charging state — cheap body awareness."""
+        import asyncio
+        import json
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        if is_termux() and shutil.which("termux-battery-status"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-battery-status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                raw = (stdout or b"").decode("utf-8", errors="replace").strip()
+                try:
+                    data = json.loads(raw)
+                    pct = data.get("percentage", "?")
+                    status = data.get("status", "?")
+                    plugged = data.get("plugged", "?")
+                    temp = data.get("temperature", "?")
+                    return (
+                        f"Battery {pct}% · status={status} · plugged={plugged} "
+                        f"· temp={temp}°C"
+                    )
+                except json.JSONDecodeError:
+                    return raw[:500] or "Battery status unavailable."
+
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        out = await self.android.shell("dumpsys battery 2>/dev/null | head -n 40")
+        text = (out or "").strip()
+        if not text:
+            return "Battery dump unavailable."
+        # Pull key lines.
+        keep = []
+        for line in text.splitlines():
+            low = line.lower()
+            if any(
+                k in low
+                for k in (
+                    "level",
+                    "scale",
+                    "status",
+                    "plugged",
+                    "temperature",
+                    "voltage",
+                    "charge",
+                )
+            ):
+                keep.append(line.strip())
+        return "Battery:\n" + "\n".join(keep[:16] if keep else text.splitlines()[:16])
 
     async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:
         if not self.vision:
