@@ -94,6 +94,10 @@ class SiteStore:
                 await db.execute(
                     "ALTER TABLE pages ADD COLUMN body_format TEXT NOT NULL DEFAULT 'markdown'"
                 )
+            if "sort_order" not in cols:
+                await db.execute(
+                    "ALTER TABLE pages ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+                )
             await db.commit()
             # Seed defaults once
             cur = await db.execute("SELECT COUNT(*) FROM meta")
@@ -244,6 +248,8 @@ class SiteStore:
             "accent_note",
             "custom_head",
             "home_slug",
+            "not_found_glyph",
+            "not_found_line",
         }
         async with aiosqlite.connect(self.db_path) as db:
             for key, value in kwargs.items():
@@ -268,7 +274,7 @@ class SiteStore:
     ) -> list[dict[str, Any]]:
         cols = (
             "id, slug, title, kind, summary, tags, published, featured, "
-            "body_format, created_at, updated_at, published_at"
+            "sort_order, body_format, created_at, updated_at, published_at"
         )
         if include_body:
             cols += ", body_md"
@@ -282,7 +288,11 @@ class SiteStore:
         if tag:
             sql += " AND (',' || lower(tags) || ',') LIKE ?"
             args.append(f"%,{tag.strip().lower()},%")
-        sql += " ORDER BY featured DESC, COALESCE(published_at, updated_at) DESC LIMIT ?"
+        # Featured first, then manual sort_order (lower = earlier), then recency.
+        sql += (
+            " ORDER BY featured DESC, sort_order ASC, "
+            "COALESCE(published_at, updated_at) DESC LIMIT ?"
+        )
         args.append(max(1, min(int(limit), 500)))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -312,8 +322,9 @@ class SiteStore:
         summary: str = "",
         tags: str = "",
         published: bool | None = None,
-        featured: bool = False,
+        featured: bool | None = None,
         body_format: str = "markdown",
+        sort_order: int | None = None,
     ) -> dict[str, Any]:
         title = (title or "").strip()
         if not title:
@@ -341,11 +352,21 @@ class SiteStore:
                     pub_at = now
                 if not pub:
                     pub_at = None
+                feat = (
+                    int(existing["featured"])
+                    if featured is None
+                    else (1 if featured else 0)
+                )
+                order = (
+                    int(existing["sort_order"] or 0)
+                    if sort_order is None
+                    else int(sort_order)
+                )
                 await db.execute(
                     """
                     UPDATE pages SET
                         title = ?, kind = ?, summary = ?, body_md = ?, tags = ?,
-                        published = ?, featured = ?, body_format = ?,
+                        published = ?, featured = ?, sort_order = ?, body_format = ?,
                         updated_at = ?, published_at = ?
                     WHERE slug = ?
                     """,
@@ -356,7 +377,8 @@ class SiteStore:
                         body_md or "",
                         tags_norm,
                         pub,
-                        1 if featured else 0,
+                        feat,
+                        order,
                         fmt,
                         now,
                         pub_at,
@@ -370,9 +392,9 @@ class SiteStore:
                     """
                     INSERT INTO pages(
                         slug, title, kind, summary, body_md, tags,
-                        published, featured, body_format,
+                        published, featured, sort_order, body_format,
                         created_at, updated_at, published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         slug,
@@ -383,6 +405,7 @@ class SiteStore:
                         tags_norm,
                         pub,
                         1 if featured else 0,
+                        int(sort_order or 0),
                         fmt,
                         now,
                         now,
@@ -393,6 +416,43 @@ class SiteStore:
             cur = await db.execute("SELECT * FROM pages WHERE slug = ?", (slug,))
             row = await cur.fetchone()
             return dict(row) if row else {"slug": slug}
+
+    async def reorder_pages(self, slugs: list[str]) -> dict[str, Any]:
+        """Assign sort_order from the given slug sequence (earlier = higher on lists).
+
+        Unlisted pages keep their existing sort_order. Featured still sorts first;
+        within featured / non-featured bands, sort_order wins over recency.
+        """
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in slugs:
+            s = (raw or "").strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            cleaned.append(s)
+        if not cleaned:
+            raise ValueError("pass at least one slug to reorder")
+        updated = 0
+        missing: list[str] = []
+        async with aiosqlite.connect(self.db_path) as db:
+            now = utc_now()
+            for idx, slug in enumerate(cleaned):
+                cur = await db.execute(
+                    "UPDATE pages SET sort_order = ?, updated_at = ? WHERE slug = ?",
+                    (idx, now, slug),
+                )
+                if cur.rowcount:
+                    updated += 1
+                else:
+                    missing.append(slug)
+            await db.commit()
+        return {
+            "ok": True,
+            "ordered": cleaned,
+            "updated": updated,
+            "missing": missing,
+        }
 
     async def delete_page(self, slug: str) -> bool:
         slug = slug.strip().lower()
@@ -407,6 +467,7 @@ class SiteStore:
         errors: list[str] = []
         for i, row in enumerate(rows):
             try:
+                so = row.get("sort_order")
                 await self.upsert_page(
                     slug=row.get("slug"),
                     title=str(row.get("title") or ""),
@@ -417,6 +478,7 @@ class SiteStore:
                     published=bool(row.get("published", True)),
                     featured=bool(row.get("featured", False)),
                     body_format=str(row.get("body_format") or row.get("format") or "markdown"),
+                    sort_order=int(so) if so is not None else None,
                 )
                 ok += 1
             except Exception as e:
@@ -474,6 +536,36 @@ class SiteStore:
             "mime": mime,
         }
 
+    async def list_assets(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List uploaded site assets (images/videos/files) newest first."""
+        sql = (
+            "SELECT id, filename, original_name, mime, source_path, created_at "
+            "FROM assets WHERE 1=1"
+        )
+        args: list[Any] = []
+        kind_norm = (kind or "").strip().lower()
+        if kind_norm in ("image", "images"):
+            sql += " AND lower(mime) LIKE 'image/%'"
+        elif kind_norm in ("video", "videos"):
+            sql += " AND lower(mime) LIKE 'video/%'"
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(sql, args)
+            rows = await cur.fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                item = dict(r)
+                item["url"] = f"/assets/{item['filename']}"
+                out.append(item)
+            return out
+
     def status_dict(self, *, public_url: str | None = None) -> dict[str, Any]:
         return {
             "root": str(self.root),
@@ -496,11 +588,14 @@ class SiteStore:
                 "FROM pages"
             )
             row = await cur.fetchone()
+            cur_a = await db.execute("SELECT COUNT(*) FROM assets")
+            asset_row = await cur_a.fetchone()
         counts = {
             "total": int(row[0] or 0),
             "published": int(row[1] or 0),
             "wiki": int(row[2] or 0),
             "blog": int(row[3] or 0),
+            "assets": int(asset_row[0] or 0) if asset_row else 0,
             "www_files": len(self.list_www_files()),
         }
         out = self.status_dict(public_url=public_url)
@@ -519,8 +614,10 @@ class SiteStore:
     async def export_static(self) -> dict[str, Any]:
         """Write a static HTML mirror under site/export/ for Pages/Netlify later."""
         from ophelia.site.templates import (
+            render_gallery,
             render_home,
             render_list,
+            render_not_found,
             render_page,
             write_static_assets,
         )
@@ -535,6 +632,7 @@ class SiteStore:
 
         meta = await self.get_meta()
         pages = await self.list_pages(published_only=True, include_body=True, limit=500)
+        assets = await self.list_assets(limit=500)
         extras = self.www_extras()
         write_static_assets(self.export_dir)
         export_assets = self.export_dir / "assets"
@@ -571,7 +669,7 @@ class SiteStore:
                 ),
                 encoding="utf-8",
             )
-        # Always keep a browsable listing at wiki.html / blog.html
+        # Always keep a browsable listing at wiki.html / blog.html / gallery.html
         wiki = [p for p in pages if p["kind"] == "wiki"]
         blog = [p for p in pages if p["kind"] == "blog"]
         (self.export_dir / "wiki.html").write_text(
@@ -583,6 +681,27 @@ class SiteStore:
         (self.export_dir / "blog.html").write_text(
             render_list(
                 meta, blog, heading="Blog", base_path=base, static_prefix=".", extras=extras
+            ),
+            encoding="utf-8",
+        )
+        (self.export_dir / "gallery.html").write_text(
+            render_gallery(
+                meta, assets, base_path=base, static_prefix=".", extras=extras
+            ),
+            encoding="utf-8",
+        )
+        # Cloudflare Pages custom error page
+        fragment = next(
+            (str(p.get("summary") or "").strip() for p in pages if (p.get("summary") or "").strip()),
+            "",
+        )
+        (self.export_dir / "404.html").write_text(
+            render_not_found(
+                meta,
+                extras=extras,
+                fragment_line=fragment,
+                base_path=base,
+                static_prefix=".",
             ),
             encoding="utf-8",
         )
@@ -626,6 +745,7 @@ class SiteStore:
         manifest = {
             "exported_at": utc_now(),
             "pages": len(pages),
+            "assets": len(assets),
             "www_files": www_copied,
             "home": home_note,
             "path": str(self.export_dir),

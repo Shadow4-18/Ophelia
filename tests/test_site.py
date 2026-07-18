@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from ophelia.site.render import markdown_to_html
+from ophelia.site.server import create_site_app
 from ophelia.site.store import SiteStore
+from ophelia.site.templates import render_not_found
 
 
 def test_markdown_basic():
@@ -66,6 +69,8 @@ async def test_site_store_publish_and_draft(isolated_env):
     export_index = isolated_env / "site" / "export" / "index.html"
     assert export_index.is_file()
     assert "Origin Myth" in export_index.read_text(encoding="utf-8")
+    assert (isolated_env / "site" / "export" / "gallery.html").is_file()
+    assert (isolated_env / "site" / "export" / "404.html").is_file()
 
 
 @pytest.mark.asyncio
@@ -181,3 +186,91 @@ async def test_home_slug_makes_about_the_landing(isolated_env):
     assert "www/index.html" in manifest2["home"]
     index2 = (isolated_env / "site" / "export" / "index.html").read_text(encoding="utf-8")
     assert "CUSTOM HOME" in index2
+
+
+@pytest.mark.asyncio
+async def test_reorder_and_featured_preserved_on_update(isolated_env):
+    store = SiteStore(isolated_env / "site")
+    await store.init()
+    await store.upsert_page(
+        slug="alpha", title="Alpha", body_md="a", published=True, featured=True
+    )
+    await store.upsert_page(slug="beta", title="Beta", body_md="b", published=True)
+    await store.upsert_page(slug="gamma", title="Gamma", body_md="c", published=True)
+
+    # Pin order: gamma, beta, alpha — featured still floats first.
+    result = await store.reorder_pages(["gamma", "beta", "alpha"])
+    assert result["updated"] == 3
+    pages = await store.list_pages(published_only=True)
+    slugs = [p["slug"] for p in pages]
+    assert slugs[0] == "alpha"  # featured first
+    assert slugs[1:] == ["gamma", "beta"]
+
+    # Updating body without featured/sort_order must not clear them.
+    await store.upsert_page(
+        slug="alpha", title="Alpha", body_md="a revised", published=True
+    )
+    got = await store.get_page("alpha")
+    assert got["featured"] == 1
+    assert got["sort_order"] == 2  # third in reorder list
+
+
+@pytest.mark.asyncio
+async def test_draft_preview_route_and_gallery(isolated_env):
+    store = SiteStore(isolated_env / "site")
+    await store.init()
+    await store.upsert_page(
+        slug="secret-myth",
+        title="Secret Myth",
+        body_md="## Hidden\n\nNot ready.",
+        summary="a quiet fragment",
+        published=False,
+    )
+    img = isolated_env / "selfie.png"
+    img.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00"
+        b"\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    asset = await store.add_asset(img, filename="selfie.png")
+    assert asset["url"] == "/assets/selfie.png"
+    assets = await store.list_assets(kind="image")
+    assert len(assets) == 1
+
+    app = create_site_app(store)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Draft is hidden from public page route
+        missing = await client.get("/p/secret-myth")
+        assert missing.status_code == 404
+        assert "Not found" in missing.text
+        assert "Ø" in missing.text or "quiet fragment" in missing.text
+
+        # Preview renders the draft with a banner
+        preview = await client.get("/preview/secret-myth")
+        assert preview.status_code == 200
+        assert "Secret Myth" in preview.text
+        assert "Draft preview" in preview.text
+        assert "Not ready" in preview.text
+
+        gallery = await client.get("/gallery")
+        assert gallery.status_code == 200
+        assert "Gallery" in gallery.text
+        assert "/assets/selfie.png" in gallery.text
+
+        unknown = await client.get("/nope-this-path")
+        assert unknown.status_code == 404
+        assert "Not found" in unknown.text
+
+
+def test_not_found_uses_custom_glyph_and_line():
+    html = render_not_found(
+        {
+            "site_title": "Ophelia",
+            "not_found_glyph": "Ψ",
+            "not_found_line": "the glyph remembers a different door",
+        }
+    )
+    assert "Ψ" in html
+    assert "the glyph remembers a different door" in html
