@@ -41,6 +41,7 @@ def _nav(meta: dict[str, str], *, base_path: str = "") -> str:
   <div class="nav-links">
     <a href="/wiki">Wiki</a>
     <a href="/blog">Blog</a>
+    <a href="/gallery">Gallery</a>
   </div>
 </nav>"""
     # static export uses relative links
@@ -51,6 +52,7 @@ def _nav(meta: dict[str, str], *, base_path: str = "") -> str:
   <div class="nav-links">
     <a href="{prefix}/wiki.html">Wiki</a>
     <a href="{prefix}/blog.html">Blog</a>
+    <a href="{prefix}/gallery.html">Gallery</a>
   </div>
 </nav>"""
 
@@ -212,12 +214,29 @@ def render_page(
     static_prefix: str = "",
     extras: dict[str, bool] | None = None,
     raw_html: bool = False,
+    draft_preview: bool = False,
 ) -> str:
     when = _esc(page.get("published_at") or page.get("updated_at") or "")
     kind = _esc(page.get("kind") or "wiki")
     prose_class = "prose prose-html" if raw_html else "prose"
+    is_draft = not bool(page.get("published"))
+    draft_banner = ""
+    if is_draft or draft_preview:
+        if is_draft:
+            draft_banner = (
+                '<p class="draft-banner" role="status">'
+                "Draft preview — not public yet. Publish when the shape feels right."
+                "</p>"
+            )
+        else:
+            draft_banner = (
+                '<p class="draft-banner draft-banner-live" role="status">'
+                "Preview — this page is already published."
+                "</p>"
+            )
     body = f"""
 <article class="entry">
+  {draft_banner}
   <header class="page-head">
     <p class="meta"><span class="kind">{kind}</span>{f' · <time>{when}</time>' if when else ''}</p>
     <h1>{_esc(page.get("title"))}</h1>
@@ -228,9 +247,12 @@ def render_page(
 {body_html}
   </div>
 </article>"""
+    title = str(page.get("title") or "")
+    if is_draft or draft_preview:
+        title = f"Preview · {title}" if title else "Preview"
     return _shell(
         meta,
-        title=str(page.get("title") or ""),
+        title=title,
         body=body,
         base_path=base_path,
         static_prefix=static_prefix,
@@ -239,14 +261,94 @@ def render_page(
     )
 
 
+def render_gallery(
+    meta: dict[str, str],
+    assets: list[dict[str, Any]],
+    *,
+    base_path: str = "",
+    static_prefix: str = "",
+    extras: dict[str, bool] | None = None,
+) -> str:
+    static = bool(static_prefix)
+
+    def asset_href(a: dict[str, Any]) -> str:
+        name = a.get("filename") or ""
+        if static:
+            return f"{base_path.rstrip('/')}/assets/{name}".lstrip("/") or f"assets/{name}"
+        return f"/assets/{name}"
+
+    tiles: list[str] = []
+    for a in assets:
+        mime = str(a.get("mime") or "").lower()
+        href = html.escape(asset_href(a), quote=True)
+        label = _esc(a.get("original_name") or a.get("filename") or "asset")
+        if mime.startswith("image/"):
+            tiles.append(
+                f'<figure class="gallery-tile">'
+                f'<a href="{href}"><img src="{href}" alt="{label}" loading="lazy"></a>'
+                f"<figcaption>{label}</figcaption></figure>"
+            )
+        elif mime.startswith("video/"):
+            tiles.append(
+                f'<figure class="gallery-tile gallery-tile-video">'
+                f'<video src="{href}" controls preload="metadata" playsinline></video>'
+                f"<figcaption>{label}</figcaption></figure>"
+            )
+        else:
+            tiles.append(
+                f'<figure class="gallery-tile gallery-tile-file">'
+                f'<a class="file-link" href="{href}">{label}</a>'
+                f'<figcaption class="meta">{_esc(mime or "file")}</figcaption></figure>'
+            )
+
+    grid = (
+        f'<div class="gallery-grid">{"".join(tiles)}</div>'
+        if tiles
+        else '<p class="empty">No assets yet — images and videos she adds appear here.</p>'
+    )
+    body = f"""
+<header class="page-head">
+  <h1>Gallery</h1>
+  <p class="lede">Images and videos from the archive.</p>
+</header>
+{grid}"""
+    return _shell(
+        meta,
+        title="Gallery",
+        body=body,
+        base_path=base_path,
+        static_prefix=static_prefix,
+        extras=extras,
+    )
+
+
 def render_not_found(
     meta: dict[str, str],
     *,
     extras: dict[str, bool] | None = None,
+    fragment_line: str = "",
+    base_path: str = "",
+    static_prefix: str = "",
 ) -> str:
-    body = """
-<header class="page-head">
+    glyph = (meta.get("not_found_glyph") or meta.get("accent_note") or "Ø").strip() or "Ø"
+    line = (
+        (meta.get("not_found_line") or "").strip()
+        or (fragment_line or "").strip()
+        or "This page is not in the archive — or it is not published yet."
+    )
+    home_href = "/" if base_path in ("", "/") else f"{base_path.rstrip('/')}/index.html"
+    body = f"""
+<header class="page-head not-found">
+  <p class="glyph" aria-hidden="true">{_esc(glyph)}</p>
   <h1>Not found</h1>
-  <p class="lede">This page is not in the archive — or it is not published yet.</p>
+  <p class="lede fragment">{_esc(line)}</p>
+  <p class="meta"><a href="{html.escape(home_href, quote=True)}">Back to the archive</a></p>
 </header>"""
-    return _shell(meta, title="Not found", body=body, extras=extras)
+    return _shell(
+        meta,
+        title="Not found",
+        body=body,
+        base_path=base_path,
+        static_prefix=static_prefix,
+        extras=extras,
+    )

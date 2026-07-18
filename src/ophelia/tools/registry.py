@@ -88,9 +88,12 @@ GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
         "site_get_page",
         "site_upsert_page",
         "site_delete_page",
+        "site_reorder_pages",
         "site_set_meta",
         "site_import_pages",
         "site_add_asset",
+        "site_list_assets",
+        "site_preview_page",
         "site_export_static",
         "site_deploy",
         "site_write_file",
@@ -636,8 +639,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Create or update a structured wiki/blog page. "
                 "body_format=markdown (default) or html for raw HTML in the body. "
-                "For a fully custom site (own layouts/CSS/JS), prefer site_write_file "
-                "under www/ (e.g. index.html, css/main.css, js/app.js)."
+                "featured=true pins a myth into the Featured band; sort_order "
+                "(lower first) controls order within bands — or use site_reorder_pages. "
+                "Save as draft (published=false) then site_preview_page to check render "
+                "before publishing. For a fully custom site, prefer site_write_file."
             ),
             "parameters": {
                 "type": "object",
@@ -664,7 +669,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "boolean",
                         "description": "If true, visible on the public site",
                     },
-                    "featured": {"type": "boolean"},
+                    "featured": {
+                        "type": "boolean",
+                        "description": (
+                            "Pin into the Featured band on the home page. "
+                            "Omit on updates to keep the current value."
+                        ),
+                    },
+                    "sort_order": {
+                        "type": "integer",
+                        "description": (
+                            "Manual order (lower = earlier). Omit on updates to keep "
+                            "current value. Prefer site_reorder_pages for lists."
+                        ),
+                    },
                     "body_format": {
                         "type": "string",
                         "enum": ["markdown", "html"],
@@ -690,11 +708,37 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "site_reorder_pages",
+            "description": (
+                "Set the display order of site pages. Pass slugs in the order you want "
+                "(first = top). Featured pages still appear in the Featured band first; "
+                "sort_order applies within featured and within the rest. "
+                "Example: pin a myth with featured=true and put its slug first here."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slugs": {
+                        "type": "string",
+                        "description": (
+                            "Comma-separated slugs OR a JSON array of slugs, "
+                            "in desired order (e.g. 'origin-myth,river,about')"
+                        ),
+                    },
+                },
+                "required": ["slugs"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "site_set_meta",
             "description": (
                 "Set site-wide branding: site_title, tagline, author, footer, "
                 "custom_head (raw HTML for <head>), home_slug (make that published "
-                "page the landing at / — e.g. home_slug=about). "
+                "page the landing at / — e.g. home_slug=about), "
+                "not_found_glyph / not_found_line for the custom 404 page. "
                 "For a fully custom home, prefer site_write_file path=index.html."
             ),
             "parameters": {
@@ -714,6 +758,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                             "Slug of a published page to use as / "
                             "(e.g. 'about'). Empty clears back to wiki listing home. "
                             "Ignored if www/index.html exists."
+                        ),
+                    },
+                    "not_found_glyph": {
+                        "type": "string",
+                        "description": "Glyph/mark on the 404 page (default Ø)",
+                    },
+                    "not_found_line": {
+                        "type": "string",
+                        "description": (
+                            "Mood line on the 404 page. If empty, a published page "
+                            "summary is used when available."
                         ),
                     },
                 },
@@ -815,6 +870,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "Copy an image/video/file into the public site assets folder. "
                 "Returns a /assets/... URL you can embed in HTML/Markdown "
                 "(e.g. <video src=\"/assets/clip.mp4\">). "
+                "Also appears on the public /gallery index. "
                 "For files the user just sent, use the path from "
                 "'[User sent a video/file — saved to …]' or list_inbox_files."
             ),
@@ -831,6 +887,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_list_assets",
+            "description": (
+                "List images/videos/files already uploaded to your public site assets. "
+                "Browse them at /gallery on the site."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["image", "video", "all"],
+                        "description": "Filter by media kind (default all)",
+                    },
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "site_preview_page",
+            "description": (
+                "Get a local draft-preview URL for a page (published or not). "
+                "Open /preview/{slug} on the local site server to see how it renders "
+                "before you set published=true. Preview is NOT deployed to Cloudflare."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"slug": {"type": "string"}},
+                "required": ["slug"],
             },
         },
     },
@@ -1462,9 +1555,12 @@ class ToolRegistry:
             "site_get_page": self._site_get_page,
             "site_upsert_page": self._site_upsert_page,
             "site_delete_page": self._site_delete_page,
+            "site_reorder_pages": self._site_reorder_pages,
             "site_set_meta": self._site_set_meta,
             "site_import_pages": self._site_import_pages,
             "site_add_asset": self._site_add_asset,
+            "site_list_assets": self._site_list_assets,
+            "site_preview_page": self._site_preview_page,
             "site_export_static": self._site_export_static,
             "site_deploy": self._site_deploy,
             "site_write_file": self._site_write_file,
@@ -2516,8 +2612,9 @@ class ToolRegistry:
         summary: str = "",
         tags: str = "",
         published: bool | None = None,
-        featured: bool = False,
+        featured: bool | None = None,
         body_format: str = "markdown",
+        sort_order: int | None = None,
     ) -> str:
         store = await self._site_store()
         try:
@@ -2529,21 +2626,27 @@ class ToolRegistry:
                 summary=summary or "",
                 tags=tags or "",
                 published=published,
-                featured=bool(featured),
+                featured=featured,
                 body_format=body_format or "markdown",
+                sort_order=sort_order,
             )
         except Exception as e:
             return f"site_upsert_page error: {e}"
         url = f"{self._site_url()}/p/{row.get('slug')}"
+        preview = f"{self._site_url()}/preview/{row.get('slug')}"
         return json.dumps(
             {
                 "ok": True,
                 "page": row,
                 "public_url": url if row.get("published") else None,
+                "preview_url": preview,
                 "note": (
                     "Published — visible on your site."
                     if row.get("published")
-                    else "Saved as draft — set published=true to show visitors."
+                    else (
+                        "Saved as draft — open preview_url to check render, "
+                        "then set published=true when ready."
+                    )
                 ),
             },
             indent=2,
@@ -2555,6 +2658,31 @@ class ToolRegistry:
         ok = await store.delete_page(slug)
         return "Deleted." if ok else f"No page with slug '{slug}'."
 
+    async def _site_reorder_pages(self, slugs: str) -> str:
+        store = await self._site_store()
+        raw = (slugs or "").strip()
+        if not raw:
+            return "site_reorder_pages error: pass slugs (comma-separated or JSON array)."
+        parsed: list[str]
+        if raw.startswith("["):
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                return f"site_reorder_pages error: invalid JSON — {e}"
+            if not isinstance(data, list):
+                return "site_reorder_pages error: JSON must be an array of slugs."
+            parsed = [str(x) for x in data]
+        else:
+            parsed = [p.strip() for p in raw.replace(";", ",").split(",")]
+        try:
+            result = await store.reorder_pages(parsed)
+        except Exception as e:
+            return f"site_reorder_pages error: {e}"
+        result["note"] = (
+            "Order updated locally. Call site_deploy to push the new order to Cloudflare."
+        )
+        return json.dumps(result, indent=2)
+
     async def _site_set_meta(
         self,
         site_title: str = "",
@@ -2563,6 +2691,8 @@ class ToolRegistry:
         footer: str = "",
         custom_head: str = "",
         home_slug: str | None = None,
+        not_found_glyph: str | None = None,
+        not_found_line: str | None = None,
     ) -> str:
         store = await self._site_store()
         kwargs = {}
@@ -2579,10 +2709,14 @@ class ToolRegistry:
         # Allow explicitly clearing home_slug with empty string
         if home_slug is not None:
             kwargs["home_slug"] = (home_slug or "").strip().lower()
+        if not_found_glyph is not None:
+            kwargs["not_found_glyph"] = not_found_glyph
+        if not_found_line is not None:
+            kwargs["not_found_line"] = not_found_line
         if not kwargs:
             return (
                 "Nothing to update — pass site_title, tagline, author, footer, "
-                "custom_head, and/or home_slug."
+                "custom_head, home_slug, not_found_glyph, and/or not_found_line."
             )
         meta = await store.set_meta(**kwargs)
         note = None
@@ -2665,8 +2799,48 @@ class ToolRegistry:
         except Exception as e:
             return f"site_add_asset error: {e}"
         asset["public_url"] = f"{self._site_url()}{asset['url']}"
+        asset["gallery_url"] = f"{self._site_url()}/gallery"
         asset["markdown"] = f"![]({asset['url']})"
         return json.dumps({"ok": True, **asset}, indent=2)
+
+    async def _site_list_assets(self, kind: str = "all", limit: int = 50) -> str:
+        store = await self._site_store()
+        filter_kind = None if (kind or "all") in ("", "all") else kind
+        rows = await store.list_assets(kind=filter_kind, limit=limit or 50)
+        return json.dumps(
+            {
+                "count": len(rows),
+                "assets": rows,
+                "gallery_url": f"{self._site_url()}/gallery",
+            },
+            indent=2,
+            default=str,
+        )
+
+    async def _site_preview_page(self, slug: str) -> str:
+        store = await self._site_store()
+        row = await store.get_page(slug)
+        if not row:
+            return f"No page with slug '{slug}'."
+        preview = f"{self._site_url()}/preview/{row.get('slug')}"
+        public = (
+            f"{self._site_url()}/p/{row.get('slug')}" if row.get("published") else None
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "slug": row.get("slug"),
+                "published": bool(row.get("published")),
+                "preview_url": preview,
+                "public_url": public,
+                "note": (
+                    "Open preview_url on the local site server to see rendered HTML. "
+                    "Drafts are never included in site_deploy / Cloudflare export."
+                ),
+            },
+            indent=2,
+            default=str,
+        )
 
     async def _site_export_static(self) -> str:
         store = await self._site_store()

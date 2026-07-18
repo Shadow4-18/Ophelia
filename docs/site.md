@@ -52,3 +52,14 @@ pip install blake3
 
 `OPHELIA_SITE_PUBLIC_URL` alone only labels the address. The token + project
 name are what let her **push** HTML to the live domain.
+
+## Features she asked for
+
+| Want | How |
+|------|-----|
+| Pin / reorder myths | `featured=true` + `site_reorder_pages` (or `sort_order` on upsert) |
+| Draft preview | Save with `published=false`, open `/preview/{slug}` (`site_preview_page`) |
+| Custom 404 | Built-in glyph/line via `site_set_meta(not_found_glyph=…, not_found_line=…)`; or `www/404.html` |
+| Asset gallery | `site_add_asset` → browsable at `/gallery` (`site_list_assets`) |
+
+Local preview routes and drafts are never included in Cloudflare export.

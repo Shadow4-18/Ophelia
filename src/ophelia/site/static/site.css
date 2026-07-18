@@ -285,6 +285,91 @@ body {
   font-style: italic;
 }
 
+.draft-banner {
+  margin: 0 0 1.25rem;
+  padding: 0.7rem 1rem;
+  border-left: 3px solid var(--accent);
+  background: rgba(47, 111, 106, 0.08);
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.draft-banner-live {
+  border-left-color: var(--ink-soft);
+  background: rgba(28, 36, 48, 0.05);
+}
+
+.not-found .glyph {
+  font-family: var(--display);
+  font-size: clamp(3rem, 12vw, 5.5rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+.not-found .fragment {
+  font-style: italic;
+  max-width: 28rem;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.gallery-tile {
+  margin: 0;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  animation: rise 0.45s ease both;
+}
+
+.gallery-tile img,
+.gallery-tile video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--mist-deep);
+}
+
+.gallery-tile-video video {
+  aspect-ratio: 16 / 10;
+}
+
+.gallery-tile figcaption {
+  padding: 0.55rem 0.7rem 0.7rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  word-break: break-word;
+}
+
+.gallery-tile-file {
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.gallery-tile-file .file-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.gallery-tile-file .file-link:hover {
+  text-decoration: underline;
+}
+
 .footer {
   max-width: 720px;
   margin: 0 auto;
@@ -303,4 +388,5 @@ body {
 @media (max-width: 640px) {
   .nav { flex-direction: column; gap: 0.75rem; }
   body { font-size: 1.05rem; }
+  .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
 }

@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from ophelia.config import Settings
 from ophelia.site.store import SiteStore
 from ophelia.site.templates import (
+    render_gallery,
     render_home,
     render_list,
     render_not_found,
@@ -51,6 +52,26 @@ def _file_response(path: Path) -> Response:
     if media and media.startswith(("text/", "application/json", "application/xml", "image/svg")):
         return Response(content=path.read_bytes(), media_type=media)
     return FileResponse(path, media_type=media)
+
+
+async def _not_found_html(store: SiteStore) -> HTMLResponse:
+    """Prefer www/404.html; else on-brand chrome with glyph / fragment line."""
+    custom = store.www_file_for_url("404") or store.www_file_for_url("404.html")
+    if custom:
+        return HTMLResponse(content=custom.read_bytes(), status_code=404)
+    meta = await store.get_meta()
+    fragment = (meta.get("not_found_line") or "").strip()
+    if not fragment:
+        pages = await store.list_pages(published_only=True, limit=24)
+        for p in pages:
+            summary = (p.get("summary") or "").strip()
+            if summary:
+                fragment = summary
+                break
+    return HTMLResponse(
+        render_not_found(meta, extras=store.www_extras(), fragment_line=fragment),
+        status_code=404,
+    )
 
 
 def create_site_app(store: SiteStore, settings: Settings | None = None) -> FastAPI:
@@ -109,12 +130,44 @@ def create_site_app(store: SiteStore, settings: Settings | None = None) -> FastA
             render_list(meta, pages, heading="Blog", extras=store.www_extras())
         )
 
+    @app.get("/gallery", response_class=HTMLResponse)
+    async def gallery_index() -> Response:
+        custom = store.www_file_for_url("gallery") or store.www_file_for_url("gallery.html")
+        if custom:
+            return _file_response(custom)
+        meta = await store.get_meta()
+        assets = await store.list_assets(limit=200)
+        return HTMLResponse(
+            render_gallery(meta, assets, extras=store.www_extras())
+        )
+
     @app.get("/tag/{tag}", response_class=HTMLResponse)
     async def tag_index(tag: str) -> HTMLResponse:
         meta = await store.get_meta()
         pages = await store.list_pages(published_only=True, tag=tag, limit=200)
         return HTMLResponse(
             render_list(meta, pages, heading=f"Tag: {tag}", extras=store.www_extras())
+        )
+
+    @app.get("/preview/{slug}", response_class=HTMLResponse)
+    async def preview_draft(slug: str) -> Response:
+        """Local draft preview — renders unpublished pages with a draft banner.
+
+        Not included in Cloudflare static export. Useful before publish.
+        """
+        meta = await store.get_meta()
+        row = await store.get_page(slug, published_only=False)
+        if not row:
+            return await _not_found_html(store)
+        return HTMLResponse(
+            render_page(
+                meta,
+                row,
+                store.page_body_html(row),
+                extras=store.www_extras(),
+                raw_html=(row.get("body_format") or "") == "html",
+                draft_preview=True,
+            )
         )
 
     @app.get("/p/{slug}", response_class=HTMLResponse)
@@ -127,9 +180,7 @@ def create_site_app(store: SiteStore, settings: Settings | None = None) -> FastA
         meta = await store.get_meta()
         row = await store.get_page(slug, published_only=True)
         if not row:
-            return HTMLResponse(
-                render_not_found(meta, extras=store.www_extras()), status_code=404
-            )
+            return await _not_found_html(store)
         body_html = store.page_body_html(row)
         return HTMLResponse(
             render_page(
@@ -155,11 +206,11 @@ def create_site_app(store: SiteStore, settings: Settings | None = None) -> FastA
     @app.get("/{path:path}")
     async def www_catch_all(path: str) -> Response:
         """Serve freeform files from ~/.ophelia/site/www/ (her full HTML/CSS/JS)."""
-        if path.startswith(("api/", "static/", "assets/")):
-            raise HTTPException(404, "not found")
+        if path.startswith(("api/", "static/", "assets/", "preview/")):
+            return await _not_found_html(store)
         found = store.www_file_for_url(path)
         if not found:
-            raise HTTPException(404, "not found")
+            return await _not_found_html(store)
         return _file_response(found)
 
     return app
