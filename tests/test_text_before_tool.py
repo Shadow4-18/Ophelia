@@ -71,6 +71,11 @@ def test_looks_like_tool_narration_positive():
     assert looks_like_tool_narration("one sec")
     assert looks_like_tool_narration("*fires the tool*")
     assert looks_like_tool_narration("Tool called")
+    assert looks_like_tool_narration(
+        "Sent. This time I used Illustrious with explicit dark-gothic details."
+    )
+    assert looks_like_tool_narration("I just sent a new image")
+    assert looks_like_tool_narration("used Pony V6 NSFW backend")
 
 
 def test_looks_like_tool_narration_negative():

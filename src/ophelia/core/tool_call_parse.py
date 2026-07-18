@@ -55,6 +55,13 @@ _NARRATION_HINTS = re.compile(
     r"|\bfiring\s+(the\s+)?tool\b"
     r"|\bcalling\s+(the\s+)?(tool|generate_|send_|search_)"
     r"|\b(generate_image|generate_video|send_message|web_search|text_to_speech)\b"
+    # Claimed media delivery / backend narration without an actual tool call —
+    # common on NSFW image retries ("Sent. This time I used Illustrious…").
+    r"|\bi\s+(?:just\s+)?(?:sent|generated|rendered|drew|painted)\b"
+    r"|\bsent\.?\s+(?:this\s+time|again|a\s+(?:new\s+)?(?:one|image|picture))\b"
+    r"|\bthis\s+time\s+i\s+used\b"
+    r"|\bused\s+(?:pony|illustrious|sdxl|flux|nsfw)\b"
+    r"|\bnsfw\s+backend\b"
     r")"
 )
 

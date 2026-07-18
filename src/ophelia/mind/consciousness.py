@@ -54,6 +54,7 @@ Respond with ONLY valid JSON:
 }
 
 When action is "silent" and nothing changed, keep mood.label stable (reuse your current label), leave feelings/urges empty or unchanged, and prefer an empty internal_thought over labeling the silence.
+If you intend to generate an image/video/voice or use any tool, action MUST be "act" (or "explore" for phone vision) with tool_intent set — never action=message/silent while claiming you will create or send media. Thoughts alone do not run tools.
 explore = phone_see_screen or phone_game_look if game session active. act = tap/swipe/tools.
 outward_message goes to the owner only (consciousness/ambient broadcast). To reach a guest the way Neuro DMs chat, call send_message_to_guest with their platform:user_id — do not put guest DMs in outward_message.
 outward_message may contain [[break]] on its own line to send several separate messages.
@@ -457,6 +458,7 @@ class ConsciousnessLoop:
                 return
 
         tick = _soften_silent_tick(tick, prior_mood_label=self.psyche.mood.label)
+        tick = _promote_declared_action(tick)
         self.psyche.apply_tick(tick)
         await self.memory.save_psyche(self.psyche)
 
@@ -581,14 +583,25 @@ class ConsciousnessLoop:
                     "You may also create media (images/video/voice) proactively when inspired — "
                     "use generate_image / generate_video / text_to_speech and it will be sent."
                     + creative_hint
-                    + " Brief outward_message only if worth disturbing user."
+                    + " Do NOT output consciousness-tick JSON. Call tools to act. "
+                    "Brief prose to the owner only if worth disturbing them."
                 ),
             )
             outreach_tools = getattr(self.agent, "tools", None)
             already_sent = bool(
                 outreach_tools and outreach_tools.proactive_delivered_this_turn()
             )
-            outward = outward or ("" if already_sent else result[:2000])
+            from ophelia.channels.proactive_filter import (
+                is_consciousness_tick_payload,
+                strip_consciousness_tick_leak,
+            )
+
+            # Never forward a leaked tick JSON blob as outreach — that's the
+            # classic "she posted her consciousness tick instead of acting" bug.
+            cleaned_result = strip_consciousness_tick_leak(result or "")
+            if is_consciousness_tick_payload(result or "") or not cleaned_result:
+                cleaned_result = ""
+            outward = outward or ("" if already_sent else cleaned_result[:2000])
             tools = outreach_tools
             consume = getattr(tools, "consume_pending_artifacts", None)
             if callable(consume) and self.notify_media:
@@ -610,10 +623,14 @@ class ConsciousnessLoop:
             await self.signals.mark_action()
 
         if action in ("message", "act", "explore") and outward:
-            from ophelia.channels.proactive_filter import is_outreach_junk
+            from ophelia.channels.proactive_filter import (
+                is_outreach_junk,
+                strip_consciousness_tick_leak,
+            )
 
-            if is_outreach_junk(outward):
-                log.debug("consciousness.outreach_suppressed", preview=outward[:80])
+            outward = strip_consciousness_tick_leak(outward)
+            if not outward or is_outreach_junk(outward):
+                log.debug("consciousness.outreach_suppressed", preview=(outward or "")[:80])
                 return
             allowed, reason = self.governor.allow_outreach()
             if self.life and self.life.should_minimize_outreach():
@@ -742,6 +759,48 @@ def _soften_silent_tick(tick: dict, *, prior_mood_label: str) -> dict:
     if outward and is_tick_status_noise(outward):
         tick = {**tick, "outward_message": ""}
 
+    return tick
+
+
+def _promote_declared_action(tick: dict) -> dict:
+    """Upgrade message/silent ticks that already declared tool work into act.
+
+    Models often write tool_intent / "I'll generate…" while leaving
+    action=message or even silent — then the tick posts thoughts and never
+    runs tools. If she declared creative work, follow through this tick.
+    """
+    from ophelia.channels.proactive_filter import has_creative_tool_intent
+
+    action = (tick.get("action") or "silent").lower()
+    if action in ("act", "explore"):
+        return tick
+
+    intent = (tick.get("tool_intent") or "").strip()
+    outward = (tick.get("outward_message") or "").strip()
+    thought = (tick.get("internal_thought") or "").strip()
+    blob = f"{intent}\n{outward}\n{thought}"
+
+    if not has_creative_tool_intent(blob) and not intent:
+        return tick
+
+    # message + any tool_intent, or creative prose in outward/thought → act.
+    # silent only promotes when tool_intent is explicit (strong signal).
+    if action == "message" and (intent or has_creative_tool_intent(blob)):
+        log.info(
+            "consciousness.promote_to_act",
+            from_action=action,
+            reason="declared_creative_intent",
+            intent_preview=intent[:80] or thought[:80],
+        )
+        return {**tick, "action": "act"}
+    if action == "silent" and intent and has_creative_tool_intent(intent):
+        log.info(
+            "consciousness.promote_to_act",
+            from_action=action,
+            reason="silent_with_tool_intent",
+            intent_preview=intent[:80],
+        )
+        return {**tick, "action": "act"}
     return tick
 
 

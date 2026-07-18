@@ -605,6 +605,19 @@ class AgentLoop:
                 role = "user" if (is_current_tick and current_is_tick) else "system"
                 messages.append({"role": role, "content": wrapped})
                 continue
+            # Raw tick JSON must stay internal. Feeding it into chat history
+            # trains the model to echo {"internal_thought","action",...} as a
+            # normal reply instead of calling tools.
+            if m["role"] == "assistant" and not current_is_tick:
+                from ophelia.channels.proactive_filter import (
+                    is_consciousness_tick_payload,
+                )
+
+                if meta.get("type") == "consciousness_json" or (
+                    (m.get("channel") == "consciousness")
+                    and is_consciousness_tick_payload(content)
+                ):
+                    continue
             prefix = ""
             if m.get("channel") and m["channel"] != channel:
                 prefix = f"[{m['channel']}] "
@@ -1031,7 +1044,46 @@ class AgentLoop:
                 )
                 continue
 
-            await self._store(store_channel, "assistant", text, is_owner=is_owner)
+            store_meta = (
+                {"type": "consciousness_json"} if role == "consciousness" else None
+            )
+            # Chat/autonomous turns must not persist leaked tick JSON — it
+            # re-enters history and teaches the model to echo ticks again.
+            if role != "consciousness":
+                from ophelia.channels.proactive_filter import (
+                    is_consciousness_tick_payload,
+                    strip_consciousness_tick_leak,
+                )
+
+                cleaned = strip_consciousness_tick_leak(text)
+                if cleaned:
+                    text = cleaned
+                elif is_consciousness_tick_payload(text):
+                    log.warning(
+                        "tool_loop.tick_json_stripped",
+                        channel=store_channel,
+                        role=role,
+                        preview=text[:120],
+                    )
+                    text = ""
+            if text:
+                await self._store(
+                    store_channel,
+                    "assistant",
+                    text,
+                    is_owner=is_owner,
+                    metadata=store_meta,
+                )
+            elif role == "consciousness":
+                # Always keep the raw tick for the consciousness parser path
+                # (caller already has `raw`); tag empty edge cases too.
+                await self._store(
+                    store_channel,
+                    "assistant",
+                    content_text.strip() or "(no response)",
+                    is_owner=is_owner,
+                    metadata=store_meta,
+                )
             # Turn finished cleanly — drop any stale resume context and reset
             # the continuation counter (Tier C #14 follow-up: a fresh, finished
             # turn means we're not mid-chain anymore).
@@ -1159,12 +1211,16 @@ class AgentLoop:
             return
         try:
             from ophelia.channels.message_split import split_messages
-            from ophelia.channels.proactive_filter import is_outreach_junk
+            from ophelia.channels.proactive_filter import (
+                is_outreach_junk,
+                strip_consciousness_tick_leak,
+            )
 
             for chunk in split_messages(text):
-                if is_outreach_junk(chunk):
+                cleaned = strip_consciousness_tick_leak(chunk)
+                if not cleaned or is_outreach_junk(cleaned):
                     continue
-                await sender(chunk)
+                await sender(cleaned)
         except Exception as e:
             log.debug("tool_loop.preamble_deliver_failed", error=str(e))
 
