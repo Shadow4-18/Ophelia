@@ -33,7 +33,7 @@ Urgency buckets affect pacing:
   - "normal"   — default pacing.
   - "high"     — short bursts, faster TTS, less reflection.
 
-Enabled via OPHELIA_DIRECTOR=true (default off until you've tuned it).
+Enabled via OPHELIA_DIRECTOR (default on). Set OPHELIA_DIRECTOR=false to disable.
 """
 
 from __future__ import annotations

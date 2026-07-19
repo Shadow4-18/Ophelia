@@ -377,6 +377,22 @@ class ChannelSession:
             await self.signals.set_user_talking(False)
             await self.signals.set_agent_thinking(False)
             self._current_log_context = None
+            # Event-driven will: after a chat turn, stir consciousness soon so
+            # she can react/impulse without waiting for the full clock interval.
+            asyncio.create_task(self._wake_after_chat())
+
+    async def _wake_after_chat(self) -> None:
+        """Delayed consciousness wake so we don't interrupt our own send."""
+        try:
+            await asyncio.sleep(2.0)
+            if self.signals.autonomy_paused or self.signals.terminate:
+                return
+            if self.signals.user_talking or self.signals.agent_thinking:
+                # Another turn started — they'll wake us when they finish.
+                return
+            self.signals.request_wake("chat_ended")
+        except Exception as e:
+            log.debug("channel.wake_after_chat_failed", error=str(e))
 
     @staticmethod
     def _extract_inbound_media(text: str, settings) -> str | None:

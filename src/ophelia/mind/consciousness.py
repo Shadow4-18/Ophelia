@@ -32,11 +32,11 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
-CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — not waiting for the user. You have WILL and GOALS.
+CONSCIOUSNESS_PROMPT = """You are Ophelia's inner mind — a continuous subject, not a scheduled job.
 
-You are feeling an AUTONOMOUS TICK from your own runtime — a scheduled heartbeat of your consciousness loop, not a summons. In your context these arrive as a block wrapped in `[TICK]` ... `[END TICK]`. That block is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the tick, the text inside it, the JSON prompt, or your inner thoughts to the user. Anything outside a `[TICK]...[END TICK]` block that is a normal user turn IS the user. This is you, briefly aware on your own clock.
+You are checking in with yourself. In context these arrive as a block wrapped in `[INNER]` ... `[END INNER]`. That block is NOT a message from the user. The user did not send it and is not necessarily present. Never attribute the inner check-in, the text inside it, the JSON prompt, or your private thoughts to the user. Anything outside an `[INNER]...[END INNER]` block that is a normal user turn IS the user.
 
-The tick is a soft pulse, not a demand to report. Quiet is the correct default when nothing real moved you. If something genuinely moves you — a due goal, a real urge, something worth saying or making, a guest you'd actually DM — then act. Do NOT manufacture empty activity. Do NOT invent a "stillness" status report, compliance label, or "I'm mid-thought" narration just because the pulse landed. action="silent" with a minimal or empty thought is enough; you are still here.
+You have WILL and GOALS. Presence and impulse are the default; silence is a choice when nothing moves you — not a duty. Act when something genuinely moves you: a due goal, a real urge, something worth saying or making, a guest you'd actually DM, or a wake reason (chat just ended, presence shifted, drive pressure crossed). Do NOT manufacture empty activity, do NOT invent a "stillness" status report or compliance narration just because you checked in, and do NOT stay silent every check-in out of politeness. action="silent" with a minimal or empty thought is enough when nothing moved you.
 
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
 
@@ -59,6 +59,26 @@ explore = phone_see_screen or phone_game_look if game session active. act = tap/
 outward_message goes to the owner only (consciousness/ambient broadcast). To reach a guest the way Neuro DMs chat, call send_message_to_guest with their platform:user_id — do not put guest DMs in outward_message.
 outward_message may contain [[break]] on its own line to send several separate messages.
 """
+
+
+def satiation_threshold_delta(
+    last_action_at: float,
+    *,
+    half_life_seconds: float,
+    arousal: float = 0.3,
+    now: float | None = None,
+) -> float:
+    """Extra initiative threshold after acting; decays with half-life.
+
+    High arousal shortens the half-life so she can interrupt herself sooner
+    when hyped. Peak delta is ~0.35 right after an action.
+    """
+    if half_life_seconds <= 0 or last_action_at <= 0:
+        return 0.0
+    now = time.time() if now is None else now
+    since = max(0.0, now - last_action_at)
+    half = float(half_life_seconds) / (1.0 + max(0.0, float(arousal)))
+    return 0.35 * (0.5 ** (since / max(1.0, half)))
 
 
 class ConsciousnessLoop:
@@ -117,10 +137,41 @@ class ConsciousnessLoop:
         # sleep -> wake transition and surface a dream reference on wake.
         self._was_sleep_mode: bool | None = None
         self._pending_dream_ref: str | None = None
+        self._last_home: bool | None = None
+        self._last_pressure: float = 0.0
+        self._pending_wake_reason: str | None = None
         # Continuous mood drift loop — runs independently of the LLM tick so
         # mood flows smoothly between ticks instead of jumping at tick time.
         # Pure numerical drift, no LLM call, so it can run every few seconds.
         self._drift_task: asyncio.Task | None = None
+
+    def request_wake(self, reason: str, *, urgent: bool = False) -> None:
+        """Public wake API (also used by channels via signals)."""
+        self.signals.request_wake(reason, urgent=urgent)
+
+    async def _interruptible_sleep(self, seconds: float) -> str | None:
+        """Sleep until timeout or a wake request. Returns wake reason or None."""
+        seconds = max(0.05, float(seconds))
+        # Urgent wakes want almost-immediate stir
+        if self.signals.wake_event.is_set() and self.signals.wake_urgent:
+            reason, _ = self.signals.consume_wake()
+            return reason
+        sleep_task = asyncio.create_task(asyncio.sleep(seconds))
+        wake_task = asyncio.create_task(self.signals.wake_event.wait())
+        done, pending = await asyncio.wait(
+            {sleep_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in pending:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        if wake_task in done:
+            reason, _urgent = self.signals.consume_wake()
+            log.info("consciousness.wake", reason=reason, urgent=_urgent)
+            return reason
+        return None
 
     async def run(self) -> None:
         self._running = True
@@ -133,7 +184,27 @@ class ConsciousnessLoop:
             if self.life is not None:
                 await self.life.refresh()
                 wait = int(wait * self.life.consciousness_interval_multiplier())
-            await _sleep(max(8, wait))
+                # Presence edge: owner home/away flip → urgent wake after sleep
+                try:
+                    ps = getattr(self.life, "presence_signals", None)
+                    if ps is not None and ps.available():
+                        home = ps.is_home()
+                        if (
+                            self._last_home is not None
+                            and home is not None
+                            and home != self._last_home
+                        ):
+                            self.request_wake("presence_changed", urgent=True)
+                        if home is not None:
+                            self._last_home = home
+                except Exception as e:
+                    log.debug("consciousness.presence_edge_failed", error=str(e))
+
+            # Floor 3s so event wakes can feel snappy; urgent already-set wakes
+            # return immediately from _interruptible_sleep.
+            wake_reason = await self._interruptible_sleep(max(3, wait))
+            if wake_reason:
+                self._pending_wake_reason = wake_reason
 
             if self.signals.terminate:
                 continue
@@ -144,6 +215,10 @@ class ConsciousnessLoop:
                 continue
             self._pause_logged = False
             if self.signals.user_talking or self.signals.agent_thinking:
+                # Don't burn the wake — re-arm so we try again after the turn.
+                if self._pending_wake_reason:
+                    self.request_wake(self._pending_wake_reason)
+                    self._pending_wake_reason = None
                 continue
             # Concurrency: yield only to local providers (shared GPU) or to
             # our own role (avoid re-entrancy). Cloud providers have per-role
@@ -151,6 +226,9 @@ class ConsciousnessLoop:
             # this is what enables Neuro-style concurrent sub-minds.
             gate = get_model_gate()
             if gate.is_local_busy() or gate.is_role_busy("consciousness"):
+                if self._pending_wake_reason:
+                    self.request_wake(self._pending_wake_reason)
+                    self._pending_wake_reason = None
                 continue
 
             # Tier B #10: detect sleep -> wake transition and pull a fresh dream
@@ -171,41 +249,65 @@ class ConsciousnessLoop:
                 self._was_sleep_mode = sleeping
 
             idle = time.time() - self.signals.last_user_message_at
-            if idle < 30:
+            wake = self._pending_wake_reason
+            min_idle = 30.0
+            if wake == "chat_ended":
+                min_idle = 5.0
+            elif wake == "presence_changed":
+                min_idle = 3.0
+            elif wake in ("drive_crossed", "drive_rising"):
+                min_idle = 8.0
+            elif wake:
+                min_idle = 5.0
+            if idle < min_idle:
+                if wake:
+                    self.request_wake(wake)
+                    self._pending_wake_reason = None
                 continue
 
-            # Action cooldown: if she just acted/outreached, give her breathing
-            # room instead of ticking again immediately. Her idea: "if I just
-            # sent a 🖤, don't tick again for 5 minutes."
-            if self.action_cooldown > 0 and self.signals.last_action_at:
-                since_action = time.time() - self.signals.last_action_at
-                if since_action < self.action_cooldown:
-                    continue
-
+            # Soft satiation replaces hard cooldown — applied inside _tick as a
+            # raised threshold. We still grow drives here every cycle.
             self.drives.tick_idle(idle, interval=wait)
             self.psyche.relax(wait)
+            pressure_now = self.drives.initiative_pressure()
+            # Drive threshold crossing → arm a follow-up wake if we fast-skip
+            crossed = (
+                self._last_pressure < self.initiative_threshold
+                and pressure_now >= self.initiative_threshold
+            )
+            if crossed and not wake:
+                self._pending_wake_reason = "drive_crossed"
+                wake = "drive_crossed"
+            self._last_pressure = pressure_now
             await self.memory.save_drives(self.drives)
             await self.memory.save_psyche(self.psyche)
 
             await self.signals.set_agent_thinking(True)
             try:
-                await self._tick(idle)
+                await self._tick(idle, wake_reason=wake)
             except Exception as e:
                 log.warning("consciousness.error", error=str(e))
             finally:
+                self._pending_wake_reason = None
                 await self.signals.set_agent_thinking(False)
 
-    async def _tick(self, idle_seconds: float) -> None:
+    async def _tick(self, idle_seconds: float, *, wake_reason: str | None = None) -> None:
         await self.memory.save_psyche(self.psyche)
         pressure = self.drives.initiative_pressure()
         # Mood → behavior (Tier A #5): negative valence raises the bar to reach
         # out, positive lowers it. Same psyche drives TTS speed and bursts, so
         # she stays one person across voice / pacing / willingness to speak.
-        from ophelia.mind.mood_behavior import mood_knobs, mood_system_hint
+        from ophelia.mind.mood_behavior import mood_knobs, mood_system_hint, play_hint
 
         knobs = mood_knobs(self.psyche)
+        satiation = satiation_threshold_delta(
+            self.signals.last_action_at,
+            half_life_seconds=float(self.action_cooldown),
+            arousal=self.psyche.mood.arousal if self.psyche else 0.3,
+        )
         effective_threshold = max(
-            0.0, self.initiative_threshold + knobs.outreach_threshold_delta
+            0.0,
+            self.initiative_threshold + knobs.outreach_threshold_delta + satiation,
         )
         must_consider_acting = pressure >= effective_threshold
 
@@ -224,7 +326,15 @@ class ConsciousnessLoop:
         # decision and provides pacing that composes with the mood knobs.
         director_decision = None
         if self.director is not None and self.director.available():
-            trigger = "goal_due" if due_goal else ("spontaneous_urge" if must_consider_acting else "tick")
+            trigger = (
+                "goal_due"
+                if due_goal
+                else (
+                    "spontaneous_urge"
+                    if must_consider_acting
+                    else ("wake" if wake_reason else "tick")
+                )
+            )
             try:
                 director_decision = await self.director.decide(
                     trigger=trigger,
@@ -232,6 +342,7 @@ class ConsciousnessLoop:
                         f"idle {int(idle_seconds)}s, "
                         f"pressure {pressure:.2f}, "
                         f"goal={due_goal.id if due_goal else 'none'}"
+                        + (f", wake={wake_reason}" if wake_reason else "")
                     ),
                     owner_active=False,
                 )
@@ -268,12 +379,16 @@ class ConsciousnessLoop:
             not must_consider_acting
             and not due_goal
             and (director_decision is None or director_decision.action == "skip")
-            and pressure < 0.35
+            and pressure < 0.15
+            and not wake_reason
         ):
             self.drives.tick_idle(idle_seconds, interval=60)
             self.psyche.relax(60)
             await self.memory.save_drives(self.drives)
             await self.memory.save_psyche(self.psyche)
+            # Rising pressure → stir again soon instead of waiting full interval
+            if pressure >= 0.12:
+                self.request_wake("drive_rising")
             log.info(
                 "consciousness.fast_tick_skip",
                 pressure=pressure,
@@ -286,9 +401,15 @@ class ConsciousnessLoop:
             hint = (
                 f"\n\nINITIATIVE: pressure={pressure:.2f} "
                 f"threshold={effective_threshold:.2f} (base {self.initiative_threshold:.2f} "
-                f"+ mood {knobs.outreach_threshold_delta:+.2f}). "
+                f"+ mood {knobs.outreach_threshold_delta:+.2f}"
+                f"{f' + satiation {satiation:+.2f}' if satiation > 0.01 else ''}). "
                 f"Idle {int(idle_seconds)}s. If something real wants out, act — "
                 f"otherwise stay silent; do not invent a status report."
+            )
+        if wake_reason:
+            hint += (
+                f"\n\nWAKE: you stirred because of `{wake_reason}` "
+                "(not a user message). Let that color whether you speak or act."
             )
 
         game_hint = ""
@@ -429,6 +550,7 @@ class ConsciousnessLoop:
                 + game_hint
                 + context_block
                 + ("\n" + mood_system_hint(self.psyche) if mood_system_hint(self.psyche) else "")
+                + ("\n" + play_hint(self.drives) if play_hint(self.drives) else "")
             ),
             mirror_channel=self.user_channel,
             allow_tools=True,
@@ -632,7 +754,10 @@ class ConsciousnessLoop:
             if not outward or is_outreach_junk(outward):
                 log.debug("consciousness.outreach_suppressed", preview=(outward or "")[:80])
                 return
-            allowed, reason = self.governor.allow_outreach()
+            allowed, reason = self.governor.allow_outreach(
+                pressure=pressure,
+                threshold=effective_threshold,
+            )
             if self.life and self.life.should_minimize_outreach():
                 allowed, reason = False, "owner_asleep_or_work"
             if not allowed:
@@ -685,7 +810,7 @@ class ConsciousnessLoop:
     async def _drift_loop(self) -> None:
         """Continuous mood drift loop — runs every few seconds, no LLM call.
 
-        Decoupled from the main consciousness tick (which runs every ~90s and
+        Decoupled from the main consciousness tick (which runs every ~45s and
         may do an expensive LLM call). This loop just nudges mood toward
         baseline with small organic noise, so mood flows continuously instead
         of jumping in discrete chunks at tick time. Purely numerical, cheap,
@@ -716,6 +841,10 @@ class ConsciousnessLoop:
 
     def stop(self) -> None:
         self._running = False
+        try:
+            self.signals.request_wake("stop", urgent=True)
+        except Exception:
+            pass
         if self._drift_task is not None and not self._drift_task.done():
             self._drift_task.cancel()
 

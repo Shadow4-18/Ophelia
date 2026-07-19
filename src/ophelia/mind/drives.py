@@ -86,15 +86,22 @@ class DriveState:
 
     def tick_idle(self, seconds_since_user: float, *, interval: float) -> None:
         """Grow drives when alone; boredom scales with idle time."""
-        scale = min(1.0, interval / 90.0)
-        self.boredom = min(1.0, self.boredom + 0.04 * scale)
-        self.social = min(1.0, self.social + 0.02 * scale)
-        self.curiosity = min(1.0, self.curiosity + 0.03 * scale)
+        scale = min(1.0, interval / 45.0)
+        # Aggressive growth so will builds while she's alone (Neuro-leaning).
+        self.boredom = min(1.0, self.boredom + 0.07 * scale)
+        self.social = min(1.0, self.social + 0.04 * scale)
+        self.curiosity = min(1.0, self.curiosity + 0.045 * scale)
+        self.expressiveness = min(1.0, self.expressiveness + 0.035 * scale)
+        if seconds_since_user > 120:
+            self.boredom = min(1.0, self.boredom + 0.06)
+            self.social = min(1.0, self.social + 0.05)
+            self.expressiveness = min(1.0, self.expressiveness + 0.04)
         if seconds_since_user > 300:
             self.boredom = min(1.0, self.boredom + 0.05)
             self.social = min(1.0, self.social + 0.04)
+            self.agency = min(1.0, self.agency + 0.04)
         if seconds_since_user > 900:
-            self.agency = min(1.0, self.agency + 0.06)
+            self.agency = min(1.0, self.agency + 0.08)
         self.updated_at = time.time()
 
     def satisfy(self, action: str) -> None:

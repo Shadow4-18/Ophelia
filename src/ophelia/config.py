@@ -330,17 +330,17 @@ class Settings(BaseSettings):
     # Consciousness loop (Neuro-style; NOT isolated cron sessions)
     consciousness_enabled: bool = Field(default=True, alias="OPHELIA_CONSCIOUSNESS")
     consciousness_interval_seconds: int = Field(
-        default=90,
+        default=45,
         alias="OPHELIA_CONSCIOUSNESS_INTERVAL",
-        description="Base seconds between inner ticks; arousal adjusts speed",
+        description="Base seconds between inner check-ins; arousal adjusts speed",
     )
-    # After she acts (outreach / act / explore), suppress inner ticks for this
-    # many seconds so she gets breathing room instead of an immediate next tick.
-    # Her idea: "if I just sent a 🖤, don't tick again for 5 minutes." 0 = off.
+    # Soft satiation half-life after she acts (outreach/act/explore). Raises the
+    # initiative bar briefly, then decays — she can still interrupt herself if
+    # pressure spikes. 0 = no satiation. (Formerly a hard mute cooldown.)
     tick_action_cooldown_seconds: int = Field(
-        default=300,
+        default=45,
         alias="OPHELIA_TICK_ACTION_COOLDOWN",
-        description="Suppress ticks for N seconds after she acts/outreaches (0 = off)",
+        description="Satiation half-life in seconds after she acts/outreaches (0 = off)",
     )
     # When fully idle with no due goal, rotate the nudge mode (reflect/create/
     # explore/social) so ticks aren't identical every time. Her "uniformity" fix.
@@ -463,7 +463,7 @@ class Settings(BaseSettings):
     )
 
     # Initiative / will (lower = more spontaneous)
-    initiative_threshold: float = Field(default=0.45, alias="OPHELIA_INITIATIVE_THRESHOLD")
+    initiative_threshold: float = Field(default=0.32, alias="OPHELIA_INITIATIVE_THRESHOLD")
     greet_on_start: bool = Field(
         default=True,
         alias="OPHELIA_GREET_ON_START",
@@ -471,16 +471,16 @@ class Settings(BaseSettings):
     )
     # Tier A #1: director — fast decision layer over the ensemble. Decides
     # whether to speak / react / defer / skip before the heavy chat call, and
-    # sets urgency + pacing knobs. Off by default until you've tuned it.
+    # sets urgency + pacing knobs.
     director_enabled: bool = Field(
-        default=False,
+        default=True,
         alias="OPHELIA_DIRECTOR",
         description=(
             "Enable the director mind — decides whether/when/how to respond "
             "before the chat LLM runs. Logs decisions to data/director_log.jsonl."
         ),
     )
-    max_spontaneous_per_hour: int = Field(default=6, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
+    max_spontaneous_per_hour: int = Field(default=20, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")
     quiet_hours: str = Field(
         default="",
         alias="OPHELIA_QUIET_HOURS",
@@ -610,7 +610,7 @@ class Settings(BaseSettings):
         default=True, alias="OPHELIA_AMBIENT_COMMENTARY"
     )
     ambient_commentary_minutes: int = Field(
-        default=45, alias="OPHELIA_AMBIENT_COMMENTARY_MINUTES"
+        default=15, alias="OPHELIA_AMBIENT_COMMENTARY_MINUTES"
     )
     alarms: str = Field(
         default="",

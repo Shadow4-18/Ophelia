@@ -51,11 +51,23 @@ class InitiativeGovernor:
         cutoff = time.time() - 3600
         self._recent = [t for t in self._recent if t >= cutoff]
 
-    def allow_outreach(self) -> tuple[bool, str]:
+    def allow_outreach(
+        self,
+        *,
+        pressure: float = 0.0,
+        threshold: float = 0.32,
+    ) -> tuple[bool, str]:
+        """Return (allowed, reason).
+
+        Quiet hours remain a hard deny. Hourly rate is soft: when over the
+        cap, a strong impulse (pressure >= threshold + 0.25) can still speak.
+        """
         if self._in_quiet_hours():
             return False, "quiet_hours"
         self._prune_recent()
         if len(self._recent) >= self.max_spontaneous_per_hour:
+            if pressure >= float(threshold) + 0.25:
+                return True, "impulse_override"
             return False, "rate_limit"
         return True, "ok"
 

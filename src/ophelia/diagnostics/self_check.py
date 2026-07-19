@@ -708,8 +708,8 @@ def _check_life_subsystems(report: SelfCheckReport, settings: Settings) -> None:
             category="life",
             name="Director",
             ok=True,
-            detail="disabled (default) — all ticks go through unchanged",
-            hint="set OPHELIA_DIRECTOR=true once you've tuned the prompt",
+            detail="disabled — all ticks go through unchanged",
+            hint="set OPHELIA_DIRECTOR=true to enable speak/react/defer routing",
             required=False,
         )
 

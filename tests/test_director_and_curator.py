@@ -65,10 +65,9 @@ async def test_director_clamps_unknown_urgency_to_normal(settings):
 
 
 async def test_director_disabled_state_returns_speak_for_owner(settings):
-    """When the director is disabled (default), decide() returns a sensible
-    default — speak for owner-active, defer otherwise — so existing behavior
-    is unchanged. We test decide() directly since it short-circuits before
-    any LLM call when disabled."""
+    """When the director is disabled, decide() returns a sensible default —
+    speak for owner-active, defer otherwise — without calling the LLM."""
+    settings.director_enabled = False
     d = _director(settings)
     assert d.enabled is False
     dec_owner = await d.decide(trigger="user_message", owner_active=True)
