@@ -44,6 +44,10 @@ API:
 | `POST` | `/api/models/select` | `{ "role", "model", "persist": true }` |
 | `POST` | `/api/compare` | Same prompt on up to 4 Ollama models (no tools) |
 | `GET` | `/api/status` | Snapshot used for HTTP status polling when WS is down |
+| `POST` | `/api/voice` | Multipart mic clip → STT → chat → TTS (`audio` field) |
+| `GET` | `/api/artifacts/ui_voice/{name}` | Serve a TTS clip from a voice turn |
+
+The workstation boots with a short **splash** animation, then the dark body. Hold **mic** in the composer to talk; replies play through built-in TTS when a provider is configured (Kokoro preferred when `OPHELIA_TTS_PROVIDER=kokoro` / auto).
 
 ### Performance (expressions · animations · lip sync)
 
@@ -136,7 +140,7 @@ Configure a provider first — see [pc-setup.md](pc-setup.md).
 | Phone tools | off by default | N/A on PC |
 | Consciousness | yes | yes |
 | Avatar stage | yes (procedural / Live2D / VRoid / VRChat) | no |
-| Voice STT/TTS | no (yet) | yes (xAI) |
+| Voice STT/TTS | yes (mic → local/xAI STT → Kokoro/TTS) | yes (xAI / Kokoro) |
 
 Use **both**: run `ophelia ui` on PC and `ophelia run` on phone with Telegram — separate channels unless you unify later.
 

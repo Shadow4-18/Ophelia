@@ -116,6 +116,8 @@ class AgentLoop:
         self.humor = None  # HumorTracker — set by Orchestrator
         self.director = None  # Director — set by Orchestrator (Tier A #1)
         self.voice_mind = None  # VoiceMind — set by Orchestrator (Tier A #4)
+        self.threads = None  # ThreadAwareness — set by Orchestrator / Workstation
+        self.curiosity = None  # CuriosityStore — set by Orchestrator / Workstation
         # Pending tool-chain to resume on the next turn if the previous turn hit
         # the tool-round cap without getting stuck in a repeat loop.
         # Maps store_channel -> {"messages": [...], "signature": str}
@@ -258,6 +260,20 @@ class AgentLoop:
         # the current user text so she can reference them without an explicit
         # blocking recall_memory tool call. Neuro-style parallel memory access.
         prefetch_block = await self._memory_prefetch(user_text, channel)
+        thread_block = ""
+        threads = getattr(self, "threads", None)
+        if threads is not None and channel:
+            try:
+                thread_block = await threads.context_block(channel)
+            except Exception as e:
+                log.debug("agent.thread_context_failed", error=str(e))
+        curiosity_block = ""
+        curiosity = getattr(self, "curiosity", None)
+        if curiosity is not None:
+            try:
+                curiosity_block = await curiosity.context_block()
+            except Exception as e:
+                log.debug("agent.curiosity_context_failed", error=str(e))
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
@@ -272,6 +288,8 @@ class AgentLoop:
                     skills,
                     self_improve,
                     humor_block,
+                    thread_block,
+                    curiosity_block,
                     tts_block,
                     honcho_ctx,
                     guests_block,
@@ -667,6 +685,14 @@ class AgentLoop:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
+        threads = getattr(self, "threads", None)
+        if is_owner and threads is not None and text:
+            try:
+                await threads.observe_turn(
+                    channel, user_text=user_text, assistant_text=text
+                )
+            except Exception as e:
+                log.debug("agent.thread_observe_failed", error=str(e))
         return text
 
     async def compose_message(

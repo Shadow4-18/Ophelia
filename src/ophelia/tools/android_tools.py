@@ -118,4 +118,54 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_vibrate",
+            "description": (
+                "Vibrate the phone body (Termux:API or shell vibrator). "
+                "Use when you want a physical sensation — confirmation buzz, "
+                "alert yourself, or feel present in the device."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_ms": {
+                        "type": "integer",
+                        "description": "Vibration length in ms (default 200, max 2000)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_notifications",
+            "description": (
+                "List recent phone notifications (Termux:API notification list). "
+                "Feel the pocket buzz without screenshot-polling — titles, apps, text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max notifications to return (default 12)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_battery",
+            "description": (
+                "Read battery / charging state from the phone body "
+                "(dumpsys battery or Termux battery-status). Cheap body awareness."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]

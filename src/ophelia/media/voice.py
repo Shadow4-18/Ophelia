@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +14,9 @@ if TYPE_CHECKING:
     from ophelia.config import Settings
 
 log = structlog.get_logger()
+
+# Split spoken text into sentence-sized chunks for lower time-to-first-audio.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|(?<=\n)\s*")
 
 
 async def transcribe_audio(
@@ -59,6 +64,46 @@ def resolve_tts_provider(settings: Settings) -> str:
 
 def kokoro_base_url(settings: Settings) -> str:
     return (settings.kokoro_tts_url or "http://127.0.0.1:8880/v1").rstrip("/")
+
+
+def split_speech_chunks(text: str, *, max_chars: int = 220) -> list[str]:
+    """Split text into speakable chunks for lower time-to-first-audio.
+
+    Prefer sentence boundaries; fall back to comma/length cuts so Kokoro
+    (and other clip-based TTS) can start playing before a long monologue
+    finishes synthesizing.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    # Strip markdown-ish noise that sounds bad spoken.
+    raw = re.sub(r"[*_`#]+", "", raw)
+    parts = [p.strip() for p in _SENTENCE_SPLIT.split(raw) if p and p.strip()]
+    if not parts:
+        parts = [raw]
+    chunks: list[str] = []
+    buf = ""
+    for part in parts:
+        candidate = f"{buf} {part}".strip() if buf else part
+        if len(candidate) <= max_chars:
+            buf = candidate
+            continue
+        if buf:
+            chunks.append(buf)
+        if len(part) <= max_chars:
+            buf = part
+        else:
+            # Hard-wrap long clauses.
+            while len(part) > max_chars:
+                cut = part.rfind(",", 0, max_chars)
+                if cut < max_chars // 3:
+                    cut = max_chars
+                chunks.append(part[:cut].strip())
+                part = part[cut:].lstrip(" ,")
+            buf = part
+    if buf:
+        chunks.append(buf)
+    return chunks
 
 
 async def synthesize(
@@ -109,6 +154,38 @@ async def synthesize(
             voice_id=voice or settings.tts_voice_id,
         )
     raise RuntimeError(f"Unknown TTS provider: {provider}")
+
+
+async def synthesize_streaming(
+    text: str,
+    out_dir: Path,
+    *,
+    settings: Settings,
+    xai_bearer: str | None = None,
+    voice: str | None = None,
+    speed: float | None = None,
+    max_chars: int = 220,
+) -> AsyncIterator[Path]:
+    """Yield per-sentence audio files as soon as each chunk is ready.
+
+    Callers (workstation UI, listen loop) can start playback on the first
+    yield instead of waiting for the full reply to finish TTS.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    chunks = split_speech_chunks(text, max_chars=max_chars)
+    if not chunks:
+        return
+    for i, chunk in enumerate(chunks):
+        path = out_dir / f"chunk_{i:02d}.mp3"
+        yield await synthesize(
+            chunk,
+            path,
+            settings=settings,
+            xai_bearer=xai_bearer,
+            voice=voice,
+            speed=speed,
+        )
 
 
 async def kokoro_list_voices(settings: Settings) -> list[dict[str, Any]]:

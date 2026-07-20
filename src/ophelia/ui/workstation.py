@@ -105,6 +105,16 @@ class Workstation:
             honcho=self.honcho if self.honcho.enabled else None,
             body_status="\n".join(status_parts),
         )
+        from ophelia.mind.curiosity import CuriosityStore
+        from ophelia.mind.thread_state import ThreadAwareness
+
+        self.threads = ThreadAwareness(self.memory)
+        self.curiosity = CuriosityStore(self.memory)
+        self.agent.threads = self.threads
+        self.agent.curiosity = self.curiosity
+        self.tools.curiosity = self.curiosity
+        self.tools.memory = self.memory
+        self.tools.psyche = self.psyche
         self.inner = (
             InnerMonologue(mirror_telegram=False)
             if settings.inner_log_enabled
@@ -222,6 +232,8 @@ class Workstation:
                 initiative_threshold=self.settings.initiative_threshold,
                 user_channel=UI_CHANNEL,
                 notify=self._notify_initiative,
+                settings=self.settings,
+                curiosity=self.curiosity,
             )
             self._tasks.append(asyncio.create_task(self.consciousness.run()))
 
@@ -283,6 +295,107 @@ class Workstation:
         if reply:
             await self.bus.broadcast({"type": "chat", "role": "assistant", "text": reply})
         return reply
+
+    async def voice_turn(self, audio_path: Path) -> dict:
+        """STT → chat → TTS for the workstation mic.
+
+        Returns transcript, reply text, and a relative audio URL when TTS works.
+        Uses sentence-chunk TTS so the first spoken clip is ready sooner than a
+        full-paragraph synthesize (closer to natural conversation cadence).
+        """
+        from ophelia.media.stt_local import local_stt_configured, transcribe_audio_local
+        from ophelia.media.voice import (
+            resolve_tts_provider,
+            split_speech_chunks,
+            synthesize,
+            transcribe_audio,
+        )
+
+        audio_path = Path(audio_path)
+        transcript = ""
+        if local_stt_configured(self.settings):
+            try:
+                transcript = (await transcribe_audio_local(audio_path, settings=self.settings) or "").strip()
+            except Exception as e:
+                log.debug("ui.voice_local_stt_failed", error=str(e))
+        if not transcript:
+            xai = self.stack.xai_backend()
+            if xai is not None:
+                try:
+                    bearer = await xai.bearer_fresh()
+                    transcript = (
+                        await transcribe_audio(
+                            audio_path,
+                            bearer=bearer,
+                            base_url=self.settings.xai_base_url,
+                        )
+                        or ""
+                    ).strip()
+                except Exception as e:
+                    log.warning("ui.voice_cloud_stt_failed", error=str(e))
+        if not transcript:
+            return {
+                "ok": False,
+                "error": "Could not transcribe audio (configure local STT or xAI).",
+                "transcript": "",
+                "reply": "",
+                "audio_url": None,
+            }
+
+        await self.bus.broadcast({"type": "chat", "role": "user", "text": transcript})
+        reply = await self.chat(transcript)
+        spoken = reply
+        vm = getattr(self.agent, "voice_mind", None)
+        if vm is not None and getattr(vm, "enabled", False) and reply:
+            try:
+                spoken = (
+                    await vm.rewrite_for_speech(
+                        reply, psyche=self.psyche, agent=self.agent
+                    )
+                    or reply
+                )
+            except Exception as e:
+                log.debug("ui.voice_mind_failed", error=str(e))
+                spoken = reply
+
+        audio_url = None
+        if spoken:
+            artifacts = self.settings.data_dir / "artifacts" / "ui_voice"
+            artifacts.mkdir(parents=True, exist_ok=True)
+            stamp = int(time.time() * 1000)
+            # Prefer the first speech chunk for faster playback; full reply
+            # remains in the chat transcript.
+            chunks = split_speech_chunks(spoken, max_chars=220)
+            speak_text = chunks[0] if chunks else spoken
+            out = artifacts / f"reply_{stamp}.mp3"
+            bearer = None
+            provider = resolve_tts_provider(self.settings)
+            if provider == "xai":
+                xai = self.stack.xai_backend()
+                if xai is not None:
+                    try:
+                        bearer = await xai.bearer_fresh()
+                    except Exception:
+                        bearer = xai.bearer()
+            try:
+                out = await synthesize(
+                    speak_text,
+                    out,
+                    settings=self.settings,
+                    xai_bearer=bearer,
+                )
+                audio_url = f"/api/artifacts/ui_voice/{out.name}"
+            except Exception as e:
+                log.warning("ui.voice_tts_failed", error=str(e), provider=provider)
+
+        return {
+            "ok": True,
+            "transcript": transcript,
+            "reply": reply or "",
+            "spoken": spoken or "",
+            "audio_url": audio_url,
+            "tts_provider": resolve_tts_provider(self.settings),
+        }
 
     def avatar_dict(self) -> dict:
         if not self.settings.avatar_enabled:
