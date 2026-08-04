@@ -713,6 +713,34 @@ def _check_life_subsystems(report: SelfCheckReport, settings: Settings) -> None:
             required=False,
         )
 
+    # Reaction mind (ensemble)
+    if getattr(settings, "reaction_enabled", True):
+        try:
+            from ophelia.providers.router import ProviderStack
+
+            stack = ProviderStack(settings)
+            detail = (
+                f"enabled — {stack.name('reaction')} / {stack.model('reaction')}"
+            )
+        except Exception:
+            detail = "enabled — director react uses fast one-liner path"
+        report.add(
+            category="life",
+            name="Reaction mind",
+            ok=True,
+            detail=detail,
+            required=False,
+        )
+    else:
+        report.add(
+            category="life",
+            name="Reaction mind",
+            ok=True,
+            detail="disabled — react falls through to full chat",
+            hint="set OPHELIA_REACTION=true to enable the fast path",
+            required=False,
+        )
+
     # Voice mind (Tier A #4)
     mode = (settings.voice_mind_mode or "post").strip().lower()
     report.add(

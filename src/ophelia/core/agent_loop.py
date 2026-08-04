@@ -15,6 +15,7 @@ from ophelia.memory.bootstrap import (
 from ophelia.memory.hermes_sessions import format_hits_for_prompt, search_hermes_sessions
 from ophelia.memory.honcho_client import HonchoClient
 from ophelia.memory.store import MemoryStore
+from ophelia.mind.drives import DriveState
 from ophelia.mind.psyche import PsycheState
 from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import (
@@ -116,6 +117,7 @@ class AgentLoop:
         self.humor = None  # HumorTracker — set by Orchestrator
         self.director = None  # Director — set by Orchestrator (Tier A #1)
         self.voice_mind = None  # VoiceMind — set by Orchestrator (Tier A #4)
+        self.reaction_mind = None  # ReactionMind — set by Orchestrator
         # Pending tool-chain to resume on the next turn if the previous turn hit
         # the tool-round cap without getting stuck in a repeat loop.
         # Maps store_channel -> {"messages": [...], "signature": str}
@@ -667,6 +669,77 @@ class AgentLoop:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
+        return text
+
+    async def run_reaction_turn(
+        self,
+        channel: str,
+        user_text: str,
+        *,
+        is_owner: bool = True,
+        decision=None,
+    ) -> str:
+        """Fast path when Director picks ``react`` — no tools, short reply.
+
+        Stores user + assistant in memory like a normal turn so continuity
+        holds. Returns empty string on failure so the caller can fall back
+        to ``run_turn``.
+        """
+        reaction = getattr(self, "reaction_mind", None)
+        if reaction is None or not getattr(reaction, "enabled", False):
+            return ""
+
+        recent = ""
+        try:
+            if is_owner:
+                hist = await self.memory.recent_messages(channel, limit=6)
+            else:
+                hist = await self.memory.recent_guest(channel, limit=6)
+            bits: list[str] = []
+            for m in hist[-6:]:
+                role = m.get("role") or "?"
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                bits.append(f"{role}: {content[:160]}")
+            recent = "\n".join(bits)
+        except Exception:
+            recent = ""
+
+        psyche = getattr(self, "psyche", None)
+        text = await reaction.react(
+            user_text,
+            agent=self,
+            psyche=psyche,
+            decision=decision,
+            recent_context=recent,
+        )
+        if not text:
+            return ""
+
+        await self._store(
+            channel,
+            "user",
+            user_text,
+            is_owner=is_owner,
+            metadata={"type": "reaction_trigger"},
+        )
+        await self._store(
+            channel,
+            "assistant",
+            text,
+            is_owner=is_owner,
+            metadata={"type": "reaction"},
+        )
+        if is_owner and self.honcho and self.honcho.enabled:
+            try:
+                await self.honcho.save_turn(
+                    channel.replace(":", "_"),
+                    user_text=user_text,
+                    assistant_text=text,
+                )
+            except Exception:
+                pass
         return text
 
     async def compose_message(

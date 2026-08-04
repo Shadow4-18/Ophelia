@@ -506,6 +506,13 @@ class ConsciousnessLoop:
         # Composes with the mood-derived burst cap so both signals shape her.
         if director_decision is not None:
             burst_max = director_decision.urgency_burst_cap(knobs.burst_max_chars)
+            if director_decision.action == "react":
+                # Reaction mode on a tick: keep any outward line punchy.
+                burst_max = min(burst_max, 160)
+                context_block += (
+                    "\n\nDIRECTOR MODE: react — if you speak outward, keep it "
+                    "to a short beat (one quip / acknowledgement). No essays."
+                )
             if director_decision.pace_hint:
                 context_block += (
                     f"\n\nDIRECTOR PACE: {director_decision.pace_hint} "

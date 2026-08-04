@@ -1,35 +1,39 @@
 """
-Neuro-style multi-mind ensemble — future architecture stub.
+Neuro-style multi-mind ensemble — architecture + shipped layers.
 
-Today Ophelia uses ProviderStack roles (chat, consciousness, vision, …) as
-ensemble v0: separate models, shared memory, one model gate.
+Ensemble v0: ProviderStack roles (chat, consciousness, vision, …) — separate
+models, shared memory, one model gate.
 
-When OPHELIA_ENSEMBLE_ENABLED is implemented, a Director will coordinate
-PLANNED_MINDS alongside existing LLM roles. Nothing here runs yet.
+Shipped decision / specialist layers:
+  - Director (`OPHELIA_DIRECTOR`) — speak / react / defer / skip
+  - VoiceMind (`OPHELIA_VOICE_MIND_MODE`) — TTS rewrite
+  - ReactionMind (`OPHELIA_REACTION`) — fast one-liner when director picks react
+
+Planned (not wired as live specialists yet): filter, music, full avatar bridge.
+See docs/neuro-ensemble.md.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-# Roles wired today (see ophelia.providers.router.ProviderRole)
+# Roles wired in ProviderStack today (see ophelia.providers.router.ProviderRole)
 ActiveRole = Literal[
     "chat",
     "consciousness",
+    "reaction",
     "vision",
     "curator",
     "image",
     "video",
 ]
 
-# Minds to add for streaming / Neuro parity.
-# `avatar` has a partial bridge (psyche → Live2D / VRoid / VRChat params + workstation stage);
-# full VTube Studio plugin remains planned.
+# Specialist minds (app layers; reaction also has a ProviderStack role).
+# `avatar` has a partial bridge (psyche → Live2D / VRoid / VRChat params).
 PlannedMind = Literal[
     "director",
     "filter",
     "voice",
-    "reaction",
     "avatar",
     "music",
 ]
@@ -52,11 +56,17 @@ DEFAULT_PRIORITY: dict[EnsembleRole, int] = {
     "music": 11,
 }
 
+# App-layer specialists that are live (not necessarily separate ProviderRoles).
+SHIPPED_SPECIALISTS: tuple[str, ...] = (
+    "director",
+    "voice",
+    "reaction",
+)
+
 PLANNED_MINDS: tuple[PlannedMind, ...] = (
     "director",
     "filter",
     "voice",
-    "reaction",
     "avatar",
     "music",
 )

@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     provider_consciousness: str | None = Field(
         default=None, alias="OPHELIA_PROVIDER_CONSCIOUSNESS"
     )
+    provider_reaction: str | None = Field(
+        default=None,
+        alias="OPHELIA_PROVIDER_REACTION",
+        description="Provider for the reaction mind (fast one-liners). Default: auto/local Ollama.",
+    )
     provider_vision: str | None = Field(default=None, alias="OPHELIA_PROVIDER_VISION")
     provider_curator: str | None = Field(default=None, alias="OPHELIA_PROVIDER_CURATOR")
     provider_image: str | None = Field(default=None, alias="OPHELIA_PROVIDER_IMAGE")
@@ -66,6 +71,7 @@ class Settings(BaseSettings):
     xai_consciousness_model: str | None = Field(
         default=None, alias="XAI_CONSCIOUSNESS_MODEL"
     )
+    xai_reaction_model: str | None = Field(default=None, alias="XAI_REACTION_MODEL")
     xai_curator_model: str | None = Field(default=None, alias="XAI_CURATOR_MODEL")
     xai_image_model: str = Field(default="grok-imagine-image", alias="XAI_IMAGE_MODEL")
     xai_video_model: str = Field(default="grok-imagine-video", alias="XAI_VIDEO_MODEL")
@@ -96,6 +102,9 @@ class Settings(BaseSettings):
     openai_consciousness_model: str | None = Field(
         default=None, alias="OPENAI_CONSCIOUSNESS_MODEL"
     )
+    openai_reaction_model: str | None = Field(
+        default=None, alias="OPENAI_REACTION_MODEL"
+    )
     openai_curator_model: str | None = Field(default=None, alias="OPENAI_CURATOR_MODEL")
     openai_image_model: str = Field(default="dall-e-3", alias="OPENAI_IMAGE_MODEL")
     openai_vision_model: str | None = Field(default=None, alias="OPENAI_VISION_MODEL")
@@ -108,6 +117,9 @@ class Settings(BaseSettings):
     deepseek_model: str = Field(default="deepseek-v4-flash", alias="DEEPSEEK_MODEL")
     deepseek_consciousness_model: str | None = Field(
         default=None, alias="DEEPSEEK_CONSCIOUSNESS_MODEL"
+    )
+    deepseek_reaction_model: str | None = Field(
+        default=None, alias="DEEPSEEK_REACTION_MODEL"
     )
     deepseek_curator_model: str | None = Field(
         default=None, alias="DEEPSEEK_CURATOR_MODEL"
@@ -133,6 +145,9 @@ class Settings(BaseSettings):
     compat_consciousness_model: str | None = Field(
         default=None, alias="OPHELIA_COMPAT_CONSCIOUSNESS_MODEL"
     )
+    compat_reaction_model: str | None = Field(
+        default=None, alias="OPHELIA_COMPAT_REACTION_MODEL"
+    )
     compat_curator_model: str | None = Field(
         default=None, alias="OPHELIA_COMPAT_CURATOR_MODEL"
     )
@@ -148,6 +163,14 @@ class Settings(BaseSettings):
     ollama_model: str = Field(default="llama3.2", alias="OLLAMA_MODEL")
     ollama_consciousness_model: str | None = Field(
         default=None, alias="OLLAMA_CONSCIOUSNESS_MODEL"
+    )
+    ollama_reaction_model: str | None = Field(
+        default=None,
+        alias="OLLAMA_REACTION_MODEL",
+        description=(
+            "Tiny local model for reaction one-liners. Falls back to "
+            "OLLAMA_CONSCIOUSNESS_MODEL, then llama3.2:1b (phone-safe)."
+        ),
     )
     ollama_curator_model: str | None = Field(default=None, alias="OLLAMA_CURATOR_MODEL")
     ollama_vision_model: str | None = Field(default=None, alias="OLLAMA_VISION_MODEL")
@@ -478,6 +501,16 @@ class Settings(BaseSettings):
         description=(
             "Enable the director mind — decides whether/when/how to respond "
             "before the chat LLM runs. Logs decisions to data/director_log.jsonl."
+        ),
+    )
+    # Ensemble Reaction mind — fast one-liner when director picks "react".
+    # Uses the consciousness model (cheap); falls back to full chat on failure.
+    reaction_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_REACTION",
+        description=(
+            "Enable the reaction mind — short in-character beats when the "
+            "director chooses react instead of a full chat turn."
         ),
     )
     max_spontaneous_per_hour: int = Field(default=20, alias="OPHELIA_MAX_SPONTANEOUS_PER_HOUR")

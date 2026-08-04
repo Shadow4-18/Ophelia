@@ -641,6 +641,12 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "presets": ["grok-4-fast", "grok-3-mini", "grok-4", "grok-3"],
             "optional": True,
         },
+        "reaction": {
+            "env": "XAI_REACTION_MODEL",
+            "default": "",
+            "presets": ["grok-4-fast", "grok-3-mini"],
+            "optional": True,
+        },
         "curator": {
             "env": "XAI_CURATOR_MODEL",
             "default": "",
@@ -678,6 +684,12 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "presets": ["gpt-4o-mini", "gpt-4.1-mini", "o4-mini"],
             "optional": True,
         },
+        "reaction": {
+            "env": "OPENAI_REACTION_MODEL",
+            "default": "",
+            "presets": ["gpt-4o-mini", "gpt-4.1-mini"],
+            "optional": True,
+        },
         "curator": {
             "env": "OPENAI_CURATOR_MODEL",
             "default": "",
@@ -710,6 +722,12 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "presets": ["deepseek-v4-flash"],
             "optional": True,
         },
+        "reaction": {
+            "env": "DEEPSEEK_REACTION_MODEL",
+            "default": "",
+            "presets": ["deepseek-v4-flash"],
+            "optional": True,
+        },
         "curator": {
             "env": "DEEPSEEK_CURATOR_MODEL",
             "default": "",
@@ -732,6 +750,13 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "env": "OLLAMA_CONSCIOUSNESS_MODEL",
             "default": "",
             "presets": ["llama3.2:1b", "phi3:mini", "llama3.2:3b"],
+            "optional": True,
+            "dynamic": True,
+        },
+        "reaction": {
+            "env": "OLLAMA_REACTION_MODEL",
+            "default": "llama3.2:1b",
+            "presets": ["llama3.2:1b", "gemma3:1b", "qwen2.5:1.5b", "smollm2:360m"],
             "optional": True,
             "dynamic": True,
         },
@@ -779,6 +804,12 @@ _PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
             "presets": [],
             "optional": True,
         },
+        "reaction": {
+            "env": "OPHELIA_COMPAT_REACTION_MODEL",
+            "default": "",
+            "presets": [],
+            "optional": True,
+        },
         "curator": {
             "env": "OPHELIA_COMPAT_CURATOR_MODEL",
             "default": "",
@@ -801,6 +832,7 @@ _PROVIDER_ROLE_DEFS["xai-oauth"] = _PROVIDER_ROLE_DEFS["xai"]
 _ROLE_LABELS = {
     "chat": "Chat / main replies",
     "consciousness": "Consciousness (background ticks)",
+    "reaction": "Reaction (fast one-liners)",
     "curator": "Memory curator",
     "vision": "Vision (photos + game screen)",
     # Image SFW/NSFW lives under the dedicated Image generation menu — not here.
@@ -811,6 +843,7 @@ _ROLE_LABELS = {
 _PROVIDER_ENV_BY_ROLE: dict[RoleKey, str] = {
     "chat": "OPHELIA_PROVIDER_CHAT",
     "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
+    "reaction": "OPHELIA_PROVIDER_REACTION",
     "curator": "OPHELIA_PROVIDER_CURATOR",
     "vision": "OPHELIA_PROVIDER_VISION",
     "image": "OPHELIA_PROVIDER_IMAGE",
@@ -821,6 +854,7 @@ _PROVIDER_ENV_BY_ROLE: dict[RoleKey, str] = {
 _ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
     "chat": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "consciousness": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
+    "reaction": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "curator": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
     "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
     "image": [
@@ -886,8 +920,8 @@ def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
         ],
         selected=1,
         description=(
-            "Ophelia uses separate roles for chat, consciousness, curator,\n"
-            "  vision, and video. Image SFW/NSFW is under 'Image generation'."
+            "Ophelia uses separate roles for chat, consciousness, reaction,\n"
+            "  curator, vision, and video. Image SFW/NSFW is under 'Image generation'."
         ),
     )
     if pick != 0:
@@ -1024,7 +1058,7 @@ def _pick_fallback_model(providers: list[str]) -> str | None:
 def _models_menu(provider: str, *, on_phone: bool) -> None:
     role_defs = _PROVIDER_ROLE_DEFS[provider]
     # Image is configured in the dedicated Image generation (SFW + NSFW) menu.
-    role_order = ["chat", "consciousness", "curator", "vision", "video"]
+    role_order = ["chat", "consciousness", "reaction", "curator", "vision", "video"]
     available_roles = [r for r in role_order if role_defs.get(r) is not None]
 
     while True:
@@ -1146,7 +1180,7 @@ def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
 def _clear_role_overrides(provider: str) -> None:
     """Clear all per-role provider AND model overrides."""
     updates: dict[str, str | None] = {}
-    role_order = ["chat", "consciousness", "curator", "vision", "image", "video"]
+    role_order = ["chat", "consciousness", "reaction", "curator", "vision", "image", "video"]
     for role in role_order:
         # Clear provider override for every role.
         prov_env = _PROVIDER_ENV_BY_ROLE[role]

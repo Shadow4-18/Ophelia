@@ -325,9 +325,39 @@ class ChannelSession:
                 )
             if is_owner and self.agent.humor:
                 await self.agent.humor.score_inbound_reply(text)
-            out = await self.agent.run_turn(
-                channel, text, is_owner=is_owner, system_extra=turn_extra
-            )
+            # Ensemble Reaction: director "react" → fast one-liner; fall back
+            # to full chat if the reaction mind is off / empty / errors.
+            out = ""
+            used_reaction = False
+            reaction = getattr(self.agent, "reaction_mind", None)
+            if (
+                director_decision is not None
+                and director_decision.is_fast_reaction
+                and reaction is not None
+                and getattr(reaction, "enabled", False)
+            ):
+                try:
+                    out = await self.agent.run_reaction_turn(
+                        channel,
+                        text,
+                        is_owner=is_owner,
+                        decision=director_decision,
+                    )
+                    used_reaction = bool(out)
+                except Exception as e:
+                    log.debug("reaction.chat_path_failed", error=str(e))
+                    out = ""
+            if not out:
+                out = await self.agent.run_turn(
+                    channel, text, is_owner=is_owner, system_extra=turn_extra
+                )
+            elif used_reaction:
+                log.info(
+                    "reaction.chat_fast_path",
+                    channel=channel,
+                    chars=len(out),
+                    urgency=director_decision.urgency if director_decision else None,
+                )
             from ophelia.channels.proactive_filter import (
                 is_outreach_junk,
                 strip_consciousness_tick_leak,
@@ -576,7 +606,7 @@ class ChannelSession:
         except Exception as e:
             await reply(f"models: ? ({e})")
             return
-        roles = ["chat", "consciousness", "curator", "vision", "image", "video"]
+        roles = ["chat", "consciousness", "reaction", "curator", "vision", "image", "video"]
         lines = []
         for role in roles:
             try:

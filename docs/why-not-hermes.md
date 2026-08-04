@@ -56,14 +56,19 @@ You cannot fully replicate live osu! vision + custom local LLM on an S21 alone w
 
 ## Recommended stack on S21 Ultra
 
+For a **local / free Neuro-lite** multi-mind setup (chat 3B + inner/reaction 1B),
+see [s21-neuro-lite.md](s21-neuro-lite.md).
+
+Hybrid (cloud chat + local body) still works:
+
 ```
 Telegram (you)
     ↓
 Ophelia gateway (Termux + wake lock + tmux)
     ↓
-Consciousness loop ← drives ← psyche ← SOUL
+Consciousness / Director / Reaction ← drives ← psyche ← SOUL
     ↓
-Grok (SuperGrok OAuth) + tools
+Chat LLM (Ollama 3B local, or Grok if you want cloud)
     ↓
 Shizuku (rish) → phone_control.sh → UI / shell / screenshot
 ```

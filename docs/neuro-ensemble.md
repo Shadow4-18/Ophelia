@@ -20,41 +20,57 @@ One model cannot do everything well at stream latency:
 
 Neuro feels like one person because a **director layer** picks which mind speaks, merges context, and enforces one outward voice — not because a single weights file does it all.
 
-## What exists today (ensemble v0)
+## What exists today (ensemble v0 + specialists)
 
 These are already separate **roles** in `ProviderStack` (`ophelia providers`):
 
 ```
 chat           → outward voice (Telegram, stream chat)
-consciousness  → inner ticks, drives, initiative
+consciousness  → inner ticks, drives, initiative (+ director / voice today)
+reaction       → fast one-liners when director picks react (tiny model)
 vision         → phone / game screen
 curator        → long-term memory extraction
 image          → still generation
 video          → clip generation
 ```
 
-Shared state today:
+App-layer specialists:
+
+| Mind | Flag | Status |
+|------|------|--------|
+| **Director** | `OPHELIA_DIRECTOR` | Live — speak / react / defer / skip before chat & ticks |
+| **Voice** | `OPHELIA_VOICE_MIND_MODE` | Live — TTS rewrite (inline / post / off) |
+| **Reaction** | `OPHELIA_REACTION` | Live — ProviderStack role `reaction`; defaults to Ollama `llama3.2:1b` on phone |
+
+Phone recipe: [s21-neuro-lite.md](s21-neuro-lite.md).
+
+Shared state:
 
 - **One SQLite memory** — all roles read/write the same conversation + psyche
 - **Drives + mood** — consciousness updates; chat sees them in system context
-- **Model gate** — one inference at a time (VRAM-safe until you have multi-GPU or cloud burst)
+- **Model gate** — one Ollama inference at a time (phone-safe); reaction gate priority is highest
 
-That is the skeleton of an ensemble: **many models, one Ophelia**.
-
-## Planned minds (not implemented)
+## Planned minds (partially / not implemented)
 
 Future roles will extend beyond LLM chat. Names are tentative:
 
-| Mind | Role id | Purpose |
-|------|---------|---------|
-| **Director** | `director` | Chooses which mind acts; stream pacing; "should I speak?" |
-| **Voice** | `voice` | Text → speech script + emotion tags for TTS/avatar |
-| **Filter** | `filter` | Pre-output moderation / tone check before stream |
-| **Reaction** | `reaction` | Ultra-fast game/event responses (<500ms target) |
-| **Avatar** | `avatar` | VTuber rig: expressions, lip sync, idle motion |
-| **Music** | `music` | Singing / humming / song choice (specialized model or API) |
+| Mind | Role id | Purpose | Status |
+|------|---------|---------|--------|
+| **Director** | `director` | Chooses which mind acts; stream pacing; "should I speak?" | **Shipped** (app layer) |
+| **Voice** | `voice` | Text → speech script + emotion tags for TTS/avatar | **Shipped** (app layer) |
+| **Reaction** | `reaction` | Ultra-fast game/event responses (<500ms target) | **Shipped** (chat react path + ProviderStack role; vision/game hooks still open) |
+| **Filter** | `filter` | Pre-output moderation / tone check before stream | Planned |
+| **Avatar** | `avatar` | VTuber rig: expressions, lip sync, idle motion | Partial bridge |
+| **Music** | `music` | Singing / humming / song choice (specialized model or API) | Planned |
 
 These will **not** each get a separate Telegram bot. They feed the same orchestrator and the same user-facing channel.
+
+Reaction notes:
+- Wired in `channels/session.py` when `DirectorDecision.action == "react"`.
+- Implementation: `src/ophelia/mind/reaction_mind.py` + `AgentLoop.run_reaction_turn`.
+- Provider role: `OPHELIA_PROVIDER_REACTION` + `OLLAMA_REACTION_MODEL` (falls back to consciousness model, then `llama3.2:1b`).
+- Vision / game-event reaction hooks remain future work.
+- S21 Ultra local recipe: [s21-neuro-lite.md](s21-neuro-lite.md).
 
 ## Target architecture
 
@@ -118,19 +134,23 @@ Today:
 OPHELIA_PROVIDER_CHAT=ollama
 OLLAMA_MODEL=llama3.2:3b
 OLLAMA_CONSCIOUSNESS_MODEL=llama3.2:1b
+OPHELIA_PROVIDER_REACTION=ollama
+OLLAMA_REACTION_MODEL=llama3.2:1b
 OPHELIA_PROVIDER_VISION=ollama
 OLLAMA_VISION_MODEL=llava:7b
 OPHELIA_PROVIDER_IMAGE=xai-oauth
 ```
 
-Future (example — not wired):
+Live flags: `OPHELIA_DIRECTOR`, `OPHELIA_REACTION`, `OPHELIA_VOICE_MIND_MODE`.
+
+Phone-only Neuro-lite: [s21-neuro-lite.md](s21-neuro-lite.md).
+
+Future (example — dedicated director/filter providers still optional):
 
 ```env
 # OPHELIA_PROVIDER_DIRECTOR=ollama
 # OLLAMA_DIRECTOR_MODEL=llama3.2:1b
 # OPHELIA_PROVIDER_FILTER=ollama
-# OPHELIA_PROVIDER_REACTION=ollama
-# OLLAMA_REACTION_MODEL=llama3.2:1b
 # OPHELIA_ENSEMBLE_ENABLED=true
 ```
 
@@ -149,17 +169,18 @@ Each mind gets its own dataset; director learns routing from session logs.
 
 ## Implementation order (when you start)
 
-1. **Director** — priority queue over model gate; stream mode flag
+1. **Director** — priority queue over model gate; stream mode flag — **done** (`OPHELIA_DIRECTOR`)
 2. **Filter** — cheap pass on outbound text before Telegram/TTS
-3. **Reaction** — small fast model + vision hooks for games
-4. **Voice mind** — decouple TTS emotion from chat LLM
+3. **Reaction** — small fast model + vision hooks for games — **chat path + provider role done**; vision/game hooks still open
+4. **Voice mind** — decouple TTS emotion from chat LLM — **done** (`OPHELIA_VOICE_MIND_MODE`)
 5. **Avatar bridge** — VTube Studio / similar via MCP or custom tool
    - **Partial (now):** workstation stage + psyche/conversation → expressions, activity animations, lip sync (visemes + pause tags) + WS `/api/avatar`
    - **VRoid:** drop a `.vrm` in `~/.ophelia/avatar` — browser loads three-vrm
    - **VRChat:** drop the avatar `.fbx` (Unity humanoid) — morph visemes + bone look; `.glb`/`.gltf` also accepted
    - **Still planned:** Cubism runtime packaging, VTube Studio plugin, audio-accurate lip sync from TTS playback
 
-Code stub for planned roles: `src/ophelia/mind/ensemble.py` (types only until ensemble is enabled).
+Code stub / priority table: `src/ophelia/mind/ensemble.py`.
 Avatar parameter bus: `src/ophelia/mind/avatar.py`.
+S21 Ultra local stack: [s21-neuro-lite.md](s21-neuro-lite.md).
 
 See also: [local-first.md](local-first.md), [tier1-setup.md](tier1-setup.md), [pc-ui.md](pc-ui.md).

@@ -15,11 +15,14 @@ from ophelia.providers.oauth_refresh import (
     resolve_oauth_auth_path,
 )
 
-ProviderRole = Literal["chat", "consciousness", "vision", "curator", "image", "video"]
+ProviderRole = Literal[
+    "chat", "consciousness", "reaction", "vision", "curator", "image", "video"
+]
 
 ROLE_ENV: dict[ProviderRole, str] = {
     "chat": "OPHELIA_PROVIDER_CHAT",
     "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
+    "reaction": "OPHELIA_PROVIDER_REACTION",
     "vision": "OPHELIA_PROVIDER_VISION",
     "curator": "OPHELIA_PROVIDER_CURATOR",
     "image": "OPHELIA_PROVIDER_IMAGE",
@@ -137,6 +140,11 @@ class XAIBackend:
         """Per-role model override, if set. None = fall back to default_model()."""
         if role == "consciousness":
             return self.settings.xai_consciousness_model
+        if role == "reaction":
+            return (
+                self.settings.xai_reaction_model
+                or self.settings.xai_consciousness_model
+            )
         if role == "curator":
             return self.settings.xai_curator_model
         return None
@@ -179,6 +187,7 @@ class OpenAICompatibleBackend:
         label: str,
         provider_name: str,
         consciousness_model: str | None = None,
+        reaction_model: str | None = None,
         curator_model: str | None = None,
         vision_model: str | None = None,
         image_model: str | None = None,
@@ -187,6 +196,7 @@ class OpenAICompatibleBackend:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._consciousness_model = consciousness_model
+        self._reaction_model = reaction_model
         self._curator_model = curator_model
         self._vision_model = vision_model
         self._image_model = image_model
@@ -208,6 +218,8 @@ class OpenAICompatibleBackend:
     def model_for_role(self, role: ProviderRole) -> str | None:
         if role == "consciousness":
             return self._consciousness_model
+        if role == "reaction":
+            return self._reaction_model or self._consciousness_model
         if role == "curator":
             return self._curator_model
         if role == "vision":
@@ -254,12 +266,17 @@ def resolve_ollama_model(settings: Settings, role: ProviderRole) -> str:
     by_role: dict[ProviderRole, str | None] = {
         "vision": settings.ollama_vision_model,
         "consciousness": settings.ollama_consciousness_model,
+        "reaction": settings.ollama_reaction_model,
         "curator": settings.ollama_curator_model,
         "image": settings.ollama_image_model,
     }
     specific = by_role.get(role)
     if specific:
         return specific
+    # Reaction defaults to consciousness model, then a phone-safe 1B — never
+    # the chat-sized OLLAMA_MODEL, which would thrash VRAM on an S21 Ultra.
+    if role == "reaction":
+        return settings.ollama_consciousness_model or "llama3.2:1b"
     return settings.ollama_model
 
 
@@ -442,6 +459,15 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
         if settings.auto_local_consciousness and _ollama_reachable(settings):
             return "ollama"
 
+    if role == "reaction":
+        # Same local-first bias as consciousness — reaction is the fast reflex.
+        if (
+            settings.ollama_reaction_model
+            or settings.ollama_consciousness_model
+            or settings.auto_local_consciousness
+        ) and _ollama_reachable(settings):
+            return "ollama"
+
     if _ollama_reachable(settings):
         return "ollama"
     if _xai_oauth_available(settings):
@@ -464,6 +490,7 @@ def resolve_provider_name(settings: Settings, role: ProviderRole = "chat") -> st
     role_attr = {
         "chat": settings.provider_chat,
         "consciousness": settings.provider_consciousness,
+        "reaction": settings.provider_reaction,
         "vision": settings.provider_vision,
         "curator": settings.provider_curator,
         "image": settings.provider_image,
@@ -500,6 +527,7 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             base_url=settings.openai_base_url,
             model=settings.openai_model,
             consciousness_model=settings.openai_consciousness_model,
+            reaction_model=settings.openai_reaction_model,
             curator_model=settings.openai_curator_model,
             vision_model=settings.openai_vision_model,
             image_model=settings.openai_image_model,
@@ -515,6 +543,7 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
             consciousness_model=settings.deepseek_consciousness_model,
+            reaction_model=settings.deepseek_reaction_model,
             curator_model=settings.deepseek_curator_model,
             vision_model=settings.deepseek_vision_model,
             label=f"DeepSeek @ {settings.deepseek_base_url}",
@@ -533,6 +562,7 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             base_url=base,
             model=model,
             consciousness_model=settings.compat_consciousness_model,
+            reaction_model=settings.compat_reaction_model,
             curator_model=settings.compat_curator_model,
             vision_model=settings.compat_vision_model,
             label=f"OpenAI-compatible @ {base}",
@@ -548,11 +578,11 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
 
 
 class ProviderStack:
-    """Route chat, consciousness, vision, curator, and media to different backends.
+    """Route chat, consciousness, reaction, vision, curator, and media backends.
 
-    Ensemble v0: each role can be a different model; ModelGate ensures one runs
-    at a time on local hardware. Future minds (director, filter, reaction, …)
-    extend this — see ophelia.mind.ensemble and docs/neuro-ensemble.md.
+    Ensemble: each role can be a different model; ModelGate ensures one runs
+    at a time on local hardware (critical on S21 Ultra). See
+    ophelia.mind.ensemble and docs/neuro-ensemble.md.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -658,13 +688,29 @@ class ProviderStack:
         return chain
 
     def uses_xai_oauth(self) -> bool:
-        for role in ("chat", "consciousness", "vision", "curator", "image", "video"):
+        for role in (
+            "chat",
+            "consciousness",
+            "reaction",
+            "vision",
+            "curator",
+            "image",
+            "video",
+        ):
             if self.name(role) == "xai-oauth":
                 return True
         return False
 
     def xai_backend(self) -> XAIBackend | None:
-        for role in ("chat", "vision", "consciousness", "curator", "image", "video"):
+        for role in (
+            "chat",
+            "vision",
+            "consciousness",
+            "reaction",
+            "curator",
+            "image",
+            "video",
+        ):
             b = self.backend(role)
             if isinstance(b, XAIBackend):
                 return b
@@ -783,6 +829,7 @@ class ProviderStack:
         for role in (
             "chat",
             "consciousness",
+            "reaction",
             "vision",
             "curator",
             "image",

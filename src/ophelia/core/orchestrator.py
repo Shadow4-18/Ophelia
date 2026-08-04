@@ -180,6 +180,11 @@ class Orchestrator:
 
         self.voice_mind = VoiceMind(settings)
         self.agent.voice_mind = self.voice_mind
+        # Ensemble Reaction mind — fast one-liners when director picks react.
+        from ophelia.mind.reaction_mind import ReactionMind
+
+        self.reaction_mind = ReactionMind(settings)
+        self.agent.reaction_mind = self.reaction_mind
         # Tier A #1: director — fast decision layer over the ensemble.
         self.director = Director(
             settings,
@@ -447,7 +452,7 @@ class Orchestrator:
         with a cryptic 400. Catching it here gives the user an actionable hint
         before any real work starts.
         """
-        roles_to_check = ("chat", "consciousness", "curator", "vision")
+        roles_to_check = ("chat", "consciousness", "reaction", "curator", "vision")
         for role in roles_to_check:
             try:
                 ok, msg = await self.stack.check(role)

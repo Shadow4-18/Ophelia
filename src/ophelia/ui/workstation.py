@@ -398,7 +398,7 @@ class Workstation:
                 "image": self.stack.name("image"),
                 "video": self.stack.name("video"),
             },
-            "selectable_roles": ["chat", "consciousness", "vision", "curator"],
+            "selectable_roles": ["chat", "consciousness", "reaction", "vision", "curator"],
             "chat_model": self.stack.model("chat"),
             "chat_provider": self.stack.name("chat"),
         }
@@ -458,6 +458,7 @@ class Workstation:
             mapping = {
                 "chat": ("OLLAMA_MODEL", "ollama_model"),
                 "consciousness": ("OLLAMA_CONSCIOUSNESS_MODEL", "ollama_consciousness_model"),
+                "reaction": ("OLLAMA_REACTION_MODEL", "ollama_reaction_model"),
                 "vision": ("OLLAMA_VISION_MODEL", "ollama_vision_model"),
                 "curator": ("OLLAMA_CURATOR_MODEL", "ollama_curator_model"),
             }
@@ -466,6 +467,7 @@ class Workstation:
             mapping = {
                 "chat": ("XAI_MODEL", "xai_model"),
                 "consciousness": ("XAI_CONSCIOUSNESS_MODEL", "xai_consciousness_model"),
+                "reaction": ("XAI_REACTION_MODEL", "xai_reaction_model"),
                 "vision": ("XAI_VISION_MODEL", "vision_model"),
                 "curator": ("XAI_CURATOR_MODEL", "xai_curator_model"),
             }
@@ -474,6 +476,7 @@ class Workstation:
             mapping = {
                 "chat": ("OPENAI_MODEL", "openai_model"),
                 "consciousness": ("OPENAI_CONSCIOUSNESS_MODEL", "openai_consciousness_model"),
+                "reaction": ("OPENAI_REACTION_MODEL", "openai_reaction_model"),
                 "vision": ("OPENAI_VISION_MODEL", "openai_vision_model"),
                 "curator": ("OPENAI_CURATOR_MODEL", "openai_curator_model"),
             }
@@ -482,6 +485,7 @@ class Workstation:
             mapping = {
                 "chat": ("DEEPSEEK_MODEL", "deepseek_model"),
                 "consciousness": ("DEEPSEEK_CONSCIOUSNESS_MODEL", "deepseek_consciousness_model"),
+                "reaction": ("DEEPSEEK_REACTION_MODEL", "deepseek_reaction_model"),
                 "vision": ("DEEPSEEK_VISION_MODEL", "deepseek_vision_model"),
                 "curator": ("DEEPSEEK_CURATOR_MODEL", "deepseek_curator_model"),
             }
@@ -492,6 +496,10 @@ class Workstation:
                 "consciousness": (
                     "OPHELIA_COMPAT_CONSCIOUSNESS_MODEL",
                     "compat_consciousness_model",
+                ),
+                "reaction": (
+                    "OPHELIA_COMPAT_REACTION_MODEL",
+                    "compat_reaction_model",
                 ),
                 "vision": ("OPHELIA_COMPAT_VISION_MODEL", "compat_vision_model"),
                 "curator": ("OPHELIA_COMPAT_CURATOR_MODEL", "compat_curator_model"),
