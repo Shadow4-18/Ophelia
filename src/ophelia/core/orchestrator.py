@@ -611,8 +611,9 @@ class Orchestrator:
         from ophelia.mind.narrative import DailyNarrative
 
         self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
-        self.agent.narrative = self.narrative
-        tasks.append(asyncio.create_task(self.narrative.run()))
+        if self.settings.diary_enabled:
+            self.agent.narrative = self.narrative
+            tasks.append(asyncio.create_task(self.narrative.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.

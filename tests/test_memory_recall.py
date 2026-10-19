@@ -184,3 +184,14 @@ def test_top_k_pure_python_fallback(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_numpy)
     cache = {1: [1.0, 0.0], 2: [0.0, 1.0], 3: [0.7071, 0.7071]}
     assert [i for i, _ in _top_k([1.0, 0.0], cache, 2)] == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_index_loop_exits_immediately_on_termux(store, monkeypatch):
+    import asyncio
+
+    from ophelia.memory.embeddings import SemanticIndex
+
+    monkeypatch.setattr("ophelia.platform.is_termux", lambda: True)
+    idx = SemanticIndex(_settings("auto"), store.db_path)
+    await asyncio.wait_for(idx.run(), 1.0)  # returns instead of polling forever

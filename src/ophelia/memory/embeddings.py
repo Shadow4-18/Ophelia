@@ -218,6 +218,11 @@ class SemanticIndex:
         from ophelia.providers.model_gate import get_model_gate
 
         gate = get_model_gate()
+        if self.mode == "auto":
+            from ophelia.platform import is_termux
+
+            if is_termux():
+                return  # auto = off on phones; don't even poll
         while not self._stop:
             try:
                 if await self.available() and not gate.is_local_busy():

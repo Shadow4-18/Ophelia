@@ -209,8 +209,9 @@ class Workstation:
         from ophelia.mind.narrative import DailyNarrative
 
         self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
-        self.agent.narrative = self.narrative
-        self._tasks.append(asyncio.create_task(self.narrative.run()))
+        if self.settings.diary_enabled:
+            self.agent.narrative = self.narrative
+            self._tasks.append(asyncio.create_task(self.narrative.run()))
         if self.settings.avatar_enabled:
             self._tasks.append(asyncio.create_task(self._avatar_loop()))
 

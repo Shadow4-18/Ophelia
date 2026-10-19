@@ -497,6 +497,11 @@ class Settings(BaseSettings):
         description="inline | post | off — how the voice mind rewrites text for speech",
     )
 
+    diary_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_DIARY",
+        description="Daily self-narrative (one short curator-model call per day)",
+    )
     tool_tiers: str = Field(
         default="auto",
         alias="OPHELIA_TOOL_TIERS",
