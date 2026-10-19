@@ -193,6 +193,18 @@ class Settings(BaseSettings):
         description="Ollama model residency (e.g. 30m, 24h, -1 to always keep loaded)",
     )
 
+    # Ollama's server-side context window. Ollama defaults to 4096 tokens and
+    # silently drops the *front* of longer prompts (system prompt + SOUL).
+    # The OpenAI-compatible endpoint can't change it per request, so when
+    # Ophelia auto-starts `ollama serve` (Termux) she passes this as
+    # OLLAMA_CONTEXT_LENGTH. Empty = leave Ollama's default. Larger = more
+    # RAM for the KV cache (~0.5 GB at 8192 for a 1B model, ~1 GB for 3B).
+    ollama_num_ctx: str = Field(
+        default="",
+        alias="OPHELIA_OLLAMA_NUM_CTX",
+        description="Ollama context length for auto-started ollama serve (e.g. 8192)",
+    )
+
     # ---- Image generation backends (media-only; selected via OPHELIA_PROVIDER_IMAGE) ----
     # These providers can't serve chat/vision — only the image role. Several are
     # NSFW-capable (pollinations, a1111, comfyui, fal, replicate, civitai,

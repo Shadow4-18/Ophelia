@@ -638,6 +638,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
     from ophelia.evals.runner import run_suite
     from ophelia.evals.scenarios import load_scenarios
 
+    import logging
+
+    # Keep the PASS/FAIL table readable: only warnings (e.g. truncation).
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(
+            logging.DEBUG if args.verbose else logging.WARNING
+        )
+    )
     settings = Settings()
     ensure_dirs(settings)
     scenarios = load_scenarios(OPHELIA_HOME / "evals")
@@ -1367,6 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
         "--judge", action="store_true", help="Also grade soft rubrics with the curator model"
     )
     p_eval.add_argument("--list", action="store_true", help="List scenarios and exit")
+    p_eval.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     p_eval.set_defaults(func=cmd_eval)
 
     sub.add_parser("curator", help="Run memory curator once").set_defaults(func=cmd_curator_run)

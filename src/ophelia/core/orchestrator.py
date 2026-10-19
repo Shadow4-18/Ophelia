@@ -361,6 +361,8 @@ class Orchestrator:
         # OLLAMA_KEEP_ALIVE so it applies to every endpoint Ollama serves.
         env = dict(os.environ)
         env["OLLAMA_KEEP_ALIVE"] = s.ollama_keep_alive
+        if (s.ollama_num_ctx or "").strip():
+            env["OLLAMA_CONTEXT_LENGTH"] = s.ollama_num_ctx.strip()
         try:
             self._ollama_log = open(log_path, "ab")  # kept open for child lifetime
             proc = await asyncio.create_subprocess_exec(

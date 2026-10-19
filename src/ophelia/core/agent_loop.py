@@ -91,6 +91,32 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 - The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
 
 
+_truncation_warned = False
+
+
+def _warn_if_ollama_truncated(response: Any, provider: str) -> None:
+    """Ollama silently cuts prompts longer than its context window down to
+    exactly that window (2048/4096/8192…), dropping the start — her system
+    prompt and SOUL. An exact power-of-two prompt_tokens is the tell."""
+    global _truncation_warned
+    if _truncation_warned or not (provider or "").lower().startswith("ollama"):
+        return
+    usage = getattr(response, "usage", None)
+    n = int(getattr(usage, "prompt_tokens", 0) or 0)
+    if n >= 2048 and n & (n - 1) == 0:
+        _truncation_warned = True
+        log.warning(
+            "ollama.prompt_truncated",
+            prompt_tokens=n,
+            hint=(
+                f"Ollama's context window ({n}) is smaller than her prompt, so the "
+                "start (system prompt / SOUL) is being dropped. Start `ollama serve` "
+                "with OLLAMA_CONTEXT_LENGTH=8192 (or set OPHELIA_OLLAMA_NUM_CTX=8192 "
+                "if Ophelia auto-starts Ollama), and/or keep OPHELIA_TOOL_TIERS=auto."
+            ),
+        )
+
+
 def _last_user_text(messages: list[dict[str, Any]]) -> str:
     for m in reversed(messages):
         if m.get("role") == "user" and isinstance(m.get("content"), str):
@@ -1079,6 +1105,7 @@ class AgentLoop:
                 raise RuntimeError(
                     f"LLM call failed for {role}/{model} on {provider}: {detail}"
                 ) from e
+            _warn_if_ollama_truncated(response, provider)
             msg = response.choices[0].message
 
             # Normalize tool_calls: prefer structured API field; if empty,
