@@ -1472,6 +1472,16 @@ class ToolRegistry:
     # turns), files are queued to _pending_artifacts for deferred delivery.
     _media_sender = _turn_state("media_sender")
 
+    @property
+    def tiers(self):
+        """Per-channel sticky tool groups (see tools.tiers)."""
+        state = self.__dict__.get("_tiers")
+        if state is None:
+            from ophelia.tools.tiers import ToolTierState
+
+            state = self.__dict__["_tiers"] = ToolTierState()
+        return state
+
     def _turn_var(self, key: str) -> contextvars.ContextVar:
         # Created lazily so registries built via __new__ (tests) still work.
         turn_vars = self.__dict__.setdefault("_turn_vars", {})

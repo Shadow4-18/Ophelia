@@ -31,6 +31,13 @@ from ophelia.core.tool_call_parse import (
     parsed_to_openai_dicts,
 )
 from ophelia.tools.registry import ToolRegistry
+from ophelia.tools.tiers import (
+    CORE,
+    filter_definitions,
+    group_of,
+    load_tools_definition,
+    tiers_active,
+)
 
 log = structlog.get_logger()
 
@@ -82,6 +89,24 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 - If you haven't called a tool this turn, you have no tool result. Say you don't know, or call the tool.
 - When asked "who am I?" / "what's my id?" / "am I the owner?", trust the "# Who you're talking to" block in your context (and the who_am_i_talking_to tool if you need to re-check). Do not guess from the guest list, memory fragments, or vibes.
 - The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            return m["content"]
+    return ""
+
+
+def _tiered_definitions(
+    all_tools: list[dict[str, Any]], groups: set[str]
+) -> list[dict[str, Any]]:
+    available = sorted({group_of(t["function"]["name"]) for t in all_tools} - {CORE})
+    out = filter_definitions(all_tools, groups)
+    hidden = [g for g in available if g not in groups]
+    if hidden:
+        out.append(load_tools_definition(hidden))
+    return out
 
 
 class AgentLoop:
@@ -939,7 +964,10 @@ class AgentLoop:
     ) -> str:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
-        tools = await self.tools.tool_definitions(for_guest=not is_owner) if use else None
+        all_tools = (
+            await self.tools.tool_definitions(for_guest=not is_owner) if use else None
+        )
+        tools = all_tools
         max_tool_rounds = self.settings.max_tool_rounds
         model = self._model(role)
         provider = self.stack.name(role)  # type: ignore[arg-type]
@@ -947,6 +975,7 @@ class AgentLoop:
 
         # Resume an unfinished tool chain from the previous turn, if allowed and
         # if one exists for this channel and it wasn't stuck in a repeat loop.
+        resumed = False
         if self.settings.tool_loop_resume and store_channel in self._pending_resume:
             pending = self._pending_resume.pop(store_channel)
             # A user turn consuming the resume breaks the autonomous chain —
@@ -961,6 +990,7 @@ class AgentLoop:
                 ]
                 if resumed_tail:
                     messages = messages + resumed_tail
+                    resumed = True
                     log.info(
                         "tool_loop.resume",
                         channel=store_channel,
@@ -973,7 +1003,16 @@ class AgentLoop:
         # At most one narration-recovery nudge per turn — avoids infinite
         # "let me try" ↔ nudge loops when the model still won't emit tools.
         narration_nudge_used = False
-        known_tool_names = self._known_tool_names(tools) if tools else None
+        # Tool tiers (local chat): send core + relevant groups, not all ~60
+        # schemas. Recovery of tool calls written into content still knows
+        # every tool name, and a resumed chain gets the full set.
+        tier_groups: set[str] | None = None
+        if all_tools and is_owner and not resumed and tiers_active(self.settings, provider):
+            tier_groups = self.tools.tiers.begin_turn(
+                store_channel, _last_user_text(messages)
+            )
+            tools = _tiered_definitions(all_tools, tier_groups)
+        known_tool_names = self._known_tool_names(all_tools) if all_tools else None
 
         for round_idx in range(max_tool_rounds):
             rounds_used = round_idx + 1
@@ -1066,7 +1105,25 @@ class AgentLoop:
                 for tc in tool_call_dicts:
                     name = tc["function"]["name"]
                     arguments = tc["function"].get("arguments") or "{}"
-                    if name in ("search_hermes_memory", "recall_past_sessions"):
+                    if name == "load_tools":
+                        import json
+
+                        try:
+                            wanted = json.loads(arguments or "{}").get("groups") or []
+                        except (json.JSONDecodeError, AttributeError):
+                            wanted = []
+                        if tier_groups is None:
+                            result = "All of your tools are already available."
+                        else:
+                            loaded = self.tools.tiers.load(store_channel, list(wanted))
+                            tier_groups |= set(loaded)
+                            tools = _tiered_definitions(all_tools, tier_groups)
+                            result = (
+                                f"Loaded: {', '.join(loaded)}. Call the tool you need now."
+                                if loaded
+                                else "No such tool group."
+                            )
+                    elif name in ("search_hermes_memory", "recall_past_sessions"):
                         if not is_owner:
                             result = (
                                 "Searching past sessions is owner-only and disabled "

@@ -485,6 +485,14 @@ class Settings(BaseSettings):
         description="inline | post | off — how the voice mind rewrites text for speech",
     )
 
+    tool_tiers: str = Field(
+        default="auto",
+        alias="OPHELIA_TOOL_TIERS",
+        description=(
+            "auto | on | off — send only core + relevant tool groups per turn "
+            "(auto = only when chat runs on local Ollama)."
+        ),
+    )
     # Semantic memory recall (optional; keyword recall always works).
     embeddings_mode: str = Field(
         default="auto",
