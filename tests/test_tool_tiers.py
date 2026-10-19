@@ -154,3 +154,23 @@ async def test_cloud_chat_gets_every_tool():
     assert _sent_tool_names(agent._call_with_fallback.await_args) == {
         t["function"]["name"] for t in ALL
     }
+
+
+def test_json_mode_only_for_ollama():
+    from ophelia.core.agent_loop import _json_mode_kwargs
+
+    assert _json_mode_kwargs(True, "ollama") == {"response_format": {"type": "json_object"}}
+    assert _json_mode_kwargs(True, "xai-oauth") == {}
+    assert _json_mode_kwargs(False, "ollama") == {}
+
+
+@pytest.mark.asyncio
+async def test_consciousness_tick_requests_json_mode():
+    agent = _agent("ollama")
+    agent.memory = MagicMock()
+    agent.memory.append_message = AsyncMock()
+    agent._build_messages = AsyncMock(return_value=[{"role": "user", "content": "tick"}])
+    agent._call_with_fallback = AsyncMock(side_effect=[_resp(content='{"action": "silent"}')])
+    await agent.run_consciousness_tick("consciousness", "tick")
+    assert agent._call_with_fallback.await_args.kwargs["json_mode"] is True
+    assert agent._call_with_fallback.await_args.kwargs["tools"] is None

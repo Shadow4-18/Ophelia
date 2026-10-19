@@ -91,6 +91,16 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 - The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
 
 
+def _json_mode_kwargs(json_mode: bool, provider: str) -> dict[str, Any]:
+    """Ollama can constrain output to valid JSON. Small local models often
+    break the consciousness tick schema (echoing `"silent" | "message"`,
+    prose around the object), which drops the whole tick. Cloud providers
+    are left as they were."""
+    if json_mode and (provider or "").lower().startswith("ollama"):
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
 _truncation_warned = False
 
 
@@ -896,6 +906,7 @@ class AgentLoop:
             store_channel=channel,
             use_tools=False,
             role="consciousness",
+            json_mode=True,
         )
 
     def pending_resume_for(self, channel: str) -> dict[str, Any] | None:
@@ -1019,6 +1030,7 @@ class AgentLoop:
         use_tools: bool | None = None,
         role: str = "chat",
         is_owner: bool = True,
+        json_mode: bool = False,
     ) -> str:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
@@ -1085,6 +1097,7 @@ class AgentLoop:
                     channel=store_channel,
                     round_idx=round_idx,
                     gate=gate,
+                    json_mode=json_mode,
                 )
             except Exception as e:
                 from ophelia.providers.errors import api_error_detail
@@ -1460,6 +1473,7 @@ class AgentLoop:
         channel: str,
         round_idx: int,
         gate,
+        json_mode: bool = False,
     ):
         """Try the primary provider, then each fallback on transient failure.
 
@@ -1475,6 +1489,7 @@ class AgentLoop:
                     messages=messages,
                     tools=tools,
                     extra_body=self._extra_body_for(primary_provider),
+                    **_json_mode_kwargs(json_mode, primary_provider),
                 )
         except Exception as e:
             if not self._is_transient_error(e):
@@ -1511,6 +1526,7 @@ class AgentLoop:
                         messages=messages,
                         tools=tools,
                         extra_body=self._extra_body_for(fb_provider),
+                        **_json_mode_kwargs(json_mode, fb_provider),
                     )
                 log.info(
                     "tool_loop.fallback_succeeded",

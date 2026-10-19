@@ -254,6 +254,12 @@ off — but together they're the difference between "alive" and "responsive".
 | **Memory reconciliation** | `OPHELIA_CURATOR=true` (default) | Periodic curator pass reconciles stored MEMORY.md facts against the authoritative LifeContext block — catches stale timezones, old schedules, wrong owner details that would otherwise leak into prompts. Throttled to once per 24h. |
 | **Autonomous resume** | `OPHELIA_TOOL_LOOP_RESUME=true` | Long autonomous game/image sessions that hit the tool-round cap pick up where they left off on the next tick (not just on `/continue`). Capped at 6 consecutive continuations per channel so a stuck task can't monopolize ticks. |
 | **Discord parity** | (automatic) | Proactive voice notes + captioned media now reach Discord users too (not just Telegram). The hub sends to *all* configured gateways instead of stopping at the first. |
+| **Memory recall** | (automatic) · `OPHELIA_EMBEDDINGS=auto\|on\|off` | Natural messages ("how's maya doing at the bakery?") recall older conversations by keyword. Optional semantic recall via a local Ollama embedder (`ollama pull nomic-embed-text`); `auto` uses it only on PC/server and only if the model is pulled — phones are unchanged. |
+| **Follow-ups (open loops)** | (automatic) · `follow_up` tool | Promises in her replies ("I'll look that up") and explicit follow-ups become due items that stir her consciousness later; acting closes them, ignored ones expire. |
+| **People notes** | `remember_person` tool | Short notes about people in your life; shown to her whenever their name comes up. |
+| **Outreach feedback** | (automatic) | If most of her unprompted messages go unanswered she reaches out a little less; if they're welcomed, a little more (bounded). |
+| **Daily diary** | (automatic) | Once a day she writes a few sentences about yesterday; the last two days stay in her prompt. One short curator call per day. |
+| **Tool tiers** | `OPHELIA_TOOL_TIERS=auto` | Local (Ollama) chat sends only core + relevant tool groups (~7 KB vs ~35 KB of schemas) with a `load_tools` escape hatch — faster prompts, better tool picks on small models. Cloud chat unchanged. |
 | **Android kill-switch** | `ophelia phone harden` | Checks/applies battery-optimization exemption, Termux:Boot, wake-lock, tmux session. A runtime `HealthCheckLoop` re-verifies every 10min on Termux and re-applies the wake-lock if it vanishes. |
 
 **Recommended enable order** (each is independent and safe to leave off):
@@ -367,10 +373,14 @@ who **isn't** the owner becomes a **sandboxed guest**:
   so guest content never becomes memory, lessons, mood, or goals.
 - **Private life stays private** — guests don't see her inner thoughts,
   long-term `MEMORY`, the `USER` profile, or her mood/psyche.
-- **Identity-shaping & costly tools are disabled** for guests: `edit_soul`,
-  `edit_prompter`, `save_lesson`, `reflect`, goals, drives, skills, `sqlite_*`,
-  `run_code`, `recall_memory`, media generation, phone control, and MCP tools.
-  Guests get conversation only.
+- **Guests get an allow-list of tools**, not everything-minus-a-blocklist:
+  conversation (`send_message`/`send_file`), web search, `who_am_i_talking_to`,
+  `set_guest_name` (themselves only), `relay_to_owner`, and constrained media
+  (1:1 images/video, local voice). Everything else — `edit_soul`, lessons,
+  goals, drives, skills, `sqlite_*`, `run_code`, memory, the site, phone
+  control, MCP, and **any tool added in the future** — is owner-only unless
+  it's deliberately added to `GUEST_ALLOWED_TOOLS`. Guests aren't even shown
+  the schemas of tools they can't call.
 - **Drives aren't bumped** by guest messages — only yours move her social will.
 
 If `OPHELIA_OWNER_ID` is unset, the first allowed user is treated as the owner
@@ -605,10 +615,26 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
 | `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
+| `ophelia eval` | Behavioural evals: scripted situations vs her real model, tools stubbed (`--runs 3`, `--judge`, `--list`) |
 
 **Tests:** `pip install pytest pytest-asyncio && pytest tests/ -q` — guards the
 life-loop regressions (humor scoring, life-context inference, wake availability,
 mood→behavior knobs, director parsing, curator reconciliation, autonomous resume).
+
+**Evals:** `ophelia eval` checks how she actually *behaves* with your real
+model + SOUL — tick JSON leaking into chat, invented "stillness" reports,
+following up when something's due, recalling older context, actually calling
+the image tool, not claiming tool results she never got, guest sandboxing.
+Each run uses a throwaway memory DB and stubbed tools (nothing is sent or
+saved); reports land in `~/.ophelia/data/evals/`. Add your own scenarios as
+YAML in `~/.ophelia/evals/`. Models are random — use `--runs 3` for pass rates.
+
+**Local models & context:** Ollama's default context is 4096 tokens and it
+silently drops the *start* of longer prompts — her system prompt and SOUL.
+If the logs show `ollama.prompt_truncated`, run `ollama serve` with
+`OLLAMA_CONTEXT_LENGTH=8192` (or set `OPHELIA_OLLAMA_NUM_CTX=8192` when
+Ophelia auto-starts Ollama on Termux). Consciousness ticks on Ollama use JSON
+mode so small models don't break the tick format.
 
 **Docs:** **[INSTALL](docs/INSTALL.md)** · [channels](docs/channels.md) · [setup wizard](docs/setup.md) · [local-first](docs/local-first.md) · [PC setup](docs/pc-setup.md) · [UI](docs/pc-ui.md) · [public site / Cloudflare](docs/site.md) · [Neuro ensemble](docs/neuro-ensemble.md) · [games](docs/games.md) · [tier 1/2](docs/tier1-setup.md)
 
