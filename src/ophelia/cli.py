@@ -633,6 +633,52 @@ def cmd_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Run behavioural scenarios against her real model (stubbed tools)."""
+    from ophelia.evals.runner import run_suite
+    from ophelia.evals.scenarios import load_scenarios
+
+    settings = Settings()
+    ensure_dirs(settings)
+    scenarios = load_scenarios(OPHELIA_HOME / "evals")
+    if args.list:
+        for s in scenarios:
+            print(f"{s.id:32} {s.kind:5} {s.description}")
+        return 0
+    if args.only:
+        wanted = set(args.only)
+        scenarios = [s for s in scenarios if s.id in wanted or any(s.id.startswith(w) for w in wanted)]
+        if not scenarios:
+            print("No matching scenarios (see `ophelia eval --list`).")
+            return 1
+
+    def _show(r) -> None:
+        mark = "PASS" if r.passed else "FAIL"
+        tools = f" tools={','.join(r.tools)}" if r.tools else ""
+        print(f"  {mark} {r.scenario} ({r.seconds:.1f}s){tools}")
+        for f in r.failures:
+            print(f"       - {f}")
+        if not r.passed and r.output:
+            print(f"       > {r.output[:200]!r}")
+
+    print(f"Running {len(scenarios)} scenario(s) × {args.runs} run(s)…")
+    report = asyncio.run(
+        run_suite(
+            settings,
+            scenarios,
+            runs=args.runs,
+            judge=args.judge,
+            out_dir=settings.data_dir / "evals",
+            on_result=_show,
+        )
+    )
+    total = sum(v["runs"] for v in report["summary"].values())
+    passed = sum(v["passed"] for v in report["summary"].values())
+    print(f"\n{passed}/{total} passed — chat {report['chat_model']}")
+    print(f"Report: {report.get('path')}")
+    return 0 if passed == total else 1
+
+
 def cmd_models(_: argparse.Namespace) -> int:
     from ophelia.providers.cookbook import detect_system, format_cookbook, list_ollama_models
 
@@ -1310,6 +1356,18 @@ def main(argv: list[str] | None = None) -> int:
     p_chat = sub.add_parser("chat", help="One-shot chat message (no always-on loop)")
     p_chat.add_argument("message")
     p_chat.set_defaults(func=cmd_chat)
+
+    p_eval = sub.add_parser(
+        "eval",
+        help="Behavioural evals: scripted situations vs her real model (tools stubbed)",
+    )
+    p_eval.add_argument("only", nargs="*", help="Scenario ids (or prefixes) to run")
+    p_eval.add_argument("--runs", type=int, default=1, help="Runs per scenario (default 1)")
+    p_eval.add_argument(
+        "--judge", action="store_true", help="Also grade soft rubrics with the curator model"
+    )
+    p_eval.add_argument("--list", action="store_true", help="List scenarios and exit")
+    p_eval.set_defaults(func=cmd_eval)
 
     sub.add_parser("curator", help="Run memory curator once").set_defaults(func=cmd_curator_run)
 
