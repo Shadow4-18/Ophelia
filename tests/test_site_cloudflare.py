@@ -64,10 +64,11 @@ def test_deploy_directory_requires_creds(tmp_path: Path):
 
 
 def test_deploy_via_api_mocked(tmp_path: Path, monkeypatch):
+    pytest.importorskip("blake3")  # optional `site` extra
     (tmp_path / "index.html").write_text("<h1>Ophelia</h1>", encoding="utf-8")
     (tmp_path / "site.css").write_text("body{}", encoding="utf-8")
 
-    # Force API path (blake3 present in this env from earlier install; still ok).
+    # Force API path (no wrangler/npx fallback).
     monkeypatch.setattr(
         "ophelia.site.cloudflare.shutil.which",
         lambda _name: None,

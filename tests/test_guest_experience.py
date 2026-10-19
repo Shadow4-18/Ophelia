@@ -89,7 +89,7 @@ async def test_guest_generate_image_forced_to_1_1(monkeypatch):
     """A guest requesting 16:9 must actually produce 1:1."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw):
+    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **_):
         captured["aspect_ratio"] = aspect_ratio
         return "ok"
 
@@ -109,7 +109,7 @@ async def test_owner_generate_image_keeps_requested_aspect(monkeypatch):
     """Owner is unaffected — 16:9 stays 16:9."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw):
+    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **_):
         captured["aspect_ratio"] = aspect_ratio
         return "ok"
 

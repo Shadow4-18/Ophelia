@@ -73,12 +73,14 @@ def test_prompter_example_no_skip_token_instruction():
 
 
 def test_base_prompt_has_presence_language():
-    """BASE_PROMPT: contradiction ok; ticks are a heartbeat; no SKIP tokens."""
+    """BASE_PROMPT: contradiction ok; inner check-ins aren't the user and
+    silence is a choice; no SKIP tokens."""
     from ophelia.core.agent_loop import BASE_PROMPT
 
     low = BASE_PROMPT.lower()
     assert "contradict" in low
-    assert "heartbeat" in low
+    assert "inner check-ins" in low
+    assert "silence is a choice" in low
     assert "stillness" in low
     # Should explicitly call out compliance tokens like SKIP as unwanted.
     assert "skip" in low or "compliance token" in low
@@ -322,17 +324,19 @@ def test_fast_tick_skip_logic_present():
     src = inspect.getsource(ConsciousnessLoop._tick)
     assert "fast_tick_skip" in src
     assert "pressure" in src
-    # Heartbeat band is wider than the old 0.22 summons threshold.
-    assert "0.35" in src
+    # Event-driven consciousness: only very low pressure skips the LLM call.
+    assert "pressure < 0.15" in src
 
 
-def test_consciousness_prompt_is_heartbeat_not_summons():
+def test_consciousness_prompt_is_impulse_led_check_in():
     from ophelia.mind.consciousness import CONSCIOUSNESS_PROMPT
 
-    assert "heartbeat" in CONSCIOUSNESS_PROMPT.lower()
-    assert "not a summons" in CONSCIOUSNESS_PROMPT.lower() or "not a demand" in CONSCIOUSNESS_PROMPT.lower()
-    assert "presence is the default" not in CONSCIOUSNESS_PROMPT
-    assert "stillness" in CONSCIOUSNESS_PROMPT.lower()
+    low = CONSCIOUSNESS_PROMPT.lower()
+    assert "presence and impulse are the default" in low
+    assert "silence is a choice" in low
+    # Still must not invent a stillness status report when nothing moved her.
+    assert "stillness" in low
+    assert "[inner]" in low
 
 
 def test_prompter_marks_ticks_as_heartbeat():

@@ -241,7 +241,7 @@ off — but together they're the difference between "alive" and "responsive".
 
 | Subsystem | Config | What it does |
 |-----------|--------|--------------|
-| **Director** | `OPHELIA_DIRECTOR=true` | Fast decision layer before each turn: `speak` / `react` / `defer` / `skip` + urgency + pacing. Uses the consciousness model so it doesn't contend with chat. Logs to `data/director_log.jsonl` for tuning. Default off until you've tuned it. |
+| **Director** | `OPHELIA_DIRECTOR=true` | Fast decision layer before each turn: `speak` / `react` / `defer` / `skip` + urgency + pacing. Uses the consciousness model so it doesn't contend with chat. Logs to `data/director_log.jsonl` for tuning. On by default; set `OPHELIA_DIRECTOR=false` to disable. |
 | **Voice mind** | `OPHELIA_VOICE_MIND_MODE=inline\|post\|off` | Rewrites text for speech *before* TTS: emotion tags, pauses, mood-matched speed. `post` (default) refines the last reply for the next voice synthesis; `inline` rewrites every reply; `off` passes raw chat text to TTS. |
 | **Mood → behavior** | (automatic) | Psyche valence/arousal drive TTS speed, burst length, and outreach threshold. Low mood → slower, shorter, quieter; high arousal → faster, punchier. Composes with time-of-day voice speed. |
 | **Local STT** | `OPHELIA_STT_PROVIDER=local`, `OPHELIA_WHISPER_SERVER_URL=http://localhost:8080` | On-device `whisper.cpp` for "Hey Ophelia" — lower latency, offline, no per-call cost. Falls back to cloud STT when unset. |
@@ -260,7 +260,7 @@ off — but together they're the difference between "alive" and "responsive".
 
 1. `OPHELIA_VOICE_MIND_MODE=post` + `OPHELIA_SPONTANEOUS_VOICE=true` — immediate "she sounds performed, not read aloud" win.
 2. `OPHELIA_TOOL_LOOP_RESUME=true` — long sessions stop dying mid-chain.
-3. `OPHELIA_DIRECTOR=true` — biggest soul upgrade, but tune the prompt first via `data/director_log.jsonl`.
+3. `OPHELIA_DIRECTOR` (on by default) — biggest soul upgrade; tune it via `data/director_log.jsonl`, or set `false` if it misjudges turns.
 4. `OPHELIA_STT_PROVIDER=local` + `OPHELIA_WAKE_ENGINE=openwakeword` — instant, offline "Hey Ophelia".
 5. `ophelia phone harden` (Termux only) — stops Samsung from murdering the loop.
 

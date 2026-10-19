@@ -130,7 +130,7 @@ def test_image_nsfw_model_override() -> None:
 def test_advanced_roles_menu_excludes_image() -> None:
     src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "setup" / "interactive.py"
     body = src.read_text(encoding="utf-8")
-    assert 'role_order = ["chat", "consciousness", "curator", "vision", "video"]' in body
+    assert 'role_order = ["chat", "consciousness", "reaction", "curator", "vision", "video"]' in body
     assert "SFW backend + model" in body
     assert "NSFW backend + model" in body
 

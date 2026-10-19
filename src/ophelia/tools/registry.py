@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 from typing import Any, Awaitable, Callable
@@ -1465,7 +1466,53 @@ def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
     return tools
 
 
+# Per-turn state lives in context variables, not plain attributes: the
+# registry is shared by every channel, and Telegram/Discord turns (plus
+# guest-approval replays) run as concurrent asyncio tasks. Each task gets its
+# own copy, so a guest turn can never inherit the owner flag, sender channel,
+# or reply callbacks of an overlapping turn.
+_TURN_DEFAULTS: dict[str, Any] = {
+    "is_owner": True,
+    "sender_channel": None,
+    "message_sender": None,
+    "media_sender": None,
+}
+
+
+def _turn_state(key: str) -> property:
+    def _get(self: "ToolRegistry") -> Any:
+        return self._turn_var(key).get()
+
+    def _set(self: "ToolRegistry", value: Any) -> None:
+        self._turn_var(key).set(value)
+
+    return property(_get, _set)
+
+
 class ToolRegistry:
+    _is_owner = _turn_state("is_owner")
+    # The channel of the user who sent the current turn (e.g. "telegram:111").
+    # Set by ChannelSession before dispatching tool calls so guests can be
+    # constrained to self-only actions (e.g. set_guest_name on themselves).
+    _current_sender_channel = _turn_state("sender_channel")
+    # Per-turn reply callback (chat). Falls back to proactive_sender when unset.
+    _message_sender = _turn_state("message_sender")
+    # Per-turn media callback: sends a file (audio/video/image/doc) to the
+    # current chat. Returns True on success. When unset (e.g. autonomous
+    # turns), files are queued to _pending_artifacts for deferred delivery.
+    _media_sender = _turn_state("media_sender")
+
+    def _turn_var(self, key: str) -> contextvars.ContextVar:
+        # Created lazily so registries built via __new__ (tests) still work.
+        turn_vars = self.__dict__.setdefault("_turn_vars", {})
+        var = turn_vars.get(key)
+        if var is None:
+            var = contextvars.ContextVar(
+                f"ophelia_tools_{key}_{id(self)}", default=_TURN_DEFAULTS[key]
+            )
+            turn_vars[key] = var
+        return var
+
     def __init__(
         self,
         settings: Settings,
@@ -1500,8 +1547,8 @@ class ToolRegistry:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.mcp = MCPBridge(config=load_mcp_config(settings.mcp_config_path))
         self._mcp_ready = False
-        # Per-turn reply callback (chat) and always-on proactive fallback (consciousness).
-        self._message_sender: Callable[[str], Awaitable[None]] | None = None
+        # Always-on proactive fallback (consciousness); the per-turn reply
+        # callback is _message_sender (context-local, see class attributes).
         self._proactive_messages_sent: int = 0
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
         # Cross-platform DM sender: (platform, user_id, message) -> bool.
@@ -1512,18 +1559,9 @@ class ToolRegistry:
         self.guest_media_sender: (
             Callable[..., Awaitable[bool]] | None
         ) = None
-        # Per-turn media callback: sends a file (audio/video/image/doc) to the
-        # current chat. Returns True on success. When unset (e.g. autonomous
-        # turns), files are queued to _pending_artifacts for deferred delivery.
-        self._media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self._pending_artifacts: list[Path] = []
         self._delivered_artifacts: set[Path] = set()
-        self._is_owner: bool = True
-        # The channel of the user who sent the current turn (e.g. "telegram:111").
-        # Set by ChannelSession before dispatching tool calls so guests can be
-        # constrained to self-only actions (e.g. set_guest_name on themselves).
-        self._current_sender_channel: str | None = None
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,

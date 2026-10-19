@@ -36,14 +36,26 @@ def test_whats_changed_is_guest_denied():
 @pytest.mark.asyncio
 async def test_whats_changed_returns_commits(tmp_path, monkeypatch):
     """whats_changed should return recent git commits from the repo."""
+    import subprocess
+    from pathlib import Path
+
     from ophelia.tools.registry import ToolRegistry
+
+    repo = Path(__file__).resolve().parents[1]
+    if not (repo / ".git").is_dir():
+        pytest.skip("not a git checkout")
+    head = subprocess.run(
+        ["git", "log", "-1", "--format=%h|%s"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    head_hash, head_subject = head.split("|", 1)
 
     reg = ToolRegistry.__new__(ToolRegistry)
     result = await reg._whats_changed(count=3)
-    # Should contain recent commit hashes (we're running in the actual repo).
     assert "Recent changes" in result or "commits" in result.lower()
-    # Should mention the last commit we made.
-    assert "AGENTS.md" in result or "alive" in result.lower() or "guest" in result.lower()
+    # Should include the current HEAD commit (whatever it is).
+    assert head_hash in result
+    assert head_subject in result
 
 
 @pytest.mark.asyncio
@@ -77,11 +89,12 @@ def test_default_prompter_has_contradiction_tolerance():
     assert "contradict" in DEFAULT_PROMPTER.lower()
 
 
-def test_default_prompter_output_is_default():
-    """The default prompter should frame output as the default."""
+def test_default_prompter_presence_is_default_in_conversation():
+    """The default prompter should frame presence as the default in
+    conversation (v3 replaced the old blanket "output is the default")."""
     from ophelia.mind.prompter import DEFAULT_PROMPTER
 
-    assert "output is the default" in DEFAULT_PROMPTER.lower()
+    assert "in conversation, presence is the default" in DEFAULT_PROMPTER.lower()
 
 
 def test_default_prompter_no_flowchart_style():

@@ -93,6 +93,7 @@ class Workstation:
             android=self.android,
             vision=self.vision,
             games=self.games,
+            psyche=self.psyche,
         )
         self.tools._governor_ref = self.governor
         self.agent = AgentLoop(
@@ -183,10 +184,9 @@ class Workstation:
 
     async def init(self) -> None:
         await self.memory.init()
-        self.psyche = await self.memory.load_psyche()
-        self.drives = await self.memory.load_drives()
-        self.agent.psyche = self.psyche
-        self.agent.drives = self.drives
+        # Load persisted state into the shared instances (see Orchestrator.start).
+        self.psyche.__dict__.update((await self.memory.load_psyche()).__dict__)
+        self.drives.__dict__.update((await self.memory.load_drives()).__dict__)
         self.tools._drives_ref = self.drives
         self.tools._governor_ref = self.governor
 

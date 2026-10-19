@@ -549,6 +549,14 @@ class Orchestrator:
     async def _notify_inner_mirror(self, text: str) -> None:
         await self._notify_inner(text)
 
+    async def _load_persisted_state(self) -> None:
+        # Load INTO the instances built in __init__: the tool registry, channel
+        # hub, director and agent already hold references to them, and
+        # rebinding here would leave those on stale defaults (owner messages
+        # would then bump — and save over — a throwaway DriveState).
+        self.psyche.__dict__.update((await self.memory.load_psyche()).__dict__)
+        self.drives.__dict__.update((await self.memory.load_drives()).__dict__)
+
     async def start(self) -> None:
         from ophelia.core.crashlog import install_asyncio_handler
 
@@ -558,10 +566,7 @@ class Orchestrator:
             pass
 
         await self.memory.init()
-        self.psyche = await self.memory.load_psyche()
-        self.drives = await self.memory.load_drives()
-        self.agent.psyche = self.psyche
-        self.agent.drives = self.drives
+        await self._load_persisted_state()
 
         if self.stack.uses_xai_oauth():
             xai = self.stack.xai_backend()
