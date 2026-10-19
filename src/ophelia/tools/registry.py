@@ -1118,6 +1118,58 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "follow_up",
+            "description": (
+                "Note something to come back to later (a promise you made, something "
+                "the owner asked you to remind them of, an event to ask about). It "
+                "resurfaces in your inner check-ins when due."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "What to follow up on"},
+                    "in_hours": {"type": "number", "description": "When it's due (default 3)"},
+                },
+                "required": ["note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "follow_up_done",
+            "description": "Close a follow-up by id once handled (or no longer relevant).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "outcome": {"type": "string", "description": "What happened"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_person",
+            "description": (
+                "Save a short note about someone in the owner's life (family, friends, "
+                "coworkers, pets). Shown to you whenever their name comes up again."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Their name as it's used in chat"},
+                    "note": {"type": "string", "description": "e.g. 'owner's sister; new bakery job'"},
+                },
+                "required": ["name", "note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "save_lesson",
             "description": (
                 "Record a durable lesson or principle you learned from experience, so future "
@@ -1602,6 +1654,9 @@ class ToolRegistry:
             "recall_guest_chat": self._recall_guest_chat,
             "set_guest_rapport": self._set_guest_rapport,
             "whats_changed": self._whats_changed,
+            "follow_up": self._follow_up,
+            "follow_up_done": self._follow_up_done,
+            "remember_person": self._remember_person,
         }
 
     def set_message_sender(self, fn: Callable[[str], Awaitable[None]]) -> None:
@@ -3194,6 +3249,34 @@ class ToolRegistry:
             for les in lessons:
                 parts.append(f"  - {les['lesson'][:240]}")
         return "\n".join(parts) if parts else f"No memories matched '{query}'."
+
+    async def _follow_up(self, note: str, in_hours: float = 3.0) -> str:
+        if not self.memory:
+            return "Memory store unavailable."
+        from ophelia.mind.open_loops import OpenLoops
+
+        channel = (
+            self._current_sender_channel or self.settings.primary_user_channel() or "owner"
+        )
+        loop_id = await OpenLoops(self.memory.db_path).add(
+            channel, note, due_in_hours=float(in_hours), source="tool"
+        )
+        return f"Follow-up #{loop_id} noted (due in {float(in_hours):g}h): {note}"
+
+    async def _follow_up_done(self, id: int, outcome: str = "done") -> str:
+        if not self.memory:
+            return "Memory store unavailable."
+        from ophelia.mind.open_loops import OpenLoops
+
+        ok = await OpenLoops(self.memory.db_path).close(int(id), outcome)
+        return f"Follow-up #{id} closed." if ok else f"No open follow-up #{id}."
+
+    async def _remember_person(self, name: str, note: str) -> str:
+        if not self.memory:
+            return "Memory store unavailable."
+        from ophelia.mind.people import PeopleBook
+
+        return await PeopleBook(self.memory.db_path).remember(name, note)
 
     async def _save_lesson(
         self, lesson: str, context: str = "", tags: list[str] | None = None

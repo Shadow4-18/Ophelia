@@ -292,6 +292,7 @@ class AgentLoop:
         prefetch_block = await self._memory_prefetch(
             user_text, channel, skip_contents=visible_history
         )
+        continuity_block = await self._continuity_block(user_text, channel)
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
@@ -311,6 +312,7 @@ class AgentLoop:
                     guests_block,
                     play_block,
                     prefetch_block,
+                    continuity_block,
                     extra,
                 )
                 if x
@@ -347,6 +349,36 @@ class AgentLoop:
             "- If they ask who they are, answer from this block. Do not invent "
             "IDs or claim they are the owner."
         )
+
+    async def _continuity_block(self, user_text: str, channel: str) -> str:
+        """Owner-turn continuity: people mentioned now, follow-ups pending in
+        this channel, and the last couple of diary entries. All SQLite, no
+        LLM; any failure just drops the block."""
+        if not self.memory:
+            return ""
+        from ophelia.mind.open_loops import OpenLoops, loops_block
+        from ophelia.mind.people import PeopleBook, people_block
+
+        parts: list[str] = []
+        try:
+            parts.append(people_block(await PeopleBook(self.memory.db_path).mentioned_in(user_text)))
+            if channel and channel != "consciousness":
+                loops = await OpenLoops(self.memory.db_path).open(channel, limit=4)
+                parts.append(
+                    loops_block(
+                        loops,
+                        title=(
+                            "# Things you said you'd come back to with this person "
+                            "(bring up naturally if it fits; follow_up_done when handled)"
+                        ),
+                    )
+                )
+            narrative = getattr(self, "narrative", None)
+            if narrative is not None:
+                parts.append(await narrative.recent_block())
+        except Exception as e:
+            log.debug("agent.continuity_block_failed", error=str(e))
+        return "\n\n".join(p for p in parts if p)
 
     async def _memory_prefetch(
         self, user_text: str, channel: str, *, skip_contents: set[str] | None = None

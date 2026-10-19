@@ -131,6 +131,7 @@ class ConsciousnessLoop:
         self.action_cooldown = max(0, int(action_cooldown_seconds))
         self.idle_nudge_rotate = bool(idle_nudge_rotate)
         self._nudge_idx = 0
+        self._feedback = None
         self._running = False
         self._pause_logged = False
         # Tier B #10: track sleep state across ticks so we can detect the
@@ -305,9 +306,15 @@ class ConsciousnessLoop:
             half_life_seconds=float(self.action_cooldown),
             arousal=self.psyche.mood.arousal if self.psyche else 0.3,
         )
+        # Learned from how her past outreach landed (bounded, see
+        # mind/outreach_feedback.py): unanswered → quieter, welcomed → bolder.
+        feedback = await self._outreach_delta()
         effective_threshold = max(
             0.0,
-            self.initiative_threshold + knobs.outreach_threshold_delta + satiation,
+            self.initiative_threshold
+            + knobs.outreach_threshold_delta
+            + satiation
+            + feedback,
         )
         must_consider_acting = pressure >= effective_threshold
 
@@ -319,6 +326,20 @@ class ConsciousnessLoop:
                 f"\n\nDUE GOAL: [{due_goal.id}] {due_goal.description} — "
                 f"strongly consider explore/act/message for this."
             )
+        # Open loops: things she said she'd come back to. Due ones are a real
+        # reason to stir, like a due goal.
+        due_loops = await self._due_loops()
+        if due_loops:
+            from ophelia.mind.open_loops import loops_block
+
+            goal_hint += "\n\n" + loops_block(
+                due_loops,
+                title=(
+                    "FOLLOW-UPS DUE — things you said you'd come back to. "
+                    "If one still matters, message/act on it now; otherwise "
+                    "let it go (follow_up_done):"
+                ),
+            )
 
         # Tier A #1: director decides whether this tick produces an action at
         # all, and at what urgency. When enabled, it replaces the simple
@@ -328,7 +349,7 @@ class ConsciousnessLoop:
         if self.director is not None and self.director.available():
             trigger = (
                 "goal_due"
-                if due_goal
+                if due_goal or due_loops
                 else (
                     "spontaneous_urge"
                     if must_consider_acting
@@ -351,7 +372,9 @@ class ConsciousnessLoop:
             if director_decision is not None and director_decision.action == "defer":
                 # Soft override: when pressure is already high or a goal is due,
                 # don't let a deferral bias keep her permanently silent.
-                soft_override = bool(due_goal) or pressure >= effective_threshold
+                soft_override = (
+                    bool(due_goal) or bool(due_loops) or pressure >= effective_threshold
+                )
                 if soft_override:
                     log.info(
                         "consciousness.director_defer_overridden",
@@ -378,6 +401,7 @@ class ConsciousnessLoop:
         if (
             not must_consider_acting
             and not due_goal
+            and not due_loops
             and (director_decision is None or director_decision.action == "skip")
             and pressure < 0.15
             and not wake_reason
@@ -610,6 +634,7 @@ class ConsciousnessLoop:
         elif due_goal and action in ("explore", "act", "message"):
             due_goal.mark_done()
         self.goals.save()
+        await self._settle_loops(due_loops, action)
 
         note = (tick.get("memory_note") or "").strip()
         if note:
@@ -845,6 +870,44 @@ class ConsciousnessLoop:
                 break
             except Exception as e:
                 log.debug("consciousness.drift_error", error=str(e))
+
+    async def _outreach_delta(self) -> float:
+        try:
+            if self._feedback is None:
+                from ophelia.mind.outreach_feedback import OutreachFeedback
+
+                self._feedback = OutreachFeedback(self.memory.db_path)
+            return float(await self._feedback.threshold_delta())
+        except Exception as e:
+            log.debug("consciousness.outreach_feedback_failed", error=str(e))
+            return 0.0
+
+    def _loops(self):
+        from ophelia.mind.open_loops import OpenLoops
+
+        return OpenLoops(self.memory.db_path)
+
+    async def _due_loops(self) -> list[dict]:
+        try:
+            return await self._loops().due(limit=3)
+        except Exception as e:
+            log.debug("consciousness.open_loops_failed", error=str(e))
+            return []
+
+    async def _settle_loops(self, loops: list[dict], action: str) -> None:
+        """She acted on a tick that surfaced follow-ups → they're handled;
+        stayed silent → count the surfacing (they expire after a few)."""
+        if not loops:
+            return
+        try:
+            store = self._loops()
+            if action in ("message", "act", "explore"):
+                for lp in loops:
+                    await store.close(lp["id"], outcome=f"tick:{action}")
+            else:
+                await store.mark_surfaced([lp["id"] for lp in loops])
+        except Exception as e:
+            log.debug("consciousness.open_loops_settle_failed", error=str(e))
 
     def stop(self) -> None:
         self._running = False

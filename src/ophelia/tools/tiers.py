@@ -41,6 +41,9 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
             "relay_to_owner",
             "run_code",
             "whats_changed",
+            "follow_up",
+            "follow_up_done",
+            "remember_person",
         }
     ),
     "media": frozenset(

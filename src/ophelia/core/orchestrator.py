@@ -605,6 +605,12 @@ class Orchestrator:
         # no-op loop when embeddings are off / unavailable (default on Termux).
         if self.semantic.mode != "off":
             tasks.append(asyncio.create_task(self.semantic.run()))
+        # Daily diary entry (one short curator call per day, when idle).
+        from ophelia.mind.narrative import DailyNarrative
+
+        self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
+        self.agent.narrative = self.narrative
+        tasks.append(asyncio.create_task(self.narrative.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.
@@ -769,6 +775,7 @@ class Orchestrator:
             if self.health_check:
                 self.health_check.stop()
             self.semantic.stop()
+            self.narrative.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)
