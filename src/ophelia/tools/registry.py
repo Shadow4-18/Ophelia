@@ -63,64 +63,34 @@ def _phone_shell_blocked_reason(command: str) -> str | None:
     return None
 
 
-# Tools a sandboxed GUEST may not call. These either shape her identity
-# (soul/prompter/lessons/goals/drives/skills), touch private memory/databases,
-# or control her phone body. Guests get conversational tools + constrained
-# media (1:1 images/videos, voice via local Kokoro) + web search.
-# `generate_image`, `generate_video`, and `text_to_speech` are allowed for
-# guests but clamped in their handlers (_guest_media_clamp / dispatch).
-GUEST_DENIED_TOOLS: frozenset[str] = frozenset(
+# The ONLY tools a sandboxed GUEST may call (allow-list, so any tool added
+# later is owner-only until someone deliberately opens it to guests).
+# Guests get conversation, web search, a self-only name tool, a relay to the
+# owner, and constrained media: `generate_image`, `generate_video` and
+# `text_to_speech` are clamped in their handlers (_guest_media_clamp /
+# dispatch). `recall_past_sessions` is gated to the owner in the agent loop.
+# Everything else — identity-shaping (soul/prompter/lessons/goals/drives/
+# skills), private memory/databases, the site, phone body, MCP — is denied.
+GUEST_ALLOWED_TOOLS: frozenset[str] = frozenset(
     {
-        "edit_soul",
-        "edit_prompter",
-        "save_lesson",
-        "reflect",
-        "set_drive_weights",
-        "set_timezone",
-        "goal_create",
-        "goal_update",
-        "goal_complete",
-        "goal_remove",
-        "save_skill",
-        "sqlite_list_databases",
-        "sqlite_exec",
-        "site_status",
-        "site_list_pages",
-        "site_get_page",
-        "site_upsert_page",
-        "site_delete_page",
-        "site_reorder_pages",
-        "site_set_meta",
-        "site_import_pages",
-        "site_add_asset",
-        "site_list_assets",
-        "site_preview_page",
-        "site_export_static",
-        "site_deploy",
-        "site_write_file",
-        "site_read_file",
-        "site_list_files",
-        "site_delete_file",
-        "run_code",
-        "recall_memory",
-        "list_inbox_images",
-        "list_inbox_files",
-        "list_guests",
-        "send_message_to_guest",
-        "set_guest_rapport",
-        "recall_guest_chat",
-        "whats_changed",
-        "phone_see_screen",
-        "phone_ui_dump",
-        "phone_tap",
-        "phone_open_app",
-        "phone_shell",
-        "phone_swipe",
-        "phone_key",
-        "phone_game_look",
-        "phone_game_open",
+        "send_message",
+        "send_file",
+        "web_search",
+        "fetch_url",
+        "generate_image",
+        "generate_video",
+        "search_civitai_models",
+        "text_to_speech",
+        "who_am_i_talking_to",
+        "set_guest_name",
+        "relay_to_owner",
+        "recall_past_sessions",
     }
 )
+
+
+def guest_may_use(name: str) -> bool:
+    return name in GUEST_ALLOWED_TOOLS
 
 
 async def _resolve_tap_coords(
@@ -1786,8 +1756,11 @@ class ToolRegistry:
             await self.mcp.initialize()
             self._mcp_ready = True
 
-    async def tool_definitions(self) -> list[dict[str, Any]]:
+    async def tool_definitions(self, *, for_guest: bool = False) -> list[dict[str, Any]]:
         tools = all_tool_definitions(self.settings)
+        if for_guest:
+            # Don't even show guests tools they can't call (and skip MCP).
+            return [t for t in tools if guest_may_use(t["function"]["name"])]
         await self.ensure_mcp()
         tools.extend(self.mcp.definitions())
         return tools
@@ -1796,14 +1769,13 @@ class ToolRegistry:
         await self.ensure_mcp()
         # Sandbox guests: block identity-shaping / private / costly tools, and
         # block any MCP tool (unknown surface — could do anything).
-        if not self._is_owner:
-            if name in GUEST_DENIED_TOOLS:
-                return (
-                    f"That action ('{name}') is owner-only and isn't available in "
-                    f"this conversation. Just talk to me normally."
-                )
+        if not self._is_owner and not guest_may_use(name):
             if name not in self._handlers:
                 return "External tools aren't available in this conversation."
+            return (
+                f"That action ('{name}') is owner-only and isn't available in "
+                f"this conversation. Just talk to me normally."
+            )
         try:
             args = json.loads(arguments) if arguments else {}
         except json.JSONDecodeError:
@@ -3399,3 +3371,15 @@ class ToolRegistry:
             minutes=minutes,
             android=self.android,
         )
+
+
+def _all_known_tool_names() -> set[str]:
+    names = {t["function"]["name"] for t in TOOL_DEFINITIONS}
+    names |= {t["function"]["name"] for t in ANDROID_TOOL_DEFINITIONS}
+    names |= {t["function"]["name"] for t in game_tool_definitions()}
+    return names
+
+
+# Derived complement of GUEST_ALLOWED_TOOLS over the built-in tools — kept
+# for callers/tests that ask "is X owner-only?". Not used for enforcement.
+GUEST_DENIED_TOOLS: frozenset[str] = frozenset(_all_known_tool_names() - GUEST_ALLOWED_TOOLS)

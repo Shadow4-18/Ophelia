@@ -152,3 +152,34 @@ async def test_load_persisted_state_updates_shared_instances(tmp_path):
     assert held_drives.social == pytest.approx(0.9)
     assert held_drives.boredom == pytest.approx(0.7)
     assert held_psyche.internal_thought == "still thinking about it"
+
+
+# --- Guest sandbox is an allow-list -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_new_tools_are_owner_only_by_default():
+    reg = _registry()
+    reg._handlers["brand_new_tool"] = AsyncMock(return_value="ran")
+    reg.set_owner(False)
+    assert "owner-only" in await reg.dispatch("brand_new_tool", "{}")
+    reg.set_owner(True)
+    assert await reg.dispatch("brand_new_tool", "{}") == "ran"
+
+
+@pytest.mark.asyncio
+async def test_guests_only_see_allowed_tool_definitions(monkeypatch):
+    from ophelia.tools import registry as r
+
+    fake = [
+        {"type": "function", "function": {"name": n}}
+        for n in ("web_search", "edit_soul", "run_code", "relay_to_owner")
+    ]
+    monkeypatch.setattr(r, "all_tool_definitions", lambda settings: list(fake))
+    reg = _registry()
+    reg.settings = MagicMock()
+    reg.mcp.definitions = MagicMock(return_value=[{"function": {"name": "mcp_x"}}])
+    guest = {t["function"]["name"] for t in await reg.tool_definitions(for_guest=True)}
+    owner = {t["function"]["name"] for t in await reg.tool_definitions()}
+    assert guest == {"web_search", "relay_to_owner"}
+    assert {"edit_soul", "run_code", "mcp_x"} <= owner

@@ -939,7 +939,7 @@ class AgentLoop:
     ) -> str:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
-        tools = await self.tools.tool_definitions() if use else None
+        tools = await self.tools.tool_definitions(for_guest=not is_owner) if use else None
         max_tool_rounds = self.settings.max_tool_rounds
         model = self._model(role)
         provider = self.stack.name(role)  # type: ignore[arg-type]
