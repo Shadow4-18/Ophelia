@@ -45,6 +45,10 @@ class Workstation:
 
         self.stack = build_provider_stack(settings)
         self.memory = MemoryStore(settings.memory_db)
+        from ophelia.memory.embeddings import SemanticIndex
+
+        self.semantic = SemanticIndex(settings, settings.memory_db)
+        self.memory.semantic = self.semantic
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
             HonchoClient(honcho_cfg, api_key=settings.honcho_api_key)
@@ -200,6 +204,8 @@ class Workstation:
 
         self._tasks.append(asyncio.create_task(self._oauth_refresh_loop()))
         self._tasks.append(asyncio.create_task(self._status_loop()))
+        if self.semantic.mode != "off":
+            self._tasks.append(asyncio.create_task(self.semantic.run()))
         if self.settings.avatar_enabled:
             self._tasks.append(asyncio.create_task(self._avatar_loop()))
 

@@ -485,6 +485,21 @@ class Settings(BaseSettings):
         description="inline | post | off — how the voice mind rewrites text for speech",
     )
 
+    # Semantic memory recall (optional; keyword recall always works).
+    embeddings_mode: str = Field(
+        default="auto",
+        alias="OPHELIA_EMBEDDINGS",
+        description=(
+            "auto | on | off — semantic recall via a local Ollama embedding model. "
+            "auto = on only off-Termux and only if the model is already pulled."
+        ),
+    )
+    embed_model: str = Field(
+        default="nomic-embed-text",
+        alias="OPHELIA_EMBED_MODEL",
+        description="Ollama embedding model for semantic recall (ollama pull it first)",
+    )
+
     # Initiative / will (lower = more spontaneous)
     initiative_threshold: float = Field(default=0.32, alias="OPHELIA_INITIATIVE_THRESHOLD")
     greet_on_start: bool = Field(

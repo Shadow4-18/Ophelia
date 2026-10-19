@@ -116,7 +116,7 @@ async def test_memory_prefetch_injects_hits():
 
     agent = AgentLoop.__new__(AgentLoop)
     agent.memory = MagicMock()
-    agent.memory.search_messages = AsyncMock(
+    agent.memory.recall = AsyncMock(
         return_value=[
             {"role": "user", "channel": "telegram:1", "content": "we talked about cats"},
         ]
@@ -140,7 +140,7 @@ async def test_memory_prefetch_handles_store_errors_gracefully():
 
     agent = AgentLoop.__new__(AgentLoop)
     agent.memory = MagicMock()
-    agent.memory.search_messages = AsyncMock(side_effect=RuntimeError("db locked"))
+    agent.memory.recall = AsyncMock(side_effect=RuntimeError("db locked"))
     agent.memory.search_lessons = AsyncMock(side_effect=RuntimeError("db locked"))
     result = await agent._memory_prefetch(
         "a sufficiently long user message", "telegram:1"

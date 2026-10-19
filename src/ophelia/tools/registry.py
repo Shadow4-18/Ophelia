@@ -3199,7 +3199,7 @@ class ToolRegistry:
     async def _recall_memory(self, query: str, limit: int = 8) -> str:
         if not self.memory:
             return "Memory store unavailable."
-        hits = await self.memory.search_messages(query, limit=limit)
+        hits = await self.memory.recall(query, limit=limit)
         lessons = await self.memory.search_lessons(query, limit=3)
         parts: list[str] = []
         if hits:

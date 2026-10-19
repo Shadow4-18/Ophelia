@@ -57,6 +57,10 @@ class Orchestrator:
         self._kokoro_proc: asyncio.subprocess.Process | None = None
         self._kokoro_log = None
         self.memory = MemoryStore(settings.memory_db)
+        from ophelia.memory.embeddings import SemanticIndex
+
+        self.semantic = SemanticIndex(settings, settings.memory_db)
+        self.memory.semantic = self.semantic
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
             HonchoClient(honcho_cfg, api_key=settings.honcho_api_key)
@@ -597,6 +601,10 @@ class Orchestrator:
             asyncio.create_task(self._heartbeat_loop()),
             asyncio.create_task(self._pause_poll_loop()),
         ]
+        # Optional semantic recall: indexes while the local model is idle; a
+        # no-op loop when embeddings are off / unavailable (default on Termux).
+        if self.semantic.mode != "off":
+            tasks.append(asyncio.create_task(self.semantic.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.
@@ -760,6 +768,7 @@ class Orchestrator:
                 self.ambient.stop()
             if self.health_check:
                 self.health_check.stop()
+            self.semantic.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

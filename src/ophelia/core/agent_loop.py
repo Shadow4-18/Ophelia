@@ -207,7 +207,12 @@ class AgentLoop:
         return False
 
     async def _system_prompt(
-        self, extra: str = "", channel: str = "", user_text: str = ""
+        self,
+        extra: str = "",
+        channel: str = "",
+        user_text: str = "",
+        *,
+        visible_history: set[str] | None = None,
     ) -> str:
         honcho_ctx = ""
         if self.honcho and self.honcho.enabled and channel:
@@ -259,7 +264,9 @@ class AgentLoop:
         # Background memory prefetch: pull relevant past messages/lessons for
         # the current user text so she can reference them without an explicit
         # blocking recall_memory tool call. Neuro-style parallel memory access.
-        prefetch_block = await self._memory_prefetch(user_text, channel)
+        prefetch_block = await self._memory_prefetch(
+            user_text, channel, skip_contents=visible_history
+        )
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
@@ -316,7 +323,9 @@ class AgentLoop:
             "IDs or claim they are the owner."
         )
 
-    async def _memory_prefetch(self, user_text: str, channel: str) -> str:
+    async def _memory_prefetch(
+        self, user_text: str, channel: str, *, skip_contents: set[str] | None = None
+    ) -> str:
         """Auto-recall relevant memories for the current user message.
 
         Instead of waiting for an explicit recall_memory tool call (which
@@ -326,12 +335,18 @@ class AgentLoop:
         without pausing.
 
         Stays cheap: skips very short messages, caps results, and never runs
-        for guest turns (guests get a sandboxed view).
+        for guest turns (guests get a sandboxed view). Messages already in the
+        visible history (``skip_contents``) aren't repeated.
         """
         if not self.memory or not user_text or len(user_text.strip()) < 12:
             return ""
+        skip = skip_contents or set()
         try:
-            hits = await self.memory.search_messages(user_text, limit=3)
+            hits = [
+                h
+                for h in await self.memory.recall(user_text, limit=8)
+                if h["content"] not in skip and h["content"] != user_text
+            ][:3]
             lessons = await self.memory.search_lessons(user_text, limit=2)
         except Exception as e:
             log.debug("agent.memory_prefetch_failed", error=str(e))
@@ -578,7 +593,10 @@ class AgentLoop:
 
         history = await self.memory.recent_across_channels(channels, limit=35)
         system = BASE_PROMPT + "\n\n" + await self._system_prompt(
-            system_extra, channel, user_text=user_text
+            system_extra,
+            channel,
+            user_text=user_text,
+            visible_history={m["content"] for m in history},
         )
         messages = [{"role": "system", "content": system}]
         seen_current_user_turn = False
