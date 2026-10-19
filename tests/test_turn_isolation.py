@@ -183,3 +183,40 @@ async def test_guests_only_see_allowed_tool_definitions(monkeypatch):
     owner = {t["function"]["name"] for t in await reg.tool_definitions()}
     assert guest == {"web_search", "relay_to_owner"}
     assert {"edit_soul", "run_code", "mcp_x"} <= owner
+
+
+@pytest.mark.asyncio
+async def test_guest_turn_never_flushes_another_turns_files(tmp_path):
+    from pathlib import Path
+
+    reg = _registry()
+    reg.begin_turn_artifacts = ToolRegistry.begin_turn_artifacts.__get__(reg)
+    owner_queued = asyncio.Event()
+    guest_media: list[Path] = []
+
+    async def run_turn(channel, text, **kw):
+        if channel == OWNER:
+            # e.g. an image whose live delivery failed → queued for later.
+            reg._queue_artifact(tmp_path / "owner_private.png")
+            owner_queued.set()
+        else:
+            await owner_queued.wait()
+        return "ok"
+
+    session = _session(reg, run_turn, tmp_path)
+
+    async def guest_media_reply(path, caption=""):
+        guest_media.append(path)
+        return True
+
+    async def noop(chunk):
+        return None
+
+    guest_task = asyncio.create_task(
+        session.handle_chat(GUEST, "hi", noop, media_reply=guest_media_reply)
+    )
+    await asyncio.sleep(0)
+    await asyncio.create_task(session.handle_chat(OWNER, "draw", noop))
+    await guest_task
+
+    assert guest_media == []

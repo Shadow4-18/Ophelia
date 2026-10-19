@@ -1492,18 +1492,30 @@ def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
 # registry is shared by every channel, and Telegram/Discord turns (plus
 # guest-approval replays) run as concurrent asyncio tasks. Each task gets its
 # own copy, so a guest turn can never inherit the owner flag, sender channel,
-# or reply callbacks of an overlapping turn.
+# reply callbacks or undelivered files of an overlapping turn.
 _TURN_DEFAULTS: dict[str, Any] = {
     "is_owner": True,
     "sender_channel": None,
     "message_sender": None,
     "media_sender": None,
+    "proactive_sent": 0,
+}
+# Mutable per-turn containers: created fresh per context (never a shared
+# default object). begin_turn_artifacts() gives each turn new ones.
+_TURN_FACTORIES: dict[str, Callable[[], Any]] = {
+    "pending_artifacts": list,
+    "delivered_artifacts": set,
 }
 
 
 def _turn_state(key: str) -> property:
     def _get(self: "ToolRegistry") -> Any:
-        return self._turn_var(key).get()
+        var = self._turn_var(key)
+        value = var.get()
+        if value is None and key in _TURN_FACTORIES:
+            value = _TURN_FACTORIES[key]()
+            var.set(value)
+        return value
 
     def _set(self: "ToolRegistry", value: Any) -> None:
         self._turn_var(key).set(value)
@@ -1523,6 +1535,12 @@ class ToolRegistry:
     # current chat. Returns True on success. When unset (e.g. autonomous
     # turns), files are queued to _pending_artifacts for deferred delivery.
     _media_sender = _turn_state("media_sender")
+    # Files generated this turn that still need delivering, what was already
+    # delivered, and send_message count — per turn so a guest's turn can't
+    # flush (or mark as sent) files that belong to the owner / consciousness.
+    _pending_artifacts = _turn_state("pending_artifacts")
+    _delivered_artifacts = _turn_state("delivered_artifacts")
+    _proactive_messages_sent = _turn_state("proactive_sent")
 
     @property
     def tiers(self):
@@ -1540,7 +1558,7 @@ class ToolRegistry:
         var = turn_vars.get(key)
         if var is None:
             var = contextvars.ContextVar(
-                f"ophelia_tools_{key}_{id(self)}", default=_TURN_DEFAULTS[key]
+                f"ophelia_tools_{key}_{id(self)}", default=_TURN_DEFAULTS.get(key)
             )
             turn_vars[key] = var
         return var
@@ -1581,7 +1599,6 @@ class ToolRegistry:
         self._mcp_ready = False
         # Always-on proactive fallback (consciousness); the per-turn reply
         # callback is _message_sender (context-local, see class attributes).
-        self._proactive_messages_sent: int = 0
         self.proactive_sender: Callable[[str], Awaitable[None]] | None = None
         # Cross-platform DM sender: (platform, user_id, message) -> bool.
         # Set by the orchestrator to hub.send_to_user so the agent can message
@@ -1592,8 +1609,6 @@ class ToolRegistry:
             Callable[..., Awaitable[bool]] | None
         ) = None
         self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
-        self._pending_artifacts: list[Path] = []
-        self._delivered_artifacts: set[Path] = set()
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "generate_image": self._generate_image,
@@ -1672,8 +1687,13 @@ class ToolRegistry:
         self._media_sender = None
 
     def begin_turn_artifacts(self) -> None:
-        """Reset per-turn delivery tracking (pending should already be empty)."""
-        self._delivered_artifacts.clear()
+        """Fresh per-turn delivery tracking for the current turn's context.
+
+        Assigns new containers (rather than clearing shared ones) so a turn
+        never sees — or flushes — another concurrent turn's files.
+        """
+        self._pending_artifacts = []
+        self._delivered_artifacts = set()
         self._proactive_messages_sent = 0
 
     def proactive_delivered_this_turn(self) -> bool:
