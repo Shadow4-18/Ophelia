@@ -525,6 +525,16 @@ class Settings(BaseSettings):
         alias="OPHELIA_HUMANIZE_TEXT",
         description="Strip AI tells (em dashes, bracket narration) from text replies",
     )
+    screenshot_keep_hours: float = Field(
+        default=24,
+        alias="OPHELIA_SCREENSHOT_KEEP_HOURS",
+        description="Delete vision screen captures older than this (0 = keep forever)",
+    )
+    chat_log_media_days: float = Field(
+        default=0,
+        alias="OPHELIA_CHAT_LOG_MEDIA_DAYS",
+        description="Delete chat-log media copies older than this many days (0 = keep forever)",
+    )
     persona_lock: str = Field(
         default="owner",
         alias="OPHELIA_PERSONA_LOCK",

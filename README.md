@@ -621,6 +621,7 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
 | `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
+| `ophelia cleanup` | Free space: vision screenshots past `OPHELIA_SCREENSHOT_KEEP_HOURS` (24h, also automatic daily) and, if you choose, chat-log media older than `--chat-media-days N`. `--dry-run` previews |
 | `ophelia backup` | Back up her identity, memories and databases now; `list`; `restore <archive>` (stop her first). Runs daily on its own — see `OPHELIA_BACKUP_*` |
 | `ophelia persona` | Personality drift report: SOUL self-rewrites (with her reasons), wiped PROMPTER backups, generic lessons. `restore soul\|prompter <file>`, `forget --generic`, `forget --matching WORD…`, `forget --all` |
 | `ophelia eval` | Behavioural evals: scripted situations vs her real model, tools stubbed (`--runs 3`, `--judge`, `--list`) |

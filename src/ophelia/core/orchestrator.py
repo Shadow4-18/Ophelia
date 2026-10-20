@@ -621,6 +621,11 @@ class Orchestrator:
                 self.settings, offsite_sender=self.hub.send_owner_document
             )
             tasks.append(asyncio.create_task(self.backup_loop.run()))
+        # Keep data/ from eating the phone (old vision screenshots etc.).
+        from ophelia.storage import HousekeepingLoop
+
+        self.housekeeping = HousekeepingLoop(self.settings)
+        tasks.append(asyncio.create_task(self.housekeeping.run()))
         # Daily diary entry (one short curator call per day, when idle).
         from ophelia.mind.narrative import DailyNarrative
 
@@ -795,6 +800,7 @@ class Orchestrator:
             self.semantic.stop()
             if self.backup_loop:
                 self.backup_loop.stop()
+            self.housekeeping.stop()
             self.narrative.stop()
             # Final flush of psyche/drives.
             try:

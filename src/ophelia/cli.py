@@ -734,6 +734,26 @@ def _ago_label(seconds) -> str:
     return f"{s / 86400:.1f}d ago"
 
 
+def cmd_cleanup(args: argparse.Namespace) -> int:
+    """Free space: old vision screenshots, and (if you choose) old chat-log media."""
+    from ophelia.storage import housekeep, human_bytes
+
+    settings = Settings()
+    hours = args.screenshot_hours if args.screenshot_hours is not None else settings.screenshot_keep_hours
+    days = args.chat_media_days if args.chat_media_days is not None else settings.chat_log_media_days
+    result = housekeep(
+        settings.data_dir, screenshot_hours=hours, chat_media_days=days, dry_run=args.dry_run
+    )
+    verb = "Would free" if args.dry_run else "Freed"
+    for label, (files, size) in result.by_dir.items():
+        print(f"  {label}: {files} file(s), {human_bytes(size)}")
+    print(f"{verb} {human_bytes(result.bytes)} in {result.files} file(s).")
+    if not days:
+        print("Chat-log media kept (no retention set). e.g. "
+              "`ophelia cleanup --chat-media-days 30 --dry-run` to preview.")
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Back up / list / restore her identity, memories and databases."""
     from ophelia import backup
@@ -1470,6 +1490,20 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--list", action="store_true", help="List scenarios and exit")
     p_eval.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_cleanup = sub.add_parser(
+        "cleanup", help="Free space: old vision screenshots and (optionally) old chat-log media"
+    )
+    p_cleanup.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    p_cleanup.add_argument(
+        "--chat-media-days", type=float, default=None,
+        help="Delete chat-log media copies older than N days (default: OPHELIA_CHAT_LOG_MEDIA_DAYS)",
+    )
+    p_cleanup.add_argument(
+        "--screenshot-hours", type=float, default=None,
+        help="Delete screen captures older than N hours (default: OPHELIA_SCREENSHOT_KEEP_HOURS)",
+    )
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     p_backup = sub.add_parser(
         "backup", help="Back up / list / restore her identity, memories and databases"

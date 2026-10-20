@@ -9,6 +9,7 @@ folder (`media/`) with stable filenames so the owner can browse everything.
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -95,7 +96,12 @@ class ChatLogger:
                 if src.is_file():
                     dst = self._media_dest(direction, channel, src)
                     try:
-                        shutil.copy2(src, dst)
+                        # Hard link, not a copy: same bytes on disk, no extra
+                        # space (full copies of every file grew to GBs).
+                        try:
+                            os.link(src, dst)
+                        except OSError:
+                            shutil.copy2(src, dst)
                         media_store = str(dst)
                     except Exception as e:
                         log.warning("chatlog.media_copy_failed", src=str(src), error=str(e))
