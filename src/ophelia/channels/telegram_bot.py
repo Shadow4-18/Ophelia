@@ -1467,6 +1467,30 @@ class TelegramGateway:
             except Exception as e:
                 log.warning("telegram.proactive_voice_failed", user=uid, error=str(e))
 
+    async def send_owner_document(self, path, caption: str = "") -> bool:
+        """DM a file (e.g. a backup archive) to the owner as a document.
+        Not mirrored into the chat log. True if at least one owner got it."""
+        if not self._app:
+            return False
+        from pathlib import Path as _P
+
+        p = _P(path)
+        if not p.is_file():
+            return False
+        sent = False
+        for uid in self._proactive_recipients(owners_only=True):
+            try:
+                with p.open("rb") as f:
+                    await self._app.bot.send_document(
+                        chat_id=uid,
+                        document=InputFile(f, filename=p.name),
+                        caption=(caption or "")[:900] or None,
+                    )
+                sent = True
+            except Exception as e:
+                log.warning("telegram.owner_document_failed", user=uid, error=str(e))
+        return sent
+
     async def send_proactive_media(
         self, path, *, caption: str = "", owners_only: bool = True
     ) -> None:

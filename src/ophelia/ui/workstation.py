@@ -212,6 +212,10 @@ class Workstation:
         self._tasks.append(asyncio.create_task(self._status_loop()))
         if self.semantic.mode != "off":
             self._tasks.append(asyncio.create_task(self.semantic.run()))
+        if self.settings.backup_enabled:
+            from ophelia.backup import BackupLoop
+
+            self._tasks.append(asyncio.create_task(BackupLoop(self.settings).run()))
         from ophelia.mind.narrative import DailyNarrative
 
         self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)

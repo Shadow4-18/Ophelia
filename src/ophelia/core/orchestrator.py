@@ -612,6 +612,15 @@ class Orchestrator:
         # no-op loop when embeddings are off / unavailable (default on Termux).
         if self.semantic.mode != "off":
             tasks.append(asyncio.create_task(self.semantic.run()))
+        # Backups of who she is (daily local; optional off-phone to the owner).
+        self.backup_loop = None
+        if self.settings.backup_enabled:
+            from ophelia.backup import BackupLoop
+
+            self.backup_loop = BackupLoop(
+                self.settings, offsite_sender=self.hub.send_owner_document
+            )
+            tasks.append(asyncio.create_task(self.backup_loop.run()))
         # Daily diary entry (one short curator call per day, when idle).
         from ophelia.mind.narrative import DailyNarrative
 
@@ -784,6 +793,8 @@ class Orchestrator:
             if self.health_check:
                 self.health_check.stop()
             self.semantic.stop()
+            if self.backup_loop:
+                self.backup_loop.stop()
             self.narrative.stop()
             # Final flush of psyche/drives.
             try:

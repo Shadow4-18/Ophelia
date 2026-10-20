@@ -497,6 +497,29 @@ class Settings(BaseSettings):
         description="inline | post | off — how the voice mind rewrites text for speech",
     )
 
+    backup_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_BACKUP",
+        description="Automatic backups of her identity, memories and databases",
+    )
+    backup_dir: str = Field(
+        default="",
+        alias="OPHELIA_BACKUP_DIR",
+        description="Where backups go (default: phone storage on Termux, else ~/.ophelia/backups)",
+    )
+    backup_interval_hours: float = Field(default=24, alias="OPHELIA_BACKUP_INTERVAL_HOURS")
+    backup_keep: int = Field(default=7, alias="OPHELIA_BACKUP_KEEP")
+    backup_offsite: str = Field(
+        default="none",
+        alias="OPHELIA_BACKUP_OFFSITE",
+        description="none | owner — also DM the archive to the owner (Telegram/Discord)",
+    )
+    backup_offsite_days: float = Field(default=7, alias="OPHELIA_BACKUP_OFFSITE_DAYS")
+    backup_include_secrets: bool = Field(
+        default=False,
+        alias="OPHELIA_BACKUP_INCLUDE_SECRETS",
+        description="Include .env / OAuth tokens in backups (off: they're API keys)",
+    )
     persona_lock: str = Field(
         default="owner",
         alias="OPHELIA_PERSONA_LOCK",

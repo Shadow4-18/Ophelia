@@ -1,0 +1,55 @@
+name: Tests
+
+# Runs on every pull request and every push to main, so a change that breaks
+# her can't reach the phone via `/update` unnoticed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 = oldest supported (pyproject); 3.13 = current.
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,site]"
+      - name: Compile check
+        run: python -m compileall -q src/ophelia
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+  termux-pins:
+    # The phone (Termux) installs older openai/httpx because newer ones need
+    # Rust builds that don't exist for Android. Run the suite against exactly
+    # those pins so phone-only breakage shows up here first.
+    name: pytest (Termux dependency pins)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install with Termux constraints
+        run: pip install -e ".[dev]" -c scripts/termux-constraints.txt
+      - name: Show pinned versions
+        run: pip list | grep -iE "^(openai|httpx) "
+      - name: Run tests
+        run: python -m pytest tests/ -q
