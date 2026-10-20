@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
 import time
 from typing import Any, Awaitable, Callable
 from pathlib import Path
@@ -62,6 +63,20 @@ GUEST_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "recall_past_sessions",
     }
 )
+
+
+_EXPLICIT_RE = re.compile(
+    r"\b(?:nude|naked|nudity|topless|bottomless|nsfw|nipples?|areolas?|"
+    r"genitals?|vagina|pussy|penis|explicit|uncensored|undressed|unclothed|"
+    r"(?:no|without)\s+clothes|bare\s+(?:breasts?|chest)|exposed\s+breasts?|"
+    r"porn\w*|sex(?:ual)?)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_explicit(prompt: str) -> bool:
+    """True if an image prompt clearly asks for nudity/sexual content."""
+    return bool(_EXPLICIT_RE.search(prompt or ""))
 
 
 def guest_may_use(name: str) -> bool:
@@ -509,6 +524,18 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         # Civitai: always let her pick unless she pinned a model AIR.
         if not (model or "").strip():
             auto_pick = True
+        # Safety net: an explicit prompt sent without nsfw=true went to the
+        # normal (censored) backend, which painted clothes back on and risks
+        # flagging the account. For the owner, with the NSFW tier on, route
+        # clearly explicit prompts to the uncensored backend anyway.
+        if (
+            not nsfw
+            and self._is_owner
+            and getattr(self.settings, "image_nsfw_allowed", False)
+            and looks_explicit(prompt)
+        ):
+            nsfw = True
+            log.info("generate_image.nsfw_auto_routed")
         result = await generate_image(
             self.settings,
             self.stack,
