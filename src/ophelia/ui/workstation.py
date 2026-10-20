@@ -212,6 +212,9 @@ class Workstation:
         self._tasks.append(asyncio.create_task(self._status_loop()))
         if self.semantic.mode != "off":
             self._tasks.append(asyncio.create_task(self.semantic.run()))
+        from ophelia.storage import HousekeepingLoop
+
+        self._tasks.append(asyncio.create_task(HousekeepingLoop(self.settings).run()))
         if self.settings.backup_enabled:
             from ophelia.backup import BackupLoop
 
