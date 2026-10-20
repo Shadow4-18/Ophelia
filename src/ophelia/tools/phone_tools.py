@@ -156,6 +156,7 @@ class PhoneToolsMixin:
         text: str | None = None,
         target: str | None = None,
         long_press: bool = False,
+        cell: str | None = None,
     ) -> str:
         reason = self._phone_unavailable_reason()
         if reason:
@@ -178,17 +179,25 @@ class PhoneToolsMixin:
                             "what's there, or target=\"...\" to aim by sight.")
             x, y = hit.center
             how = f" on [{hit.n}] {hit.kind} \"{hit.label}\""
-        elif target:
+        elif target or cell:
             vision = getattr(self, "vision", None)
             if vision is None:
                 return "Aiming by sight needs the vision provider."
             try:
-                x, y, how_note = await vision.aim(target)
+                if cell and not target:
+                    bx1, by1, bx2, by2 = vision.cell_box(cell)
+                    x, y = (bx1 + bx2) // 2, (by1 + by2) // 2
+                    how_note = f"center of cell {cell.strip().upper()}"
+                else:
+                    x, y, how_note = await vision.aim(target or "", cell=cell)
             except Exception as e:
-                return f"Couldn't aim at {target!r}: {e}"
+                what = target or cell
+                return (f"Couldn't aim at {what!r}: {e}. Look again with phone_see_screen "
+                        "and name the cell it's in.")
             how = f" ({how_note})"
         elif x is None or y is None:
-            return "Say what to tap: element=N (from the screen listing), text=\"...\", or target=\"...\"."
+            return ("Say what to tap: element=N (from the screen listing), text=\"...\", "
+                    "cell=\"G7\" (games), or target=\"...\".")
         x, y, note = await _resolve_tap_coords(self.android, x, y)
         if long_press:
             result = await self.android.swipe(x, y, x, y, 700)

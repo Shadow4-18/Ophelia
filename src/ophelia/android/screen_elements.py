@@ -165,8 +165,9 @@ def foreground_package(elements: list[Element]) -> str:
 
 def describe(elements: list[Element], *, max_lines: int = 60) -> str:
     if not elements:
-        return ("No accessibility elements on this screen (a game or canvas?). Use "
-                "phone_tap with target=\"<what to tap>\" to aim by sight.")
+        return ("No tappable elements on this screen (a game or drawn screen). Look with "
+                "phone_see_screen: it's covered by lettered cells; tap with "
+                "phone_tap(cell=\"G7\") or phone_tap(cell=\"G7\", target=\"PLAY button\").")
     pkg = foreground_package(elements)
     head = f"On screen{f' ({pkg})' if pkg else ''}: tap by number, e.g. phone_tap(element=3)."
     return head + "\n" + "\n".join(e.line() for e in elements[:max_lines])

@@ -44,6 +44,26 @@ _COORD_GUIDE = (
 )
 
 
+def grid_shape(w: int, h: int) -> tuple[int, int]:
+    """(cols, rows) of lettered cells: ~150px squares on a 1080x2400 screen,
+    either way up (games are often landscape)."""
+    return (16, 8) if w >= h else (8, 16)
+
+
+def cell_label(col: int, row: int) -> str:
+    return f"{chr(65 + col)}{row + 1}"
+
+
+_CELLS_GUIDE = (
+    "\n\n--- Acting on this screen ---\n"
+    "There are no tappable elements to number here (a game or drawn screen), so "
+    "the screenshot is covered by lettered cells: columns A, B, C... left to right, "
+    "rows 1, 2, 3... top to bottom, each cell labelled in its top-left corner. "
+    "Say WHERE things are by cell, e.g. 'PLAY button: G7'. To tap, use "
+    "phone_tap(cell=\"G7\"); for a small target add what it is, "
+    "phone_tap(cell=\"G7\", target=\"PLAY button\"), and it zooms in to hit it exactly."
+)
+
 _MARKS_GUIDE = (
     "\n\n--- Acting on the screen ---\n"
     "Every element you can act on has a numbered colored box, and the element "
@@ -119,11 +139,16 @@ def _font(size: int):
         from PIL import ImageFont
     except Exception:
         return None
-    for path in ("/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf"):
+    for path in ("/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"):
         try:
             return ImageFont.truetype(path, size)
         except Exception:
             continue
+    try:
+        return ImageFont.load_default(size=size)  # Pillow >= 10.1: scalable
+    except Exception:
+        pass
     try:
         return ImageFont.load_default()
     except Exception:
@@ -170,22 +195,25 @@ def _annotate_cells(png_bytes: bytes, cols: int, rows: int, *, labels: str = "gr
     'numbers' → 1..cols*rows."""
     from PIL import Image, ImageDraw
 
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     iw, ih = img.size
-    draw = ImageDraw.Draw(img)
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     font = _font(max(16, min(iw // cols, ih // rows) // 3))
     for c in range(cols):
         for r in range(rows):
             x1, y1 = iw * c / cols, ih * r / rows
             x2, y2 = iw * (c + 1) / cols, ih * (r + 1) / rows
-            draw.rectangle((x1, y1, x2, y2), outline=(255, 230, 0), width=2)
+            # Light lines so the game stays readable; solid label tags.
+            draw.rectangle((x1, y1, x2, y2), outline=(255, 230, 0, 110), width=2)
             tag = f"{chr(65 + c)}{r + 1}" if labels == "grid" else str(r * cols + c + 1)
             if font:
                 tb = draw.textbbox((x1 + 4, y1 + 4), tag, font=font)
-                draw.rectangle((tb[0] - 2, tb[1] - 1, tb[2] + 2, tb[3] + 1), fill=(0, 0, 0))
-                draw.text((x1 + 4, y1 + 4), tag, fill=(255, 230, 0), font=font)
+                draw.rectangle((tb[0] - 2, tb[1] - 1, tb[2] + 2, tb[3] + 1), fill=(0, 0, 0, 200))
+                draw.text((x1 + 4, y1 + 4), tag, fill=(255, 230, 0, 255), font=font)
+    out = Image.alpha_composite(img, overlay).convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    out.save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -243,6 +271,7 @@ class ScreenVision:
         self.shots_dir = settings.data_dir / "screenshots"
         self.last_elements: list = []
         self.last_elements_at = 0.0
+        self.last_grid: tuple[int, int, int, int, float] | None = None
 
     async def capture(self) -> Path | None:
         if not self.android or self.android.mode == "termux_only":
@@ -322,6 +351,15 @@ class ScreenVision:
             if annotated is not b64_bytes:
                 b64_bytes = annotated
                 coord_guide = _MARKS_GUIDE
+        elif shot_px:
+            # Canvas/game: big lettered cells she can actually read and name.
+            try:
+                cols, rows = grid_shape(*shot_px)
+                b64_bytes = _annotate_cells(b64_bytes, cols, rows)
+                self.last_grid = (cols, rows, shot_px[0], shot_px[1], time.time())
+                coord_guide = _CELLS_GUIDE
+            except Exception as e:
+                log.debug("vision.cells_failed", error=str(e))
         elif self.settings.vision_grid_overlay:
             annotated = _annotate_grid(b64_bytes, native or shot_px)
             if annotated is not b64_bytes:
@@ -371,7 +409,7 @@ class ScreenVision:
                 resp = await client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": content}],
-                    max_tokens=800,
+                    max_tokens=1500,  # reasoning models think first
                     extra_body=extra_body_for(self.settings, self.stack.name("vision")),
                 )
             text = (resp.choices[0].message.content or "").strip()
@@ -406,24 +444,54 @@ class ScreenVision:
         return self.last_elements
 
     async def _ask(self, png: bytes, prompt: str) -> str:
+        """One short vision question. Reasoning models spend tokens thinking
+        before they answer (a 30-token cap came back blank), so allow room
+        and ask once more if the answer is still empty."""
         client, model = await self._vision_client()
         b64 = base64.standard_b64encode(png).decode("ascii")
         from ophelia.providers.fallback import extra_body_for
 
-        async with get_model_gate().session("vision", model, self.stack.name("vision")):
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url",
-                     "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
-                ]}],
-                max_tokens=30,
-                extra_body=extra_body_for(self.settings, self.stack.name("vision")),
+        text = ""
+        for attempt in range(2):
+            ask = prompt if attempt == 0 else (
+                prompt + "\nYour last reply was empty. Answer with just the label."
             )
-        return (resp.choices[0].message.content or "").strip()
+            async with get_model_gate().session("vision", model, self.stack.name("vision")):
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": [
+                        {"type": "text", "text": ask},
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+                    ]}],
+                    max_tokens=600,
+                    extra_body=extra_body_for(self.settings, self.stack.name("vision")),
+                )
+            text = (resp.choices[0].message.content or "").strip()
+            if text:
+                break
+            log.info("vision.blank_answer", attempt=attempt)
+        return text
 
-    async def aim(self, target: str, *, cols: int = 6, rows: int = 12, sub: int = 4):
+    def cell_box(self, label: str) -> tuple[int, int, int, int]:
+        """Pixel box of a lettered cell from the last cell grid she was shown."""
+        import re as _re
+
+        if not self.last_grid or time.time() - self.last_grid[4] > 600:
+            raise RuntimeError("no recent cell grid: look at the screen first (phone_see_screen)")
+        cols, rows, w, h, _ = self.last_grid
+        m = _re.fullmatch(r"\s*([A-Za-z])\s*(\d{1,2})\s*", label or "")
+        if not m:
+            raise RuntimeError(f"{label!r} isn't a cell label like C7")
+        col, row = ord(m.group(1).upper()) - 65, int(m.group(2)) - 1
+        if not (0 <= col < cols and 0 <= row < rows):
+            raise RuntimeError(
+                f"{label} is off the grid (columns A-{chr(64 + cols)}, rows 1-{rows})"
+            )
+        cw, ch = w / cols, h / rows
+        return int(col * cw), int(row * ch), int((col + 1) * cw), int((row + 1) * ch)
+
+    async def aim(self, target: str, *, cell: str | None = None, sub: int = 4):
         """Find ``target`` on screen by sight in two steps (coarse cell, then a
         zoomed sub-square), for games/canvases with no accessibility boxes.
         Vision models are poor at raw pixel guesses; picking a labeled square
@@ -440,6 +508,13 @@ class ScreenVision:
         if hasattr(self.android, "learn_display_size"):
             self.android.learn_display_size(size)
         w, h = size
+        cols, rows = grid_shape(w, h)
+        self.last_grid = (cols, rows, w, h, time.time())
+        if cell:
+            # She already knows the cell (e.g. from phone_see_screen): just zoom.
+            bx1, by1, bx2, by2 = self.cell_box(cell)
+            label = cell.strip().upper()
+            return await self._zoom_tap(png, (bx1, by1, bx2, by2), w, h, target, label, sub)
         try:
             coarse = _annotate_cells(png, cols, rows)
         except Exception as e:
@@ -456,12 +531,19 @@ class ScreenVision:
         if not (0 <= col < cols and 0 <= row < rows):
             raise RuntimeError(f"vision named a cell off the grid: {a1[:20]}")
         cw, ch = w / cols, h / rows
-        # Zoom: the cell plus half a cell around it, so a target on a border
-        # is still fully in view.
-        bx1 = max(0, int((col - 0.5) * cw))
-        by1 = max(0, int((row - 0.5) * ch))
-        bx2 = min(w, int((col + 1.5) * cw))
-        by2 = min(h, int((row + 1.5) * ch))
+        box = (int(col * cw), int(row * ch), int((col + 1) * cw), int((row + 1) * ch))
+        return await self._zoom_tap(png, box, w, h, target, f"{m.group(1)}{m.group(2)}", sub)
+
+    async def _zoom_tap(self, png: bytes, box, w: int, h: int, target: str, label: str,
+                        sub: int):
+        """Second step: zoom on a cell (plus half a cell around it, so a target
+        on a border is fully in view) and pick a numbered square."""
+        import re as _re
+
+        cx1, cy1, cx2, cy2 = box
+        cw, ch = cx2 - cx1, cy2 - cy1
+        bx1, by1 = max(0, int(cx1 - cw / 2)), max(0, int(cy1 - ch / 2))
+        bx2, by2 = min(w, int(cx2 + cw / 2)), min(h, int(cy2 + ch / 2))
         zoom = _annotate_cells(_crop(png, (bx1, by1, bx2, by2)), sub, sub, labels="numbers")
         a2 = await self._ask(zoom, (
             f"This is a zoomed-in part of the screen, split into numbered squares "
@@ -470,14 +552,13 @@ class ScreenVision:
         ))
         m2 = _re.search(r"\d{1,2}", a2)
         if not m2 or not (1 <= int(m2.group()) <= sub * sub):
-            # Fall back to the coarse cell's center.
-            x, y = int((col + 0.5) * cw), int((row + 0.5) * ch)
-            return x, y, f"aimed at cell {m.group(1)}{m.group(2)} (zoom step unclear)"
+            # Fall back to the cell's center.
+            return (cx1 + cx2) // 2, (cy1 + cy2) // 2, f"aimed at cell {label} (zoom step unclear)"
         k = int(m2.group()) - 1
         sc, sr = k % sub, k // sub
         x = int(bx1 + (sc + 0.5) * (bx2 - bx1) / sub)
         y = int(by1 + (sr + 0.5) * (by2 - by1) / sub)
-        return x, y, f"aimed by sight: cell {m.group(1)}{m.group(2)}, square {k + 1}"
+        return x, y, f"aimed by sight: cell {label}, square {k + 1}"
 
     async def see_for_game(
         self, profile: GameProfile, intent: str = ""

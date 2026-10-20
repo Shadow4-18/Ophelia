@@ -12,7 +12,8 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Look at the phone: screenshot + your vision, with every element "
                 "you can act on boxed and numbered (same numbers as phone_ui_dump), "
-                "so you can phone_tap(element=N). Games/canvases get a coordinate grid."
+                "so you can phone_tap(element=N). Games/drawn screens get lettered "
+                "cells instead: say where things are by cell and phone_tap(cell=...)."
             ),
             "parameters": {
                 "type": "object",
@@ -48,9 +49,11 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "description": (
                 "Tap the phone screen. Best: element=N from the latest screen listing "
                 "(lands on the exact center). Or text=\"Send\" to tap the element with "
-                "that label. For games/drawings with no elements: target=\"the blue "
-                "gem in the top row\" and you'll aim by sight in two zoom steps. x,y "
-                "pixels only as a last resort. Returns what's on screen afterwards."
+                "that label. Games/drawn screens (no elements): phone_see_screen covers "
+                "the screenshot in lettered cells; tap cell=\"G7\", and add "
+                "target=\"PLAY button\" to zoom in for a precise hit. target alone "
+                "finds it by sight in two steps. x,y pixels only as a last resort. "
+                "Returns what's on screen afterwards."
             ),
             "parameters": {
                 "type": "object",
@@ -58,6 +61,7 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "element": {"type": "integer", "description": "Element number from the listing"},
                     "text": {"type": "string", "description": "Visible label to tap"},
                     "target": {"type": "string", "description": "Describe what to tap (aim by sight)"},
+                    "cell": {"type": "string", "description": "Lettered cell from the screenshot, e.g. G7"},
                     "long_press": {"type": "boolean"},
                     "x": {"type": "number", "description": "last resort: pixel x"},
                     "y": {"type": "number", "description": "last resort: pixel y"},

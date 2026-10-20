@@ -178,9 +178,10 @@ async def test_aim_two_steps(tmp_path):
     v.capture = AsyncMock(return_value=shot)
     v._ask = AsyncMock(side_effect=["C7", "6"])
     x, y, note = await v.aim("the gem")
-    # Cell C7 = column 2, row 6 of a 6x12 grid (180x200 px cells). The zoom
-    # covers x 270..630, y 1100..1500; square 6 of 4x4 = col 1, row 1.
-    assert (x, y) == (405, 1250)
+    # Portrait: 8x16 cells of 135x150 px. C7 = column 2, row 6 (x 270..405,
+    # y 900..1050); the zoom adds half a cell around it (x 202..472, y
+    # 825..1125); square 6 of 4x4 = col 1, row 1.
+    assert (x, y) == (303, 937)
     assert "cell C7, square 6" in note
     v._ask = AsyncMock(side_effect=["NONE"])
     with pytest.raises(RuntimeError, match="couldn't find"):
@@ -201,3 +202,57 @@ def test_marks_draw_on_screenshot():
     assert img.size == (540, 1200)
     # The Send button box (900..1050 x 2100..2250) is drawn at half scale.
     assert img.getpixel((450, 1100)) != (0, 0, 0)
+
+
+def test_landscape_games_get_a_landscape_grid():
+    from ophelia.android.vision import ScreenVision, grid_shape
+
+    assert grid_shape(2400, 1080) == (16, 8) and grid_shape(1080, 2400) == (8, 16)
+    v = ScreenVision.__new__(ScreenVision)
+    v.last_grid = (16, 8, 2400, 1080, __import__("time").time())
+    # Balatro's PLAY sat around (900, 900) on the owner's grid screenshot.
+    assert v.cell_box("g7") == (900, 810, 1050, 945)
+    with pytest.raises(RuntimeError, match="off the grid"):
+        v.cell_box("Z1")
+    v.last_grid = None
+    with pytest.raises(RuntimeError, match="look at the screen first"):
+        v.cell_box("A1")
+
+
+@pytest.mark.asyncio
+async def test_tap_by_cell_and_cell_plus_target():
+    from ophelia.android.vision import ScreenVision
+
+    reg = _registry(elements=[], aim=AsyncMock(return_value=(960, 880, "aimed by sight: cell G7, square 6")))
+    real = ScreenVision.__new__(ScreenVision)
+    real.last_grid = (16, 8, 2400, 1080, __import__("time").time())
+    reg.vision.cell_box = real.cell_box
+    out = await reg._phone_tap(cell="G7")
+    reg.android.tap.assert_awaited_with(975, 877)
+    assert "center of cell G7" in out and "lettered cells" in out
+    await reg._phone_tap(cell="G7", target="PLAY button")
+    reg.vision.aim.assert_awaited_with("PLAY button", cell="G7")
+    reg.android.tap.assert_awaited_with(960, 880)
+
+
+@pytest.mark.asyncio
+async def test_blank_vision_answer_is_retried():
+    from ophelia.android.vision import ScreenVision
+
+    calls = []
+
+    class _Client:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kw):
+                    calls.append(kw)
+                    text = "" if len(calls) == 1 else "G7"
+                    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+    v = ScreenVision.__new__(ScreenVision)
+    v.settings = SimpleNamespace(deepseek_thinking=False)
+    v.stack = SimpleNamespace(name=lambda role: "xai")
+    v._vision_client = AsyncMock(return_value=(_Client, "grok"))
+    assert await v._ask(b"png", "which cell?") == "G7"
+    assert len(calls) == 2 and calls[0]["max_tokens"] >= 300
