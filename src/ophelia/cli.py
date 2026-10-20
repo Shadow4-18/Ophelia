@@ -1131,7 +1131,12 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
         print()
         print("== Touch calibration ==")
         if native:
-            print(f"Native display (wm size): {native[0]} x {native[1]} px")
+            print(f"Touch coordinate space:   {native[0]} x {native[1]} px "
+                  "(the resolution in use; Samsung's 'Override size')")
+            raw_wm = await android.shell("wm size 2>&1")
+            for line in (raw_wm or "").splitlines():
+                if "size" in line.lower():
+                    print(f"  wm size: {line.strip()}")
         else:
             print("Native display: unknown (wm size + dumpsys display both failed).")
             print("  Check Shizuku is running / ADB is connected.")
@@ -1196,6 +1201,12 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
             await asyncio.sleep(1.5)
         print()
         print("If the crosshair landed where the label said, calibration is correct.")
+        print()
+        print("== What she sees ==")
+        from ophelia.android.screen_elements import describe, parse
+
+        xml = await android.ui_dump_xml()
+        print(describe(parse(xml, screen=native), max_lines=25))
         print("If taps are consistently offset/scaled, that points to a device-level")
         print("issue (density/letterboxing) — report it so a correction can be added.")
         return 0

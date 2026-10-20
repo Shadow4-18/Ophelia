@@ -24,7 +24,7 @@ GENRE_HINTS: dict[str, str] = {
 }
 
 GAME_VISION_PREFIX = """You are Ophelia playing a mobile game on her phone (stream commentary mindset).
-Read the screen for THIS game. Suggest exactly ONE next action: tap (x,y), swipe, wait, or back.
+Read the screen for THIS game. Suggest exactly ONE next action: tap a numbered element, tap a target you describe in words (phone_tap target="..." aims by sight), swipe, wait, or back.
 If unsure, say wait and what to look for next turn."""
 
 

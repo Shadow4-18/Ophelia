@@ -254,6 +254,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "site_delete_file": self._site_delete_file,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
+            "phone_type": self._phone_type,
             "phone_tap": self._phone_tap,
             "phone_open_app": self._phone_open_app,
             "phone_shell": self._phone_shell,
