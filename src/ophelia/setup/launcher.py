@@ -1,8 +1,9 @@
-"""Unified interactive launcher — the Hermes-style top-level menu.
+"""The top-level `ophelia` menu.
 
-Run with `ophelia` (no args) on a TTY, or `ophelia menu`.
-Groups all operations (start/stop, configure, migrate, diagnose) into one
-navigable menu with a live status header.
+Run with `ophelia` (no args) on a TTY, or `ophelia menu`. Groups start/stop,
+setup, diagnostics, auth and migration into one menu with a live status
+header. The item list is rebuilt after every action, so Start turns into
+Stop as soon as she's running.
 """
 
 from __future__ import annotations
@@ -10,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import structlog
 
@@ -162,7 +165,7 @@ def action_start() -> int:
     rc, _ = _run_blocking(
         [
             "tmux", "new-session", "-d", "-s", "ophelia",
-            f"export PATH=$PREFIX/bin:$PATH; cd {Path.cwd()} && ophelia run --restart",
+            f"export PATH=$PREFIX/bin:$PATH; cd {shlex.quote(str(Path.cwd()))} && ophelia run --restart",
         ]
     )
     if rc == 0:
@@ -176,19 +179,22 @@ def action_start() -> int:
     return rc
 
 
-def action_stop() -> int:
+def action_stop(*, wait: bool = True) -> int:
     if not is_termux():
         print("Stop is a Termux convenience. On PC, Ctrl+C the running process.")
-        tui.pause()
+        if wait:
+            tui.pause()
         return 0
     if not _tmux_session_active():
         print("No Ophelia tmux session is running.")
-        tui.pause()
+        if wait:
+            tui.pause()
         return 0
     rc, _ = _run_blocking(["tmux", "kill-session", "-t", "ophelia"])
     _run_blocking(["termux-wake-unlock"])
     print("[ok] Ophelia stopped (tmux session killed, wake lock released)")
-    tui.pause()
+    if wait:
+        tui.pause()
     return rc
 
 
@@ -212,13 +218,13 @@ def action_cleanup_stale() -> int:
         except OSError as e:
             print(f"[warn] Could not remove heartbeat: {e}")
     _run_blocking(["termux-wake-unlock"])
-    print("[ok] State cleared — you can Start Ophelia now.")
-    tui.pause()
-    return 0
+    print("[ok] State cleared — starting Ophelia.")
+    print()
+    return action_start()
 
 
 def action_restart() -> int:
-    action_stop()
+    action_stop(wait=False)
     print()
     return action_start()
 
@@ -296,7 +302,7 @@ def action_reflect() -> int:
 
 
 def action_pause_resume() -> int:
-    if PAUSE_FLAG.is_file():
+    if _paused():
         PAUSE_FLAG.unlink(missing_ok=True)
         print("[ok] Resume requested — running Ophelia will pick it up.")
     else:
@@ -305,6 +311,10 @@ def action_pause_resume() -> int:
         print("[ok] Pause requested — running Ophelia will pick it up.")
     tui.pause()
     return 0
+
+
+def _paused() -> bool:
+    return PAUSE_FLAG.is_file()
 
 
 def action_auth_status() -> int:
@@ -352,97 +362,89 @@ def action_chat() -> int:
 # Menu structure
 # ---------------------------------------------------------------------------
 
-def _menu_items() -> list[tuple[str, str, callable]]:
-    """Build (label, group, handler) tuples, ordered by group."""
+Handler = Callable[[], object]
+
+
+def _menu_items() -> list[tuple[str, str, Handler]]:
+    """(label, group, handler) for the current state, in display order."""
     running = _is_running()
     termux = is_termux()
-    items: list[tuple[str, str, callable]] = []
+    items: list[tuple[str, str, Handler]] = []
 
-    # --- Run / Control ---
+    # --- Run ---
     if termux:
         if running:
             items.append(("Stop Ophelia", "Run", action_stop))
             items.append(("Restart Ophelia", "Run", action_restart))
-            items.append(("Reattach to live session (tmux)", "Run", action_reattach))
+            items.append(("Watch her live session (tmux)", "Run", action_reattach))
         elif _stale_state():
-            # Heartbeat says running but tmux session is dead — the user is
-            # trapped without Start. Offer to clear the stale state.
-            items.append(("Clear stale state (heartbeat/tmux out of sync) and Start", "Run", action_cleanup_stale))
+            # Heartbeat says running but tmux is dead: Stop would no-op and
+            # Start would be hidden, so offer to clear it and start.
+            items.append(("Clear stale state and Start (heartbeat/tmux out of sync)",
+                          "Run", action_cleanup_stale))
             items.append(("Start Ophelia (wake-lock + tmux + run)", "Run", action_start))
         else:
             items.append(("Start Ophelia (wake-lock + tmux + run)", "Run", action_start))
     else:
         items.append(("Run Ophelia (foreground)", "Run", lambda: _ophelia_cmd("run", "--restart")))
-
     if running:
-        items.append(("Pause / Resume autonomy", "Run", action_pause_resume))
-    items.append(("Update Ophelia (git pull + reinstall)", "Run", action_update))
+        items.append(("Resume her autonomy" if _paused() else "Pause her autonomy",
+                      "Run", action_pause_resume))
     items.append(("Live status dashboard", "Run", action_dashboard))
     items.append(("Quick chat (one message)", "Run", action_chat))
+    items.append(("Update Ophelia (git pull + reinstall)", "Run", action_update))
 
-    # --- Configure ---
-    items.append(("Setup wizard (provider, channels, persona, features)", "Configure", action_setup_wizard))
-    items.append(("Show provider routing", "Configure", action_providers))
-    items.append(("Show Ollama model cookbook", "Configure", action_models))
+    # --- Set up ---
+    items.append(("Setup (AI, eyes, images, voice, channels, schedule, ...)", "Set up", action_setup_wizard))
+    items.append(("Show provider routing", "Set up", action_providers))
+    items.append(("Local Ollama model suggestions", "Set up", action_models))
 
     # --- Diagnose ---
     items.append(("Health check (doctor)", "Diagnose", action_health_check))
-    items.append(("Tail inner monologue", "Diagnose", action_tail_inner))
+    items.append(("Read her inner monologue", "Diagnose", action_tail_inner))
     items.append(("Run memory curator once", "Diagnose", action_run_curator))
     items.append(("Reflect now (self-reflection)", "Diagnose", action_reflect))
 
     # --- Auth ---
-    items.append(("Auth: show OAuth status", "Auth", action_auth_status))
-    items.append(("Auth: fresh SuperGrok login", "Auth", action_auth_login))
-    items.append(("Auth: refresh token now", "Auth", action_auth_refresh))
+    items.append(("SuperGrok: show login status", "Auth", action_auth_status))
+    items.append(("SuperGrok: fresh login", "Auth", action_auth_login))
+    items.append(("SuperGrok: refresh token now", "Auth", action_auth_refresh))
 
-    # --- Migrate / Transfer ---
-    items.append(("Import from Hermes", "Migrate", action_import_hermes))
-    items.append(("Transfer data (phone <-> PC)", "Migrate", action_transfer))
+    # --- Move / import ---
+    items.append(("Transfer data (phone <-> PC)", "Move / import", action_transfer))
+    items.append(("Import from Hermes", "Move / import", action_import_hermes))
 
     return items
 
 
-def _render_menu_labels(items: list[tuple[str, str, callable]]) -> list[str]:
-    """Group items with section headers in the radiolist."""
+def _render_menu_labels(items: list[tuple[str, str, Handler]]) -> tuple[list[str], list[int]]:
+    """Menu rows with section headers, plus row -> item index (-1 = header)."""
     labels: list[str] = []
+    index: list[int] = []
     last_group = None
-    for label, group, _ in items:
+    for i, (label, group, _) in enumerate(items):
         if group != last_group:
-            labels.append(f"— {group} —")
+            labels.append(tui.Header(f"— {group} —"))
+            index.append(-1)
             last_group = group
-        labels.append(f"  {label}")
-    return labels
+        labels.append(label)
+        index.append(i)
+    return labels, index
 
 
 def _run_launcher() -> int:
-    items = _menu_items()
-    labels = _render_menu_labels(items)
-
+    last_label = ""
     while True:
-        status = _status_line()
-        title = "Ophelia — what do you want to do?"
-        desc = f"{platform_summary()}\n{status}\nHome: {OPHELIA_HOME}"
-        choice = tui.radiolist(title, labels, description=desc, cancel_returns=-1)
-
-        if choice < 0 or choice >= len(labels):
-            return 0  # cancelled / quit
-
-        # Skip section-header rows (they start with "— ").
-        label = labels[choice]
-        if label.startswith("—"):
-            continue
-
-        # Map back to the handler. Because we inserted header rows, find the
-        # corresponding item by counting non-header labels up to choice.
-        item_index = -1
-        for i, lab in enumerate(labels[: choice + 1]):
-            if not lab.startswith("—"):
-                item_index += 1
-        if item_index < 0 or item_index >= len(items):
-            continue
-
-        _, _, handler = items[item_index]
+        items = _menu_items()
+        labels, index = _render_menu_labels(items)
+        selected = next((r for r, lab in enumerate(labels) if lab == last_label), 0)
+        desc = f"{platform_summary()}\n{_status_line()}\nHome: {OPHELIA_HOME}"
+        choice = tui.menu("Ophelia — what do you want to do?", labels,
+                          selected=selected, description=desc)
+        if choice < 0 or choice >= len(labels) or index[choice] < 0:
+            return 0
+        label, _, handler = items[index[choice]]
+        last_label = label
         try:
             handler()
         except KeyboardInterrupt:
