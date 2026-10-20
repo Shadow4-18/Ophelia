@@ -185,6 +185,7 @@ class AgentLoop:
         self.humor = None  # HumorTracker — set by Orchestrator
         self.director = None  # Director — set by Orchestrator (Tier A #1)
         self.voice_mind = None  # VoiceMind — set by Orchestrator (Tier A #4)
+        self.curiosity = None  # CuriosityStore — set by Orchestrator / Workstation
         self.reaction_mind = None  # ReactionMind — set by Orchestrator
         # Pending tool-chain to resume on the next turn if the previous turn hit
         # the tool-round cap without getting stuck in a repeat loop.
@@ -416,6 +417,13 @@ class AgentLoop:
                         ),
                     )
                 )
+            if channel and channel != "consciousness":
+                from ophelia.mind.thread_tone import ThreadTones
+
+                parts.append(await ThreadTones(self.memory).context_block(channel))
+            curiosity = getattr(self, "curiosity", None)
+            if curiosity is not None:
+                parts.append(await curiosity.context_block())
             narrative = getattr(self, "narrative", None)
             if narrative is not None:
                 parts.append(await narrative.recent_block())
@@ -800,7 +808,28 @@ class AgentLoop:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
+        if is_owner and text:
+            await self._after_owner_turn(channel, user_text, text)
         return text
+
+    async def _after_owner_turn(self, channel: str, user_text: str, reply: str) -> None:
+        """Cheap continuity bookkeeping after an owner reply (every surface:
+        Telegram, Discord, web UI, CLI): promises she made become follow-ups,
+        and the conversation's tone/weight is updated. Never fails the turn."""
+        if not self.memory or not channel:
+            return
+        try:
+            from ophelia.mind.open_loops import OpenLoops
+
+            await OpenLoops(self.memory.db_path).capture_promises(channel, reply)
+        except Exception as e:
+            log.debug("open_loops.capture_failed", error=str(e))
+        try:
+            from ophelia.mind.thread_tone import ThreadTones
+
+            await ThreadTones(self.memory).observe_turn(channel, user_text, reply)
+        except Exception as e:
+            log.debug("thread_tone.observe_failed", error=str(e))
 
     async def run_reaction_turn(
         self,

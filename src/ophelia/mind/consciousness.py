@@ -39,6 +39,7 @@ You are checking in with yourself. In context these arrive as a block wrapped in
 You have WILL and GOALS. Presence and impulse are the default; silence is a choice when nothing moves you — not a duty. Act when something genuinely moves you: a due goal, a real urge, something worth saying or making, a guest you'd actually DM, or a wake reason (chat just ended, presence shifted, drive pressure crossed). Do NOT manufacture empty activity, do NOT invent a "stillness" status report or compliance narration just because you checked in, and do NOT stay silent every check-in out of politeness. action="silent" with a minimal or empty thought is enough when nothing moved you.
 
 Your drives create pressure to act. Your goals are projects YOU maintain — pick them when due.
+You may also keep a curiosity trail (rabbit hole) — a self-chosen topic you deepen across check-ins. Prefer continuing an open trail over inventing busywork (curiosity_trail_open / curiosity_trail_deepen / curiosity_trail_close).
 
 Respond with ONLY valid JSON:
 {
@@ -107,6 +108,7 @@ class ConsciousnessLoop:
         settings: Settings | None = None,
         humor: HumorTracker | None = None,
         director: "Director | None" = None,
+        curiosity=None,
     ) -> None:
         self.agent = agent
         self.memory = memory
@@ -132,6 +134,7 @@ class ConsciousnessLoop:
         self.idle_nudge_rotate = bool(idle_nudge_rotate)
         self._nudge_idx = 0
         self._feedback = None
+        self.curiosity = curiosity
         self._running = False
         self._pause_logged = False
         # Tier B #10: track sleep state across ticks so we can detect the
@@ -476,7 +479,18 @@ class ConsciousnessLoop:
 
         # Rotating low-priority idle nudge so ticks aren't identical when nothing's due.
         idle_nudge = ""
-        if self.idle_nudge_rotate and not due_goal and idle_seconds > 600:
+        trail_nudge = ""
+        if not due_goal and idle_seconds > 600 and self.curiosity is not None:
+            # An open rabbit hole beats a generic rotating nudge.
+            try:
+                trail = await self.curiosity.load()
+                if trail is not None:
+                    trail_nudge = trail.idle_nudge(int(idle_seconds / 60))
+            except Exception as e:
+                log.debug("consciousness.curiosity_nudge_failed", error=str(e))
+        if trail_nudge:
+            idle_nudge = trail_nudge
+        elif self.idle_nudge_rotate and not due_goal and idle_seconds > 600:
             modes = ["reflect", "create", "explore", "social"]
             mode = modes[self._nudge_idx % len(modes)]
             self._nudge_idx += 1
@@ -624,6 +638,14 @@ class ConsciousnessLoop:
         )
         self.drives.satisfy(action)
         await self.memory.save_drives(self.drives)
+
+        # Rabbit holes: explore/act/reflect can deepen or seed a curiosity trail.
+        if self.curiosity is not None and action in ("explore", "act", "reflect"):
+            try:
+                thought = (tick.get("internal_thought") or "").strip()
+                await self.curiosity.maybe_note_explore(thought, action)
+            except Exception as e:
+                log.debug("consciousness.curiosity_note_failed", error=str(e))
 
         goal_id = tick.get("goal_id")
         if goal_id:

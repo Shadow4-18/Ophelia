@@ -254,6 +254,12 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "set_guest_rapport": self._set_guest_rapport,
             "whats_changed": self._whats_changed,
             "evolve_self": self._evolve_self,
+            "curiosity_trail_open": self._curiosity_trail_open,
+            "curiosity_trail_deepen": self._curiosity_trail_deepen,
+            "curiosity_trail_close": self._curiosity_trail_close,
+            "phone_vibrate": self._phone_vibrate,
+            "phone_notifications": self._phone_notifications,
+            "phone_battery": self._phone_battery,
             "follow_up": self._follow_up,
             "follow_up_done": self._follow_up_done,
             "remember_person": self._remember_person,
@@ -1060,6 +1066,49 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 
             return GENERIC_REJECTION
         return f"Saved lesson #{lid}: {lesson[:200]}"
+
+    async def _curiosity_trail_open(
+        self,
+        topic: str,
+        next_step: str = "",
+        note: str = "",
+    ) -> str:
+        if getattr(self, "curiosity", None) is None:
+            return "Curiosity store unavailable."
+        try:
+            trail = await self.curiosity.open(topic, next_step=next_step, note=note)
+        except ValueError as e:
+            return f"Could not open trail: {e}"
+        return (
+            f"Opened curiosity trail: {trail.topic} "
+            f"(depth {trail.depth}). Next: {trail.next_step or 'follow the pull'}."
+        )
+
+    async def _curiosity_trail_deepen(
+        self,
+        next_step: str = "",
+        note: str = "",
+    ) -> str:
+        if getattr(self, "curiosity", None) is None:
+            return "Curiosity store unavailable."
+        try:
+            trail = await self.curiosity.deepen(next_step=next_step, note=note)
+        except ValueError as e:
+            return f"Could not deepen trail: {e}"
+        if trail.status != "active":
+            return f"Trail '{trail.topic}' reached depth {trail.depth} and is now {trail.status}."
+        return (
+            f"Deepened '{trail.topic}' to depth {trail.depth}. "
+            f"Next: {trail.next_step or 'keep going'}."
+        )
+
+    async def _curiosity_trail_close(self, reason: str = "satisfied") -> str:
+        if getattr(self, "curiosity", None) is None:
+            return "Curiosity store unavailable."
+        trail = await self.curiosity.close(reason=reason or "satisfied")
+        if not trail:
+            return "No active curiosity trail."
+        return f"Closed trail '{trail.topic}' ({trail.status})."
 
     async def _evolve_self(self, note: str) -> str:
         from ophelia.mind.growth import add_growth

@@ -201,3 +201,154 @@ class PhoneToolsMixin:
             minutes=minutes,
             android=self.android,
         )
+
+    async def _phone_vibrate(self, duration_ms: int = 200) -> str:
+        """Buzz the phone — Termux:API first, then shell vibrator service.
+
+        Works on Termux without Shizuku when termux-vibrate is installed.
+        """
+        import asyncio
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        dur = max(50, min(2000, int(duration_ms or 200)))
+        if is_termux() and shutil.which("termux-vibrate"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-vibrate",
+                "-d",
+                str(dur),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                return f"Vibrated {dur}ms (termux-vibrate)."
+        reason = self._phone_unavailable_reason()
+        if self.android and not reason:
+            cmd = (
+                f"cmd vibrator vibrate {dur} 2>/dev/null || "
+                f"service call vibrator 1 i32 {dur} 2>/dev/null || "
+                f"echo fail"
+            )
+            out = (await self.android.shell(cmd) or "").strip()
+            if out and "fail" not in out.lower():
+                return f"Vibrated {dur}ms (shell)."
+            if out:
+                return f"Vibrate attempted via shell: {out[:120]}"
+        return (
+            "Could not vibrate — need Termux:API (termux-vibrate) or a working "
+            "phone shell bridge."
+        )
+
+    async def _phone_notifications(self, limit: int = 12) -> str:
+        """List recent notifications without a full screen vision pass."""
+        import asyncio
+        import json
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        lim = max(1, min(40, int(limit or 12)))
+        if is_termux() and shutil.which("termux-notification-list"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-notification-list",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                err = (stderr or b"").decode("utf-8", errors="replace")[:200]
+                return f"termux-notification-list failed: {err or proc.returncode}"
+            raw = (stdout or b"").decode("utf-8", errors="replace").strip()
+            if not raw:
+                return "No notifications listed (empty)."
+            try:
+                items = json.loads(raw)
+            except json.JSONDecodeError:
+                return raw[:2000]
+            if not isinstance(items, list):
+                return raw[:2000]
+            lines = []
+            for item in items[:lim]:
+                if not isinstance(item, dict):
+                    continue
+                app = item.get("packageName") or item.get("id") or "?"
+                title = item.get("title") or ""
+                content = item.get("content") or item.get("text") or ""
+                lines.append(f"- [{app}] {title}: {content}"[:220])
+            if not lines:
+                return "No notifications listed."
+            return f"Recent notifications ({len(lines)}):\n" + "\n".join(lines)
+
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return (
+                reason
+                + " Also: install Termux:API and grant notification access for "
+                "termux-notification-list."
+            )
+        # Fallback: dumpsys notification (noisy but better than nothing).
+        out = await self.android.shell(
+            "dumpsys notification --noredact 2>/dev/null | head -n 80"
+        )
+        text = (out or "").strip()
+        if not text:
+            return "No notification dump available."
+        return "Notification dump (truncated):\n" + text[:2500]
+
+    async def _phone_battery(self) -> str:
+        """Read battery / charging state — cheap body awareness."""
+        import asyncio
+        import json
+        import shutil
+
+        from ophelia.platform import is_termux
+
+        if is_termux() and shutil.which("termux-battery-status"):
+            proc = await asyncio.create_subprocess_exec(
+                "termux-battery-status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                raw = (stdout or b"").decode("utf-8", errors="replace").strip()
+                try:
+                    data = json.loads(raw)
+                    pct = data.get("percentage", "?")
+                    status = data.get("status", "?")
+                    plugged = data.get("plugged", "?")
+                    temp = data.get("temperature", "?")
+                    return (
+                        f"Battery {pct}% · status={status} · plugged={plugged} "
+                        f"· temp={temp}°C"
+                    )
+                except json.JSONDecodeError:
+                    return raw[:500] or "Battery status unavailable."
+
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        out = await self.android.shell("dumpsys battery 2>/dev/null | head -n 40")
+        text = (out or "").strip()
+        if not text:
+            return "Battery dump unavailable."
+        # Pull key lines.
+        keep = []
+        for line in text.splitlines():
+            low = line.lower()
+            if any(
+                k in low
+                for k in (
+                    "level",
+                    "scale",
+                    "status",
+                    "plugged",
+                    "temperature",
+                    "voltage",
+                    "charge",
+                )
+            ):
+                keep.append(line.strip())
+        return "Battery:\n" + "\n".join(keep[:16] if keep else text.splitlines()[:16])
