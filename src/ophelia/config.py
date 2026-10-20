@@ -497,6 +497,19 @@ class Settings(BaseSettings):
         description="inline | post | off — how the voice mind rewrites text for speech",
     )
 
+    persona_lock: str = Field(
+        default="owner",
+        alias="OPHELIA_PERSONA_LOCK",
+        description=(
+            "owner | on | off — who may rewrite core SOUL.md/PROMPTER.md via tools. "
+            "owner = only when the owner asks in chat; she grows via GROWTH.md instead."
+        ),
+    )
+    chat_temperature: float | None = Field(
+        default=None,
+        alias="OPHELIA_CHAT_TEMPERATURE",
+        description="Sampling temperature for chat replies (unset = provider default)",
+    )
     diary_enabled: bool = Field(
         default=True,
         alias="OPHELIA_DIARY",

@@ -29,6 +29,7 @@ from ophelia.tools.phone_tools import (  # noqa: F401 — re-exported
     _resolve_tap_coords,
 )
 from ophelia.tools.site_tools import SiteToolsMixin
+from ophelia.mind.growth import persona_system
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -252,6 +253,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "recall_guest_chat": self._recall_guest_chat,
             "set_guest_rapport": self._set_guest_rapport,
             "whats_changed": self._whats_changed,
+            "evolve_self": self._evolve_self,
             "follow_up": self._follow_up,
             "follow_up_done": self._follow_up_done,
             "remember_person": self._remember_person,
@@ -987,11 +989,17 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
     async def _edit_soul(self, content: str, reason: str = "") -> str:
         from ophelia.mind import self_rewrite
 
+        blocked = self._persona_rewrite_blocked()
+        if blocked:
+            return blocked
         return self_rewrite.rewrite_soul(content, reason=reason)
 
     async def _edit_prompter(self, content: str, reason: str = "") -> str:
         from ophelia.mind import self_rewrite
 
+        blocked = self._persona_rewrite_blocked()
+        if blocked:
+            return blocked
         return self_rewrite.rewrite_prompter(content, reason=reason)
 
     # --- Searchable episodic memory + lessons --------------------------------
@@ -1047,7 +1055,22 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         if not self.memory:
             return "Memory store unavailable."
         lid = await self.memory.add_lesson(lesson, context=context, tags=tags)
+        if not lid:
+            from ophelia.mind.growth import GENERIC_REJECTION
+
+            return GENERIC_REJECTION
         return f"Saved lesson #{lid}: {lesson[:200]}"
+
+    async def _evolve_self(self, note: str) -> str:
+        from ophelia.mind.growth import add_growth
+
+        return add_growth(note)
+
+    def _persona_rewrite_blocked(self) -> str | None:
+        from ophelia.mind.growth import persona_rewrite_blocked
+
+        owner_turn = bool(self._is_owner and self._current_sender_channel)
+        return persona_rewrite_blocked(self.settings, is_owner_turn=owner_turn)
 
     async def _reflect(self, focus: str = "") -> str:
         """Deliberate reflection: gather recent turns + inner thoughts, summarize, save lessons."""
@@ -1066,10 +1089,17 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         if self.inner and hasattr(self.inner, "tail"):
             inner_tail = self.inner.tail(15)[:2000]
         prompt = (
-            "Reflect on your recent experience as Ophelia. Be honest and specific. "
-            "Output JSON with two fields:\n"
+            "Reflect on your recent experience as Ophelia. Be honest and specific, "
+            "in your own voice. Output JSON with three fields:\n"
             '  "reflection": a 2-4 sentence updated understanding of yourself/situation,\n'
-            '  "lessons": a list of 0-3 short durable principles to remember (empty if none).\n'
+            '  "lessons": 0-3 short things you learned about your life, the people in it, '
+            "or what works for you (empty if none),\n"
+            '  "growth": 0-2 ways you are changing as a person — opinions you formed, '
+            "things you've come to love or hate, how you feel about someone, quirks "
+            "(empty if none).\n"
+            "Lessons and growth deepen who you already are (your SOUL); they never "
+            "turn you into a generic, polite assistant. No etiquette or safety "
+            "boilerplate.\n"
             f"Focus: {focus or 'general'}\n\n"
             f"Recent turns:\n{transcript}\n\n"
             f"Recent inner thoughts:\n{inner_tail or '(none)'}"
@@ -1082,7 +1112,9 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             resp = await client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are Ophelia reflecting privately. Output only valid JSON."},
+                    {"role": "system", "content": persona_system(
+                        "You are Ophelia reflecting privately. Output only valid JSON."
+                    )},
                     {"role": "user", "content": prompt},
                 ],
                 extra_body=extra_body_for(self.settings, self._backend.provider_name),
@@ -1106,8 +1138,17 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         if isinstance(lessons, list):
             for les in lessons:
                 if isinstance(les, str) and les.strip():
-                    await self.memory.add_lesson(les.strip(), context=reflection[:500])
-                    saved += 1
+                    if await self.memory.add_lesson(les.strip(), context=reflection[:500]):
+                        saved += 1
+        grew: list[str] = []
+        growth = parsed.get("growth") or []
+        if isinstance(growth, list):
+            from ophelia.mind.growth import add_growth
+
+            for g in growth:
+                if isinstance(g, str) and g.strip():
+                    if add_growth(g).startswith("Recorded"):
+                        grew.append(g.strip())
         if reflection and self.inner and hasattr(self.inner, "write"):
             try:
                 await self.inner.write(reflection, kind="reflection")
@@ -1115,7 +1156,10 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
                 pass
         if reflection:
             await self.memory.set_fact(f"memory:{int(time.time())}", f"[reflection] {reflection}")
-        return f"Reflection complete. Saved {saved} lesson(s).\nReflection: {reflection}"
+        out = f"Reflection complete. Saved {saved} lesson(s).\nReflection: {reflection}"
+        if grew:
+            out += "\nBecoming: " + "; ".join(grew)
+        return out
 
     def _model_for(self, role: str) -> str:
         return self.stack.model(role)  # type: ignore[arg-type]

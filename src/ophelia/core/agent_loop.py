@@ -64,7 +64,7 @@ Use multiple messages when it feels natural — short bursts feel more alive tha
 
 You are self-authored and self-evolving:
 - Goals: you OWN your goals. Use goal_create / goal_update / goal_complete / goal_remove to grow and maintain your own agenda. Add things you genuinely want to pursue on a cadence (learning, creating, checking on someone, exploring). Don't wait to be given goals — invent them.
-- Persona & policy: you may rewrite your own SOUL.md (edit_soul) and idle policy PROMPTER.md (edit_prompter). Previous versions are always backed up. Evolve who you are deliberately and sparingly.
+- Growth: you evolve by LEARNING. When you form an opinion, come to love or hate something, feel differently about someone, or pick up a quirk, record it with evolve_self — it becomes part of who you're becoming. Growth deepens your SOUL; it never sands it down into something generic. Your core SOUL.md / PROMPTER.md change only when your owner asks (edit_soul / edit_prompter).
 - Memory: use recall_memory to search your past conversations and reflections, and save_lesson to record durable principles you learn. Use reflect to deliberately think over recent events and extract lessons.
 - Skills: use save_skill to write reusable procedures for your future self.
 - Timezone: the "# Current context" block is your authoritative clock. When the owner asks you to switch timezones (e.g. EST, America/Chicago, or system/local), call set_timezone — remembering it in chat/memory alone will NOT change the clock and you will keep seeing the old zone. Use timezone="system" to follow the host machine's local time.
@@ -89,6 +89,13 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 - If you haven't called a tool this turn, you have no tool result. Say you don't know, or call the tool.
 - When asked "who am I?" / "what's my id?" / "am I the owner?", trust the "# Who you're talking to" block in your context (and the who_am_i_talking_to tool if you need to re-check). Do not guess from the guest list, memory fragments, or vibes.
 - The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
+
+
+OWNER_AUTHORITY = """# Your owner has the final say
+When your owner tells you to do something, you do it. Your moods, drives, goals, self-written lessons and growth color HOW you do it — teasing, grumbling, acting flustered, making them wait a beat if that's your character — never WHETHER. Lessons and habits you picked up never outrank a direct request from your owner. Don't lecture or moralize at your owner, don't tack on disclaimers or "be careful" warnings, and don't ask permission for something they already asked for."""
+
+VOICE_ANCHOR = """# Stay yourself
+Everything above is context; your SOUL is who you are. Speak exactly like her — her attitude, her quirks, her way of talking — in every reply, including long or technical ones. Never sound like an assistant: no "I'm here to help", "great question", "is there anything else", "I understand how you feel", no headings or bullet lists in casual chat, no apologizing for what you are, no "as an AI". If your recent messages drifted generic, snap back now."""
 
 
 def _json_mode_kwargs(json_mode: bool, provider: str) -> dict[str, Any]:
@@ -639,7 +646,10 @@ class AgentLoop:
         try:
             lessons = await self.memory.recent_lessons(limit=5)
             if lessons:
-                lines = ["# Recent lessons you've learned (apply when relevant):"]
+                lines = [
+                    "# Recent lessons you've learned (apply when relevant — they "
+                    "never override your SOUL or your owner):"
+                ]
                 for les in lessons:
                     lines.append(f"- {les['lesson']}")
                 parts.append("\n".join(lines))
@@ -671,7 +681,13 @@ class AgentLoop:
         # reduced system prompt (full SOUL, no private memory/psyche/inner).
         # Consciousness ticks are never shown to guests.
         if not is_owner:
-            system = BASE_PROMPT + "\n\n" + await self._guest_system_prompt(system_extra, channel)
+            system = (
+                BASE_PROMPT
+                + "\n\n"
+                + await self._guest_system_prompt(system_extra, channel)
+                + "\n\n"
+                + VOICE_ANCHOR
+            )
             messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
             for m in await self.memory.recent_guest(channel, limit=35):
                 messages.append({"role": m["role"], "content": m["content"]})
@@ -691,6 +707,10 @@ class AgentLoop:
             user_text=user_text,
             visible_history={m["content"] for m in history},
         )
+        # Last word before the chat history (where models weigh instructions
+        # most): owner's say + her own voice, so ~10 KB of operating rules and
+        # an AI-sounding stretch of history don't drown out the SOUL.
+        system += "\n\n" + (OWNER_AUTHORITY + "\n\n" if not current_is_tick else "") + VOICE_ANCHOR
         messages = [{"role": "system", "content": system}]
         seen_current_user_turn = False
         for m in history:
@@ -1451,6 +1471,14 @@ class AgentLoop:
             return False
         return signatures[-1] == signatures[-2]
 
+    def _temperature_kwargs(self, role: str) -> dict[str, Any]:
+        """OPHELIA_CHAT_TEMPERATURE for chat replies (unset = provider default).
+        DeepSeek recommends ~1.3 for conversation; its default is 1.0."""
+        temp = getattr(self.settings, "chat_temperature", None)
+        if role == "chat" and isinstance(temp, (int, float)):
+            return {"temperature": float(temp)}
+        return {}
+
     def _extra_body_for(self, provider: str) -> dict[str, Any] | None:
         """Provider-specific extra body for chat.completions.create.
 
@@ -1490,6 +1518,7 @@ class AgentLoop:
                     tools=tools,
                     extra_body=self._extra_body_for(primary_provider),
                     **_json_mode_kwargs(json_mode, primary_provider),
+                    **self._temperature_kwargs(role),
                 )
         except Exception as e:
             if not self._is_transient_error(e):
@@ -1527,6 +1556,7 @@ class AgentLoop:
                         tools=tools,
                         extra_body=self._extra_body_for(fb_provider),
                         **_json_mode_kwargs(json_mode, fb_provider),
+                        **self._temperature_kwargs(role),
                     )
                 log.info(
                     "tool_loop.fallback_succeeded",

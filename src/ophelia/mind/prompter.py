@@ -107,27 +107,20 @@ def prompter_version(text: str) -> int | None:
 
 
 def is_legacy_prompter(text: str) -> bool:
-    """True if on-disk PROMPTER should be refreshed to the tendencies edition.
+    """True if on-disk PROMPTER should be replaced by the shipped edition.
 
-    Legacy = missing/old version header, or classic SKIP/flowchart markers.
-    User-customized files that already carry a current version are left alone.
+    Only empty files and ones carrying the classic SKIP/flowchart markers
+    (the policies that made her emit compliance tokens) are replaced. Any
+    other file — the owner's own tendencies, or her edit_prompter rewrites —
+    is personality and is left alone, whatever its version header says.
+    (Previously every unversioned or older file was overwritten on each
+    start, silently wiping custom persona tendencies.)
     """
     body = (text or "").strip()
     if not body:
         return True
-    ver = prompter_version(body)
-    if ver is not None and ver >= PROMPTER_VERSION:
-        return False
-    if ver is not None and ver < PROMPTER_VERSION:
-        return True
-    # No version header — treat as legacy if it looks like the old policy,
-    # or if it lacks the new "tendencies" framing entirely.
     low = body.lower()
-    if any(m.lower() in low for m in _LEGACY_MARKERS):
-        return True
-    if "tendencies, not rules" not in low and "output is the default" not in low:
-        return True
-    return False
+    return any(m.lower() in low for m in _LEGACY_MARKERS)
 
 
 def load_prompter(path: Path | None = None) -> str:

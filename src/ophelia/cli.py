@@ -687,6 +687,29 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if passed == total else 1
 
 
+def cmd_persona(args: argparse.Namespace) -> int:
+    """Inspect / undo personality drift (SOUL rewrites, wiped PROMPTER, generic lessons)."""
+    from ophelia.mind import persona_report
+
+    settings = Settings()
+    if args.action == "restore":
+        if len(args.args) != 2 or args.args[0] not in ("soul", "prompter"):
+            print("Usage: ophelia persona restore soul|prompter <backup-file-name>")
+            return 1
+        print(persona_report.restore(args.args[0], args.args[1]))
+        return 0
+    if args.action == "forget":
+        try:
+            ids = [int(x.lstrip("#")) for x in args.args]
+        except ValueError:
+            print("Usage: ophelia persona forget [--generic] [lesson ids…]")
+            return 1
+        print(persona_report.forget(settings.memory_db, ids, generic=args.generic))
+        return 0
+    print(persona_report.report(settings.memory_db))
+    return 0
+
+
 def cmd_models(_: argparse.Namespace) -> int:
     from ophelia.providers.cookbook import detect_system, format_cookbook, list_ollama_models
 
@@ -1377,6 +1400,19 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--list", action="store_true", help="List scenarios and exit")
     p_eval.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_persona = sub.add_parser(
+        "persona",
+        help="See/undo personality drift: SOUL rewrites, wiped PROMPTER, generic lessons",
+    )
+    p_persona.add_argument(
+        "action", nargs="?", default="report", choices=["report", "restore", "forget"]
+    )
+    p_persona.add_argument("args", nargs="*", help="restore: soul|prompter <file>; forget: ids")
+    p_persona.add_argument(
+        "--generic", action="store_true", help="forget: remove all assistant-policy lessons"
+    )
+    p_persona.set_defaults(func=cmd_persona)
 
     sub.add_parser("curator", help="Run memory curator once").set_defaults(func=cmd_curator_run)
 

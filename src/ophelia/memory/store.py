@@ -229,6 +229,12 @@ class MemoryStore:
     ) -> int:
         import json as _json
 
+        from ophelia.mind.growth import is_generic_assistant_rule
+
+        # Generic assistant/safety boilerplate isn't learning — it's what
+        # slowly flattens her into a polite chatbot. Callers get 0 = rejected.
+        if is_generic_assistant_rule(lesson):
+            return 0
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "INSERT INTO lessons (lesson, context, tags, created_at) VALUES (?, ?, ?, ?)",
