@@ -17,8 +17,8 @@ CATALOG: list[tuple[str, float, str, str]] = [
     ("llama3.2", 12, "general chat", "llama3.2"),
     ("mistral", 12, "general chat", "mistral"),
     ("qwen2.5:7b", 16, "strong chat", "qwen2.5:7b"),
-    ("llava:7b", 16, "vision (phone screen)", "llava:7b"),
-    ("llava:13b", 24, "vision quality", "llava:13b"),
+    ("minicpm-v4.6", 8, "vision (phone screen, phone-friendly)", "openbmb/minicpm-v4.6"),
+    ("qwen3-vl:8b", 16, "vision quality (finds UI elements)", "qwen3-vl:8b"),
     ("deepseek-r1:8b", 20, "reasoning", "deepseek-r1:8b"),
 ]
 
@@ -107,9 +107,11 @@ def format_cookbook(settings: Settings, profile: SystemProfile, installed: list[
         lines.append(f"  {pull:20} — {role} (needs ~{ram} GB RAM){mark}")
 
     rec = recommend(profile)
-    chat_model = rec[-2][3] if len(rec) >= 2 else "llama3.2:3b"
+    chat_rows = [r for r in rec if "chat" in r[2]]
+    chat_model = chat_rows[-1][3] if chat_rows else "llama3.2:3b"
     fast_model = rec[0][3] if rec else "llama3.2:1b"
-    vision_model = next((r[3] for r in rec if "llava" in r[3]), "llava:7b")
+    vision_model = next((r[3] for r in reversed(rec) if r[2].startswith("vision")),
+                        "openbmb/minicpm-v4.6")
     lines.extend(
         [
             "",

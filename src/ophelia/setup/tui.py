@@ -267,6 +267,12 @@ def _run_menu(
             curses.curs_set(0)
         except curses.error:
             pass
+        try:
+            # curses waits ESCDELAY (1s) after Esc for an escape sequence;
+            # arrow keys arrive in well under 25ms, so Esc can be snappy.
+            curses.set_escdelay(25)
+        except Exception:
+            pass
         _init_colors()
         try:
             curses.mousemask(curses.ALL_MOUSE_EVENTS)
@@ -277,6 +283,7 @@ def _run_menu(
         scroll = 0
         digits = ""
         digits_at = 0.0
+        stdscr.clear()  # first frame repaints everything, not just changes
         while True:
             stdscr.erase()
             max_y, max_x = stdscr.getmaxyx()

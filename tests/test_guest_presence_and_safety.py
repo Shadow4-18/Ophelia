@@ -127,25 +127,43 @@ def test_image_nsfw_model_override() -> None:
     assert stack.image_model_for("pollinations", nsfw=False) == "flux"
 
 
-def test_advanced_roles_menu_excludes_image() -> None:
-    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "setup" / "interactive.py"
-    body = src.read_text(encoding="utf-8")
-    assert 'role_order = ["chat", "consciousness", "reaction", "curator", "vision", "video"]' in body
-    assert "SFW backend + model" in body
-    assert "NSFW backend + model" in body
+def test_advanced_roles_menu_excludes_image(tmp_path, monkeypatch) -> None:
+    """Per-role routing never touches the image backend (Images owns it)."""
+    from ophelia.setup import interactive
+    from ophelia.setup.env_io import read_env_key, write_env_updates
+
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
+    assert "image" not in interactive._PROVIDER_ENV_BY_ROLE
+    write_env_updates({"OPHELIA_PROVIDER_IMAGE": "civitai", "OPHELIA_PROVIDER_VISION": "ollama"})
+    monkeypatch.setattr(interactive, "pause", lambda *a, **k: None)
+    interactive._clear_role_overrides()
+    assert read_env_key("OPHELIA_PROVIDER_IMAGE") == "civitai"
+    assert read_env_key("OPHELIA_PROVIDER_VISION") == ""
 
 
-def test_fallback_and_nsfw_use_radiolist_not_free_text() -> None:
-    """Backup + NSFW model picks must be selectable lists, not type-first."""
-    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "setup" / "interactive.py"
-    body = src.read_text(encoding="utf-8")
-    assert "def _pick_fallback_model(" in body
-    assert "Shared fallback model (optional)" in body
-    # NSFW auto path must call _pick_image_model, not prompt_text for the model.
-    nsfw_fn = body.split("def _configure_nsfw_image()")[1].split("def _show_image_routing")[0]
-    assert "_pick_image_model(" in nsfw_fn
-    assert "OPHELIA_IMAGE_NSFW_MODEL (optional override" not in nsfw_fn
-    # Old free-text fallback prompt must be gone.
-    assert 'prompt_text(\n        "OPHELIA_FALLBACK_MODEL' not in body
-    assert 'prompt_text(\n            "OPHELIA_FALLBACK_MODEL (optional' not in body
+def test_fallback_and_nsfw_use_radiolist_not_free_text(tmp_path, monkeypatch) -> None:
+    """Backup + NSFW model picks are selectable lists, not type-first."""
+    from ophelia.setup import interactive
+    from ophelia.setup.env_io import read_env_key
 
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
+    monkeypatch.setattr(interactive, "pause", lambda *a, **k: None)
+    monkeypatch.setattr(interactive, "checkbox_or_none", lambda *a, **k: {0})
+
+    def no_typing(*a, **k):
+        raise AssertionError("fallback model must be picked from a list")
+
+    monkeypatch.setattr(interactive, "radiolist", lambda title, items, **_: items.index("deepseek-flash"))
+    monkeypatch.setattr(interactive, "prompt_text", no_typing)
+    interactive._configure_fallback()
+    assert read_env_key("OPHELIA_FALLBACK_PROVIDERS") == "deepseek"
+    assert read_env_key("OPHELIA_FALLBACK_MODEL") == "deepseek-flash"
+
+    nsfw = []
+    monkeypatch.setattr(interactive, "_pick_image_model", lambda p, **k: nsfw.append((p, k)))
+    picks = iter([1, interactive._NSFW_BACKEND_OPTIONS.index(("fal", "fal.ai"))])
+    monkeypatch.setattr(interactive, "radiolist", lambda *a, **k: next(picks))
+    monkeypatch.setattr(interactive, "prompt_text", lambda *a, **k: "fal-key")
+    interactive._configure_nsfw_image()
+    assert nsfw and nsfw[0][1]["store_env"] == "OPHELIA_IMAGE_NSFW_MODEL"
+    assert read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") == "fal"
