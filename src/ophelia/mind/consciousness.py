@@ -328,8 +328,19 @@ class ConsciousnessLoop:
             await self.memory.save_psyche(self.psyche)
 
             await self.signals.set_agent_thinking(True)
+            from ophelia.core import interrupts
+
+            tick = interrupts.track(
+                asyncio.create_task(self._tick(idle, wake_reason=wake)),
+                "something she was doing on her own",
+            )
             try:
-                await self._tick(idle, wake_reason=wake)
+                await tick
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise  # the loop itself is shutting down
+                log.info("consciousness.tick_stopped")  # /stop: drop this one, keep living
             except Exception as e:
                 log.warning("consciousness.error", error=str(e))
             finally:

@@ -146,6 +146,9 @@ class TelegramGateway:
         self.games = games
         self.vision = vision
         self._app: Application | None = None
+        # Turns run in the background (one at a time, in arrival order) so
+        # the bot keeps receiving updates, /stop included, while she works.
+        self._turn_lock = asyncio.Lock()
         self._voice_dir = settings.data_dir / "voice"
         self._media_dir = settings.data_dir / "telegram_media"
         # Last text message we sent, so we can attach a "Continue" inline button
@@ -427,6 +430,49 @@ class TelegramGateway:
         # A stranger hitting /start is the natural first contact — route them
         # through the approval flow instead of a cold rejection.
         await self._admit_chat(user, update, context, preview="(/start)")
+
+    def _in_background(self, handler):
+        """Run a message handler as a tracked background task so a long turn
+        doesn't block the update loop (and /stop can reach her mid-turn).
+        Turns still run one at a time, in the order they arrived."""
+        from ophelia.core import interrupts
+
+        async def run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            async def guarded() -> None:
+                async with self._turn_lock:
+                    try:
+                        await handler(update, context)
+                    except asyncio.CancelledError:
+                        log.info("telegram.turn_stopped")
+                        raise
+                    except Exception as e:
+                        log.exception("telegram.handler_error", error=str(e))
+
+            user = update.effective_user
+            label = f"reply to telegram:{user.id}" if user else "telegram turn"
+            interrupts.track(asyncio.create_task(guarded()), label)
+
+        return run
+
+    async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Stop whatever she's doing right now: the reply she's working on,
+        anything queued behind it, and an autonomous turn in progress."""
+        if not update.effective_user or not self._allowed(update.effective_user.id):
+            return
+        from ophelia.core import interrupts
+
+        stopped = interrupts.stop_all()
+        if self.games is not None:
+            try:
+                if self.games.session_active():
+                    self.games.stop_session()
+                    stopped.append("game session")
+            except Exception as e:
+                log.debug("telegram.stop_game_failed", error=str(e))
+        if stopped:
+            await self._reply_text(update, "Stopped. (" + ", ".join(stopped) + ")")
+        else:
+            await self._reply_text(update, "Nothing was running.")
 
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not self._allowed(update.effective_user.id):
@@ -1206,21 +1252,22 @@ class TelegramGateway:
         app.add_handler(CommandHandler("suggest", self.cmd_suggest))
         app.add_handler(CommandHandler("revoke", self.cmd_revoke))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        app.add_handler(CommandHandler("stop", self.cmd_stop))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
         )
-        app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
-        app.add_handler(MessageHandler(filters.PHOTO, self.on_photo))
+        app.add_handler(MessageHandler(filters.VOICE, self._in_background(self.on_voice)))
+        app.add_handler(MessageHandler(filters.PHOTO, self._in_background(self.on_photo)))
         app.add_handler(
             MessageHandler(
                 filters.VIDEO | filters.VIDEO_NOTE | filters.ANIMATION,
-                self.on_video,
+                self._in_background(self.on_video),
             )
         )
         # All documents (images, video files, zip, …) — on_document classifies
-        app.add_handler(MessageHandler(filters.Document.ALL, self.on_document))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
+        app.add_handler(MessageHandler(filters.Document.ALL, self._in_background(self.on_document)))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._in_background(self.on_text)))
         # Tier B #8: stickers are a strong humor signal — a sticker reacting
         # to a joke counts as positive feedback even when the owner doesn't
         # type "lol". Emoji-only text is already scored by HumorTracker via
@@ -1248,34 +1295,77 @@ class TelegramGateway:
         app = self.build_app()
         await app.initialize()
         await app.start()
-        # Overwrite BotFather's command menu. Whatever Hermes (or a previous
-        # bot on this token) registered still shows in the "/" picker until we
-        # replace it, so set Ophelia's own commands explicitly.
-        try:
-            from telegram import BotCommand
+        await self._register_commands(app.bot)
+        log.info("telegram.ready")
 
-            await app.bot.set_my_commands(
-                [
-                    BotCommand("status", "what's on / running / pending"),
-                    BotCommand("pause", "pause autonomous outreach"),
-                    BotCommand("resume", "resume autonomous outreach"),
-                    BotCommand("continue", "resume an unfinished task"),
-                    BotCommand("voice", "voice replies on/off"),
-                    BotCommand("listen", "local mic listening on/off"),
-                    BotCommand("inner", "inner-monologue mirror on/off/tail"),
-                    BotCommand("game", "game list / play / stop / look"),
-                    BotCommand("models", "per-role provider/model routing"),
-                    BotCommand("tell", "relay an exact message to a guest"),
-                    BotCommand("suggest", "nudge her to reach out to a guest"),
-                    BotCommand("revoke", "instantly block a guest"),
-                    BotCommand("update", "pull latest code + reinstall (+ restart)"),
-                    BotCommand("help", "list commands"),
-                ]
+    # The "/" menu shown in Telegram (each one has a CommandHandler below).
+    MENU_COMMANDS: tuple[tuple[str, str], ...] = (
+        ("stop", "stop what she's doing right now"),
+        ("status", "what's on / running / pending"),
+        ("pause", "pause autonomous outreach"),
+        ("resume", "resume autonomous outreach"),
+        ("continue", "resume an unfinished task"),
+        ("voice", "voice replies on/off"),
+        ("listen", "local mic listening on/off"),
+        ("inner", "inner-monologue mirror on/off/tail"),
+        ("game", "game list / play / stop / look"),
+        ("models", "per-role provider/model routing"),
+        ("tell", "relay an exact message to a guest"),
+        ("suggest", "nudge her to reach out to a guest"),
+        ("revoke", "instantly block a guest"),
+        ("update", "pull latest code + reinstall (+ restart)"),
+        ("help", "list commands"),
+    )
+
+    async def _register_commands(self, bot) -> None:
+        """Replace whatever command menu is on this bot token.
+
+        Telegram keeps a separate menu per scope (default, all private chats,
+        groups, admins, one specific chat) and per language, and shows the
+        most specific one. Hermes registered its menu in a narrower scope, so
+        overwriting only the default left Hermes's commands showing. Clear
+        every scope we can name, then set Ophelia's menu on default and on
+        private chats."""
+        try:
+            from telegram import (
+                BotCommand,
+                BotCommandScopeAllChatAdministrators,
+                BotCommandScopeAllGroupChats,
+                BotCommandScopeAllPrivateChats,
+                BotCommandScopeChat,
+                BotCommandScopeDefault,
             )
-            log.info("telegram.commands_registered")
         except Exception as e:
             log.warning("telegram.set_commands_failed", error=str(e))
-        log.info("telegram.ready")
+            return
+        scopes = [
+            BotCommandScopeDefault(),
+            BotCommandScopeAllPrivateChats(),
+            BotCommandScopeAllGroupChats(),
+            BotCommandScopeAllChatAdministrators(),
+        ]
+        try:
+            users = self.settings.allowed_telegram_users() or set()
+        except Exception:
+            users = set()
+        scopes += [BotCommandScopeChat(chat_id=uid) for uid in sorted(users)]
+        cleared = 0
+        for scope in scopes:
+            for lang in (None, "en"):
+                try:
+                    if await bot.delete_my_commands(scope=scope, language_code=lang):
+                        cleared += 1
+                except Exception as e:  # e.g. "chat not found" for a stale id
+                    log.debug("telegram.delete_commands_skip", scope=type(scope).__name__,
+                              error=str(e))
+        commands = [BotCommand(name, desc) for name, desc in self.MENU_COMMANDS]
+        try:
+            await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+            log.info("telegram.commands_registered", cleared_scopes=cleared,
+                     commands=len(commands))
+        except Exception as e:
+            log.warning("telegram.set_commands_failed", error=str(e))
 
     async def run(self) -> None:
         await self.prepare()
