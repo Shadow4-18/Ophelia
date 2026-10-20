@@ -18,7 +18,7 @@ from typing import Callable
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.platform import is_termux, platform_summary
 from ophelia.setup import fields as F
-from ophelia.setup.env_io import read_env_key, write_env_updates
+from ophelia.setup.env_io import env_path, read_env_key, write_env_updates
 from ophelia.setup.fields import Act, Opt, settings_screen
 from ophelia.setup.tui import (
     Header,
@@ -46,9 +46,14 @@ def _save(updates: dict[str, str | None]) -> None:
         print(f"\n  Saved: {', '.join(touched)}")
 
 
+def _load_settings() -> Settings:
+    """Settings from the .env these menus edit (honours OPHELIA_HOME)."""
+    return Settings(_env_file=env_path())
+
+
 def _settings() -> Settings | None:
     try:
-        return Settings()
+        return _load_settings()
     except Exception:
         return None
 
@@ -59,7 +64,7 @@ def _settings() -> Settings | None:
 def run_interactive_setup(*, phone: bool | None = None) -> int:
     on_phone = is_termux() if phone is None else phone
     _repair_broken_settings()
-    ensure_dirs(Settings())
+    ensure_dirs(_load_settings())
 
     print()
     print("=" * 52)
@@ -150,7 +155,7 @@ def _repair_broken_settings() -> None:
     from pydantic import ValidationError
 
     try:
-        Settings()
+        _load_settings()
         return
     except ValidationError as e:
         errors = e.errors()
@@ -653,7 +658,7 @@ def _oauth_short_status() -> str:
 def _oauth_status_lines() -> list[str]:
     from ophelia.providers.oauth_refresh import load_oauth_state, oauth_auth_paths
 
-    settings = Settings()
+    settings = _load_settings()
     for path in oauth_auth_paths(
         hermes_home=settings.hermes_home,
         hermes_auth_path=settings.hermes_auth_path,
@@ -672,7 +677,7 @@ def _oauth_status_lines() -> list[str]:
 
 def _configure_xai_oauth() -> bool:
     """SuperGrok OAuth: verify, import, or log in again. True = use it."""
-    settings = Settings()
+    settings = _load_settings()
     actions = [
         ("Done — use this login", None),
         ("Verify the connection", _verify_xai_oauth),
@@ -761,7 +766,7 @@ def _verify_xai_oauth() -> bool:
     from ophelia.providers.router import build_provider_stack
 
     async def _probe() -> tuple[bool, str]:
-        return await build_provider_stack(Settings()).check("chat")
+        return await build_provider_stack(_load_settings()).check("chat")
 
     try:
         ok, msg = asyncio.run(_probe())
@@ -854,10 +859,10 @@ def _list_ollama_model_names() -> list[str]:
     async def _fetch() -> list[str]:
         from ophelia.providers.cookbook import list_ollama_models
 
-        return await list_ollama_models(Settings())
+        return await list_ollama_models(_load_settings())
 
     try:
-        s = Settings()
+        s = _load_settings()
         base = s.ollama_base_url.rstrip("/").removesuffix("/v1")
         httpx.get(f"{base}/api/tags", timeout=2.0)
         return asyncio.run(_fetch())
@@ -1193,7 +1198,7 @@ def _configure_nsfw_image() -> None:
 
 
 def _show_image_routing() -> None:
-    s = Settings()
+    s = _load_settings()
     from ophelia.providers.router import build_provider_stack
 
     stack = build_provider_stack(s)
