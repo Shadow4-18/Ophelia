@@ -21,6 +21,8 @@ async def _safe_add_column(db: aiosqlite.Connection, table: str, column: str, de
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # Optional memory.embeddings.SemanticIndex, wired by the orchestrator.
+        self.semantic = None
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,47 +136,93 @@ class MemoryStore:
             await db.commit()
 
     async def search_messages(self, query: str, limit: int = 8) -> list[dict]:
-        """FTS5 semantic search across all channels for recall_memory."""
-        if not query.strip():
+        """Keyword recall across all (owner) channels, best matches first.
+
+        ``query`` may be a raw chat message: it's reduced to meaningful terms
+        that are OR-ed (see memory.recall), so a natural question still finds
+        the message that mentioned the same person/thing. Consciousness-tick
+        prompts are excluded — they're her own scaffolding, not memories.
+        """
+        from ophelia.memory.recall import fts_query, keywords, term_score
+
+        terms = keywords(query)
+        if not terms:
             return []
+        not_tick = "COALESCE(m.metadata, '') NOT LIKE '%consciousness_tick%'"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             try:
                 cursor = await db.execute(
-                    """
-                    SELECT m.channel, m.role, m.content, m.created_at,
+                    f"""
+                    SELECT m.id, m.channel, m.role, m.content, m.created_at,
                            bm25(messages_fts) AS rank
                     FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
-                    WHERE messages_fts MATCH ?
+                    WHERE messages_fts MATCH ? AND {not_tick}
                     ORDER BY rank
                     LIMIT ?
                     """,
-                    (query, limit),
+                    (fts_query(terms), limit),
                 )
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
             except aiosqlite.OperationalError:
+                # No FTS5 in this SQLite build: any-term LIKE, ranked in Python.
+                where = " OR ".join("m.content LIKE ?" for _ in terms)
                 cursor = await db.execute(
-                    """
-                    SELECT channel, role, content, created_at
-                    FROM messages
-                    WHERE content LIKE ?
-                    ORDER BY id DESC
-                    LIMIT ?
+                    f"""
+                    SELECT m.id, m.channel, m.role, m.content, m.created_at
+                    FROM messages m
+                    WHERE ({where}) AND {not_tick}
+                    ORDER BY m.id DESC
+                    LIMIT 400
                     """,
-                    (f"%{query}%", limit),
+                    [f"%{t}%" for t in terms],
                 )
-                rows = await cursor.fetchall()
-        out = []
-        for row in rows:
-            out.append(
-                {
-                    "channel": row["channel"],
-                    "role": row["role"],
-                    "content": row["content"],
-                    "created_at": row["created_at"],
-                }
-            )
-        return out
+                rows = sorted(
+                    await cursor.fetchall(),
+                    key=lambda r: term_score(r["content"], terms),
+                    reverse=True,
+                )[:limit]
+        return [
+            {
+                "id": row["id"],
+                "channel": row["channel"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    async def recall(self, query: str, limit: int = 3) -> list[dict]:
+        """Best owner-memory matches for ``query``: keyword hits fused with
+        semantic hits when the optional embedding index is available."""
+        hits = await self.search_messages(query, limit=max(limit * 2, 6))
+        semantic = getattr(self, "semantic", None)
+        if semantic is None:
+            return hits[:limit]
+        try:
+            sem = await semantic.search(query, limit=max(limit * 2, 6))
+        except Exception:
+            sem = []
+        if not sem:
+            return hits[:limit]
+        from ophelia.memory.embeddings import fuse
+
+        by_id = {h["id"]: h for h in hits}
+        order = fuse([h["id"] for h in hits], sem)[:limit]
+        missing = [mid for mid in order if mid not in by_id]
+        if missing:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                marks = ",".join("?" for _ in missing)
+                cursor = await db.execute(
+                    f"SELECT id, channel, role, content, created_at FROM messages "
+                    f"WHERE id IN ({marks})",
+                    missing,
+                )
+                for row in await cursor.fetchall():
+                    by_id[row["id"]] = dict(row)
+        return [by_id[mid] for mid in order if mid in by_id]
 
     async def add_lesson(
         self, lesson: str, context: str = "", tags: list[str] | None = None
@@ -190,23 +238,34 @@ class MemoryStore:
             return cursor.lastrowid or 0
 
     async def search_lessons(self, query: str, limit: int = 5) -> list[dict]:
-        if not query.strip():
+        from ophelia.memory.recall import keywords, term_score
+
+        terms = keywords(query)
+        if not terms:
             return []
         import json as _json
 
+        where = " OR ".join("lesson LIKE ? OR context LIKE ?" for _ in terms)
+        params: list[str] = []
+        for t in terms:
+            params += [f"%{t}%", f"%{t}%"]
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                """
+                f"""
                 SELECT lesson, context, tags, created_at
                 FROM lessons
-                WHERE lesson LIKE ? OR context LIKE ?
+                WHERE {where}
                 ORDER BY id DESC
-                LIMIT ?
+                LIMIT 200
                 """,
-                (f"%{query}%", f"%{query}%", limit),
+                params,
             )
-            rows = await cursor.fetchall()
+            rows = sorted(
+                await cursor.fetchall(),
+                key=lambda r: term_score(f"{r['lesson']} {r['context'] or ''}", terms),
+                reverse=True,
+            )[:limit]
         out = []
         for row in rows:
             out.append(
@@ -509,20 +568,30 @@ class MemoryStore:
 
         Guest content lives in guest_messages, not the main messages FTS index.
         """
+        from ophelia.memory.recall import keywords
+
+        terms = keywords(query) if query.strip() else []
+        if query.strip() and not terms:
+            # Only filler words ("how's it going?") — nothing to match on.
+            if not channel:
+                return []
+            query = ""
         if not query.strip() and not channel:
             return []
+        any_term = "(" + " OR ".join("content LIKE ?" for _ in terms) + ")"
+        term_params = [f"%{t}%" for t in terms]
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             if channel and query.strip():
                 cursor = await db.execute(
-                    """
+                    f"""
                     SELECT channel, role, content, created_at
                     FROM guest_messages
-                    WHERE channel = ? AND content LIKE ?
+                    WHERE channel = ? AND {any_term}
                     ORDER BY id DESC
                     LIMIT ?
                     """,
-                    (channel, f"%{query.strip()}%", limit),
+                    (channel, *term_params, limit),
                 )
             elif channel:
                 cursor = await db.execute(
@@ -537,14 +606,14 @@ class MemoryStore:
                 )
             else:
                 cursor = await db.execute(
-                    """
+                    f"""
                     SELECT channel, role, content, created_at
                     FROM guest_messages
-                    WHERE content LIKE ?
+                    WHERE {any_term}
                     ORDER BY id DESC
                     LIMIT ?
                     """,
-                    (f"%{query.strip()}%", limit),
+                    (*term_params, limit),
                 )
             rows = await cursor.fetchall()
         return [

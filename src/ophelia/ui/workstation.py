@@ -45,6 +45,10 @@ class Workstation:
 
         self.stack = build_provider_stack(settings)
         self.memory = MemoryStore(settings.memory_db)
+        from ophelia.memory.embeddings import SemanticIndex
+
+        self.semantic = SemanticIndex(settings, settings.memory_db)
+        self.memory.semantic = self.semantic
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
             HonchoClient(honcho_cfg, api_key=settings.honcho_api_key)
@@ -93,6 +97,7 @@ class Workstation:
             android=self.android,
             vision=self.vision,
             games=self.games,
+            psyche=self.psyche,
         )
         self.tools._governor_ref = self.governor
         self.agent = AgentLoop(
@@ -183,10 +188,9 @@ class Workstation:
 
     async def init(self) -> None:
         await self.memory.init()
-        self.psyche = await self.memory.load_psyche()
-        self.drives = await self.memory.load_drives()
-        self.agent.psyche = self.psyche
-        self.agent.drives = self.drives
+        # Load persisted state into the shared instances (see Orchestrator.start).
+        self.psyche.__dict__.update((await self.memory.load_psyche()).__dict__)
+        self.drives.__dict__.update((await self.memory.load_drives()).__dict__)
         self.tools._drives_ref = self.drives
         self.tools._governor_ref = self.governor
 
@@ -200,6 +204,14 @@ class Workstation:
 
         self._tasks.append(asyncio.create_task(self._oauth_refresh_loop()))
         self._tasks.append(asyncio.create_task(self._status_loop()))
+        if self.semantic.mode != "off":
+            self._tasks.append(asyncio.create_task(self.semantic.run()))
+        from ophelia.mind.narrative import DailyNarrative
+
+        self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
+        if self.settings.diary_enabled:
+            self.agent.narrative = self.narrative
+            self._tasks.append(asyncio.create_task(self.narrative.run()))
         if self.settings.avatar_enabled:
             self._tasks.append(asyncio.create_task(self._avatar_loop()))
 

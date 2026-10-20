@@ -193,6 +193,18 @@ class Settings(BaseSettings):
         description="Ollama model residency (e.g. 30m, 24h, -1 to always keep loaded)",
     )
 
+    # Ollama's server-side context window. Ollama defaults to 4096 tokens and
+    # silently drops the *front* of longer prompts (system prompt + SOUL).
+    # The OpenAI-compatible endpoint can't change it per request, so when
+    # Ophelia auto-starts `ollama serve` (Termux) she passes this as
+    # OLLAMA_CONTEXT_LENGTH. Empty = leave Ollama's default. Larger = more
+    # RAM for the KV cache (~0.5 GB at 8192 for a 1B model, ~1 GB for 3B).
+    ollama_num_ctx: str = Field(
+        default="",
+        alias="OPHELIA_OLLAMA_NUM_CTX",
+        description="Ollama context length for auto-started ollama serve (e.g. 8192)",
+    )
+
     # ---- Image generation backends (media-only; selected via OPHELIA_PROVIDER_IMAGE) ----
     # These providers can't serve chat/vision — only the image role. Several are
     # NSFW-capable (pollinations, a1111, comfyui, fal, replicate, civitai,
@@ -483,6 +495,34 @@ class Settings(BaseSettings):
         default="post",
         alias="OPHELIA_VOICE_MIND_MODE",
         description="inline | post | off — how the voice mind rewrites text for speech",
+    )
+
+    diary_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_DIARY",
+        description="Daily self-narrative (one short curator-model call per day)",
+    )
+    tool_tiers: str = Field(
+        default="auto",
+        alias="OPHELIA_TOOL_TIERS",
+        description=(
+            "auto | on | off — send only core + relevant tool groups per turn "
+            "(auto = only when chat runs on local Ollama)."
+        ),
+    )
+    # Semantic memory recall (optional; keyword recall always works).
+    embeddings_mode: str = Field(
+        default="auto",
+        alias="OPHELIA_EMBEDDINGS",
+        description=(
+            "auto | on | off — semantic recall via a local Ollama embedding model. "
+            "auto = on only off-Termux and only if the model is already pulled."
+        ),
+    )
+    embed_model: str = Field(
+        default="nomic-embed-text",
+        alias="OPHELIA_EMBED_MODEL",
+        description="Ollama embedding model for semantic recall (ollama pull it first)",
     )
 
     # Initiative / will (lower = more spontaneous)

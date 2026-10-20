@@ -57,6 +57,10 @@ class Orchestrator:
         self._kokoro_proc: asyncio.subprocess.Process | None = None
         self._kokoro_log = None
         self.memory = MemoryStore(settings.memory_db)
+        from ophelia.memory.embeddings import SemanticIndex
+
+        self.semantic = SemanticIndex(settings, settings.memory_db)
+        self.memory.semantic = self.semantic
         honcho_cfg = load_honcho_config(OPHELIA_HOME, settings.hermes_home)
         self.honcho = (
             HonchoClient(honcho_cfg, api_key=settings.honcho_api_key)
@@ -357,6 +361,8 @@ class Orchestrator:
         # OLLAMA_KEEP_ALIVE so it applies to every endpoint Ollama serves.
         env = dict(os.environ)
         env["OLLAMA_KEEP_ALIVE"] = s.ollama_keep_alive
+        if (s.ollama_num_ctx or "").strip():
+            env["OLLAMA_CONTEXT_LENGTH"] = s.ollama_num_ctx.strip()
         try:
             self._ollama_log = open(log_path, "ab")  # kept open for child lifetime
             proc = await asyncio.create_subprocess_exec(
@@ -549,6 +555,14 @@ class Orchestrator:
     async def _notify_inner_mirror(self, text: str) -> None:
         await self._notify_inner(text)
 
+    async def _load_persisted_state(self) -> None:
+        # Load INTO the instances built in __init__: the tool registry, channel
+        # hub, director and agent already hold references to them, and
+        # rebinding here would leave those on stale defaults (owner messages
+        # would then bump — and save over — a throwaway DriveState).
+        self.psyche.__dict__.update((await self.memory.load_psyche()).__dict__)
+        self.drives.__dict__.update((await self.memory.load_drives()).__dict__)
+
     async def start(self) -> None:
         from ophelia.core.crashlog import install_asyncio_handler
 
@@ -558,10 +572,7 @@ class Orchestrator:
             pass
 
         await self.memory.init()
-        self.psyche = await self.memory.load_psyche()
-        self.drives = await self.memory.load_drives()
-        self.agent.psyche = self.psyche
-        self.agent.drives = self.drives
+        await self._load_persisted_state()
 
         if self.stack.uses_xai_oauth():
             xai = self.stack.xai_backend()
@@ -592,6 +603,17 @@ class Orchestrator:
             asyncio.create_task(self._heartbeat_loop()),
             asyncio.create_task(self._pause_poll_loop()),
         ]
+        # Optional semantic recall: indexes while the local model is idle; a
+        # no-op loop when embeddings are off / unavailable (default on Termux).
+        if self.semantic.mode != "off":
+            tasks.append(asyncio.create_task(self.semantic.run()))
+        # Daily diary entry (one short curator call per day, when idle).
+        from ophelia.mind.narrative import DailyNarrative
+
+        self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
+        if self.settings.diary_enabled:
+            self.agent.narrative = self.narrative
+            tasks.append(asyncio.create_task(self.narrative.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.
@@ -755,6 +777,8 @@ class Orchestrator:
                 self.ambient.stop()
             if self.health_check:
                 self.health_check.stop()
+            self.semantic.stop()
+            self.narrative.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

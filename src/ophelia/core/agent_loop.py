@@ -31,6 +31,13 @@ from ophelia.core.tool_call_parse import (
     parsed_to_openai_dicts,
 )
 from ophelia.tools.registry import ToolRegistry
+from ophelia.tools.tiers import (
+    CORE,
+    filter_definitions,
+    group_of,
+    load_tools_definition,
+    tiers_active,
+)
 
 log = structlog.get_logger()
 
@@ -82,6 +89,60 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 - If you haven't called a tool this turn, you have no tool result. Say you don't know, or call the tool.
 - When asked "who am I?" / "what's my id?" / "am I the owner?", trust the "# Who you're talking to" block in your context (and the who_am_i_talking_to tool if you need to re-check). Do not guess from the guest list, memory fragments, or vibes.
 - The guest list is NOT the source of truth for who the current speaker is. The current channel identity block is."""
+
+
+def _json_mode_kwargs(json_mode: bool, provider: str) -> dict[str, Any]:
+    """Ollama can constrain output to valid JSON. Small local models often
+    break the consciousness tick schema (echoing `"silent" | "message"`,
+    prose around the object), which drops the whole tick. Cloud providers
+    are left as they were."""
+    if json_mode and (provider or "").lower().startswith("ollama"):
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
+_truncation_warned = False
+
+
+def _warn_if_ollama_truncated(response: Any, provider: str) -> None:
+    """Ollama silently cuts prompts longer than its context window down to
+    exactly that window (2048/4096/8192…), dropping the start — her system
+    prompt and SOUL. An exact power-of-two prompt_tokens is the tell."""
+    global _truncation_warned
+    if _truncation_warned or not (provider or "").lower().startswith("ollama"):
+        return
+    usage = getattr(response, "usage", None)
+    n = int(getattr(usage, "prompt_tokens", 0) or 0)
+    if n >= 2048 and n & (n - 1) == 0:
+        _truncation_warned = True
+        log.warning(
+            "ollama.prompt_truncated",
+            prompt_tokens=n,
+            hint=(
+                f"Ollama's context window ({n}) is smaller than her prompt, so the "
+                "start (system prompt / SOUL) is being dropped. Start `ollama serve` "
+                "with OLLAMA_CONTEXT_LENGTH=8192 (or set OPHELIA_OLLAMA_NUM_CTX=8192 "
+                "if Ophelia auto-starts Ollama), and/or keep OPHELIA_TOOL_TIERS=auto."
+            ),
+        )
+
+
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            return m["content"]
+    return ""
+
+
+def _tiered_definitions(
+    all_tools: list[dict[str, Any]], groups: set[str]
+) -> list[dict[str, Any]]:
+    available = sorted({group_of(t["function"]["name"]) for t in all_tools} - {CORE})
+    out = filter_definitions(all_tools, groups)
+    hidden = [g for g in available if g not in groups]
+    if hidden:
+        out.append(load_tools_definition(hidden))
+    return out
 
 
 class AgentLoop:
@@ -207,7 +268,12 @@ class AgentLoop:
         return False
 
     async def _system_prompt(
-        self, extra: str = "", channel: str = "", user_text: str = ""
+        self,
+        extra: str = "",
+        channel: str = "",
+        user_text: str = "",
+        *,
+        visible_history: set[str] | None = None,
     ) -> str:
         honcho_ctx = ""
         if self.honcho and self.honcho.enabled and channel:
@@ -259,7 +325,10 @@ class AgentLoop:
         # Background memory prefetch: pull relevant past messages/lessons for
         # the current user text so she can reference them without an explicit
         # blocking recall_memory tool call. Neuro-style parallel memory access.
-        prefetch_block = await self._memory_prefetch(user_text, channel)
+        prefetch_block = await self._memory_prefetch(
+            user_text, channel, skip_contents=visible_history
+        )
+        continuity_block = await self._continuity_block(user_text, channel)
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
@@ -279,6 +348,7 @@ class AgentLoop:
                     guests_block,
                     play_block,
                     prefetch_block,
+                    continuity_block,
                     extra,
                 )
                 if x
@@ -316,7 +386,39 @@ class AgentLoop:
             "IDs or claim they are the owner."
         )
 
-    async def _memory_prefetch(self, user_text: str, channel: str) -> str:
+    async def _continuity_block(self, user_text: str, channel: str) -> str:
+        """Owner-turn continuity: people mentioned now, follow-ups pending in
+        this channel, and the last couple of diary entries. All SQLite, no
+        LLM; any failure just drops the block."""
+        if not self.memory:
+            return ""
+        from ophelia.mind.open_loops import OpenLoops, loops_block
+        from ophelia.mind.people import PeopleBook, people_block
+
+        parts: list[str] = []
+        try:
+            parts.append(people_block(await PeopleBook(self.memory.db_path).mentioned_in(user_text)))
+            if channel and channel != "consciousness":
+                loops = await OpenLoops(self.memory.db_path).open(channel, limit=4)
+                parts.append(
+                    loops_block(
+                        loops,
+                        title=(
+                            "# Things you said you'd come back to with this person "
+                            "(bring up naturally if it fits; follow_up_done when handled)"
+                        ),
+                    )
+                )
+            narrative = getattr(self, "narrative", None)
+            if narrative is not None:
+                parts.append(await narrative.recent_block())
+        except Exception as e:
+            log.debug("agent.continuity_block_failed", error=str(e))
+        return "\n\n".join(p for p in parts if p)
+
+    async def _memory_prefetch(
+        self, user_text: str, channel: str, *, skip_contents: set[str] | None = None
+    ) -> str:
         """Auto-recall relevant memories for the current user message.
 
         Instead of waiting for an explicit recall_memory tool call (which
@@ -326,12 +428,18 @@ class AgentLoop:
         without pausing.
 
         Stays cheap: skips very short messages, caps results, and never runs
-        for guest turns (guests get a sandboxed view).
+        for guest turns (guests get a sandboxed view). Messages already in the
+        visible history (``skip_contents``) aren't repeated.
         """
         if not self.memory or not user_text or len(user_text.strip()) < 12:
             return ""
+        skip = skip_contents or set()
         try:
-            hits = await self.memory.search_messages(user_text, limit=3)
+            hits = [
+                h
+                for h in await self.memory.recall(user_text, limit=8)
+                if h["content"] not in skip and h["content"] != user_text
+            ][:3]
             lessons = await self.memory.search_lessons(user_text, limit=2)
         except Exception as e:
             log.debug("agent.memory_prefetch_failed", error=str(e))
@@ -578,7 +686,10 @@ class AgentLoop:
 
         history = await self.memory.recent_across_channels(channels, limit=35)
         system = BASE_PROMPT + "\n\n" + await self._system_prompt(
-            system_extra, channel, user_text=user_text
+            system_extra,
+            channel,
+            user_text=user_text,
+            visible_history={m["content"] for m in history},
         )
         messages = [{"role": "system", "content": system}]
         seen_current_user_turn = False
@@ -795,6 +906,7 @@ class AgentLoop:
             store_channel=channel,
             use_tools=False,
             role="consciousness",
+            json_mode=True,
         )
 
     def pending_resume_for(self, channel: str) -> dict[str, Any] | None:
@@ -918,10 +1030,14 @@ class AgentLoop:
         use_tools: bool | None = None,
         role: str = "chat",
         is_owner: bool = True,
+        json_mode: bool = False,
     ) -> str:
         client = await self._client(role)
         use = use_tools if use_tools is not None else self.use_tools
-        tools = await self.tools.tool_definitions() if use else None
+        all_tools = (
+            await self.tools.tool_definitions(for_guest=not is_owner) if use else None
+        )
+        tools = all_tools
         max_tool_rounds = self.settings.max_tool_rounds
         model = self._model(role)
         provider = self.stack.name(role)  # type: ignore[arg-type]
@@ -929,6 +1045,7 @@ class AgentLoop:
 
         # Resume an unfinished tool chain from the previous turn, if allowed and
         # if one exists for this channel and it wasn't stuck in a repeat loop.
+        resumed = False
         if self.settings.tool_loop_resume and store_channel in self._pending_resume:
             pending = self._pending_resume.pop(store_channel)
             # A user turn consuming the resume breaks the autonomous chain —
@@ -943,6 +1060,7 @@ class AgentLoop:
                 ]
                 if resumed_tail:
                     messages = messages + resumed_tail
+                    resumed = True
                     log.info(
                         "tool_loop.resume",
                         channel=store_channel,
@@ -955,7 +1073,16 @@ class AgentLoop:
         # At most one narration-recovery nudge per turn — avoids infinite
         # "let me try" ↔ nudge loops when the model still won't emit tools.
         narration_nudge_used = False
-        known_tool_names = self._known_tool_names(tools) if tools else None
+        # Tool tiers (local chat): send core + relevant groups, not all ~60
+        # schemas. Recovery of tool calls written into content still knows
+        # every tool name, and a resumed chain gets the full set.
+        tier_groups: set[str] | None = None
+        if all_tools and is_owner and not resumed and tiers_active(self.settings, provider):
+            tier_groups = self.tools.tiers.begin_turn(
+                store_channel, _last_user_text(messages)
+            )
+            tools = _tiered_definitions(all_tools, tier_groups)
+        known_tool_names = self._known_tool_names(all_tools) if all_tools else None
 
         for round_idx in range(max_tool_rounds):
             rounds_used = round_idx + 1
@@ -970,6 +1097,7 @@ class AgentLoop:
                     channel=store_channel,
                     round_idx=round_idx,
                     gate=gate,
+                    json_mode=json_mode,
                 )
             except Exception as e:
                 from ophelia.providers.errors import api_error_detail
@@ -990,6 +1118,7 @@ class AgentLoop:
                 raise RuntimeError(
                     f"LLM call failed for {role}/{model} on {provider}: {detail}"
                 ) from e
+            _warn_if_ollama_truncated(response, provider)
             msg = response.choices[0].message
 
             # Normalize tool_calls: prefer structured API field; if empty,
@@ -1048,7 +1177,25 @@ class AgentLoop:
                 for tc in tool_call_dicts:
                     name = tc["function"]["name"]
                     arguments = tc["function"].get("arguments") or "{}"
-                    if name in ("search_hermes_memory", "recall_past_sessions"):
+                    if name == "load_tools":
+                        import json
+
+                        try:
+                            wanted = json.loads(arguments or "{}").get("groups") or []
+                        except (json.JSONDecodeError, AttributeError):
+                            wanted = []
+                        if tier_groups is None:
+                            result = "All of your tools are already available."
+                        else:
+                            loaded = self.tools.tiers.load(store_channel, list(wanted))
+                            tier_groups |= set(loaded)
+                            tools = _tiered_definitions(all_tools, tier_groups)
+                            result = (
+                                f"Loaded: {', '.join(loaded)}. Call the tool you need now."
+                                if loaded
+                                else "No such tool group."
+                            )
+                    elif name in ("search_hermes_memory", "recall_past_sessions"):
                         if not is_owner:
                             result = (
                                 "Searching past sessions is owner-only and disabled "
@@ -1326,6 +1473,7 @@ class AgentLoop:
         channel: str,
         round_idx: int,
         gate,
+        json_mode: bool = False,
     ):
         """Try the primary provider, then each fallback on transient failure.
 
@@ -1341,6 +1489,7 @@ class AgentLoop:
                     messages=messages,
                     tools=tools,
                     extra_body=self._extra_body_for(primary_provider),
+                    **_json_mode_kwargs(json_mode, primary_provider),
                 )
         except Exception as e:
             if not self._is_transient_error(e):
@@ -1377,6 +1526,7 @@ class AgentLoop:
                         messages=messages,
                         tools=tools,
                         extra_body=self._extra_body_for(fb_provider),
+                        **_json_mode_kwargs(json_mode, fb_provider),
                     )
                 log.info(
                     "tool_loop.fallback_succeeded",
