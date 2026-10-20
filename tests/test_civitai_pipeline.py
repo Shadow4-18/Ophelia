@@ -31,7 +31,7 @@ _VERSIONS = {
 @pytest.fixture
 def fake_civitai(tmp_path, monkeypatch):
     """Fake site API (model versions) + orchestration + blob storage."""
-    calls: dict = {"submitted": [], "uploads": 0, "status": "succeeded"}
+    calls: dict = {"submitted": [], "uploads": 0, "status": "succeeded", "reject_seed": False}
 
     async def get_version(settings, vid):
         base, words = _VERSIONS.get(vid, ("", []))
@@ -45,14 +45,17 @@ def fake_civitai(tmp_path, monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/v2/consumer/workflows") and request.method == "POST":
-            calls["submitted"].append(json.loads(request.content))
+            body = json.loads(request.content)
+            calls["submitted"].append(body)
+            if calls["reject_seed"] and "seed" in body["steps"][0]["input"]:
+                return httpx.Response(400, text='{"errors": {"seed": ["unknown property"]}}')
             if calls["status"] != "succeeded":
                 return httpx.Response(200, json={"id": "wf1", "status": calls["status"],
                                                  "error": "nsfw level too high"})
             return httpx.Response(200, json={
                 "id": "wf1", "status": "succeeded",
                 "steps": [{"output": {"images": [
-                    {"url": "https://blob.example/out.png", "seed": 424242}
+                    {"url": "https://blob.example/out.png"}
                 ]}}],
             })
         if path.endswith("/v2/consumer/blobs"):
@@ -108,7 +111,9 @@ async def test_txt2img_illustrious_auto_pick(fake_civitai):
     assert step["prompt"] == "masterpiece, best quality, 1girl, goth vtuber, neon city"
     entry = _ledger(fake_civitai)[-1]
     _show("illustrious auto-pick", entry)
-    assert entry["checkpoint"] == ILLUSTRIOUS and entry["seed"] == 424242
+    # Civitai doesn't report a seed, so we choose one and send it.
+    assert entry["checkpoint"] == ILLUSTRIOUS and entry["seed"] == step["seed"]
+    assert f"seed={step['seed']}" in out
     assert entry["bytes"] == len(PNG) and out.startswith(f"Image saved to {entry['path']}")
     assert "matched '1girl'" in entry["pick"]
 
@@ -119,6 +124,7 @@ async def test_txt2img_explicit_pony_checkpoint(fake_civitai):
                loras={PONY_LORA: 0.7})
     step = fake_civitai["submitted"][0]["steps"][0]["input"]
     assert step["model"] == PONY and step["loras"] == {PONY_LORA: 0.7}
+    assert step["prompt"] == "score_9, 1girl"  # Pony score tags, no "masterpiece"
     # Trigger words are reported, never injected.
     assert "ponychar" not in step["prompt"]
     entry = _ledger(fake_civitai)[-1]
@@ -203,3 +209,18 @@ def test_family_error_only_when_verified():
     assert civ.lora_family_error(ILLUSTRIOUS, "", "urn:air:sd1:lora:civitai:1@2", "")
     assert not civ.lora_family_error(ILLUSTRIOUS, "Illustrious", ILLU_LORA, "Illustrious")
     assert not civ.lora_family_error(ILLUSTRIOUS, "", PONY_LORA, "")  # can't tell
+
+
+@pytest.mark.asyncio
+async def test_seed_field_refused_retries_without_it(fake_civitai):
+    fake_civitai["reject_seed"] = True
+    out = await _gen(fake_civitai, "1girl")
+    assert out.startswith("Image saved to")
+    assert "seed" not in fake_civitai["submitted"][-1]["steps"][0]["input"]
+    assert _ledger(fake_civitai)[-1]["seed"] is None
+
+
+def test_pony_gets_score_tags():
+    assert civ.maybe_quality_prefix("source_anime, 1girl", "pony") == (
+        "score_9, score_8_up, score_7_up, source_anime, 1girl"
+    )

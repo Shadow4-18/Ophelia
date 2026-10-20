@@ -335,11 +335,16 @@ def curated_base_model(style: str) -> str:
 
 
 def maybe_quality_prefix(prompt: str, style: str) -> str:
-    """For danbooru-style checkpoints, softly add quality tags — never character triggers."""
+    """For danbooru-style checkpoints, softly add quality tags — never character
+    triggers. Pony V6 ignores "masterpiece"; it wants its score_* tags."""
     text = (prompt or "").strip()
     if style not in ("illustrious", "anime", "pony"):
         return text
     low = text.lower()
+    if style == "pony":
+        if "score_9" in low:
+            return text
+        return "score_9, score_8_up, score_7_up, " + text
     prefix_parts: list[str] = []
     if "masterpiece" not in low:
         prefix_parts.append("masterpiece")
