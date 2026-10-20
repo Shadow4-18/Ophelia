@@ -1250,6 +1250,11 @@ async def _civitai_image(
         image_url=image_url,
         strength=strength,
     )
+    # Civitai doesn't report the seed it used, so choose it here: the ledger
+    # then holds a seed that reproduces the image.
+    seed = random.randint(1, 2**32 - 1)
+    step_input["seed"] = seed
+    record["seed"] = seed
     record["checkpoint"] = step_input.get("model") or step_input.get("diffuserModel")
     record["operation"] = step_input.get("operation")
     record["negative_prompt"] = step_input.get("negativePrompt")
@@ -1286,6 +1291,16 @@ async def _civitai_image(
             params={"wait": "90", "allowMatureContent": mature},
             json=body,
         )
+        if r.status_code == 400 and "seed" in r.text.lower():
+            # Schema refused the seed field: generate without it.
+            step_input.pop("seed", None)
+            record["seed"] = None
+            r = await http.post(
+                f"{base}/v2/consumer/workflows",
+                headers=headers,
+                params={"wait": "90", "allowMatureContent": mature},
+                json=body,
+            )
         if r.status_code >= 400:
             return _fail(f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}")
         wf = r.json()
@@ -1306,7 +1321,7 @@ async def _civitai_image(
         if status not in ("done", "completed", "succeeded", "success"):
             return _fail(f"Civitai workflow not done in 180s (id={wf_id}, status={status}).")
 
-        seed = _deep_find_seed(wf)
+        seed = _deep_find_seed(wf) or record["seed"]
         record["seed"] = seed
         url = _deep_find_first_str(
             wf, ("url", "signed_url", "download_url", "result_url", "blob_url")

@@ -777,7 +777,7 @@ def cmd_civitai_test(args: argparse.Namespace) -> int:
                 prompt="1girl, solo, goth vtuber, purple hair, neon city at night",
                 model="", auto_pick=True)),
             ("txt2img, pinned Pony checkpoint", dict(
-                prompt="score_9, score_8_up, 1girl, solo, goth, purple hair, city at night",
+                prompt="source_anime, 1girl, solo, goth, purple hair, city at night",
                 model=civ._FALLBACK_PONY_AIR, auto_pick=False)),
         ]
         failed = 0
