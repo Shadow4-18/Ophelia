@@ -1,4 +1,10 @@
-"""Interactive setup wizard — menus write ~/.ophelia/.env for you."""
+"""`ophelia setup`: one menu per topic, each showing what's set right now.
+
+Every screen edits only what you change. Values are checked against
+config.Settings before they're written, and a broken .env is offered for
+repair before anything else runs (a bad value used to stop setup itself
+from opening).
+"""
 
 from __future__ import annotations
 
@@ -7,246 +13,652 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 from ophelia.config import OPHELIA_HOME, Settings, ensure_dirs
 from ophelia.platform import is_termux, platform_summary
-from ophelia.setup.env_io import read_env_key, write_env_updates
-from ophelia.setup.tui import checkbox, pause, prompt_text, radiolist
+from ophelia.setup import fields as F
+from ophelia.setup.env_io import env_path, read_env_key, write_env_updates
+from ophelia.setup.fields import Act, Opt, settings_screen
+from ophelia.setup.tui import (
+    Header,
+    checkbox_or_none,
+    confirm,
+    menu,
+    pause,
+    prompt_text,
+    radiolist,
+)
 from ophelia.setup.wizard import _auto_setup, run_setup_wizard
+
+_TRUE = ("1", "true", "yes", "on")
+_MANUAL = "Type a model name..."
+
+
+def _on(key: str, default: bool = False) -> bool:
+    val = read_env_key(key)
+    return default if not val else val.lower() in _TRUE
+
+
+def _save(updates: dict[str, str | None]) -> None:
+    touched = write_env_updates(updates)
+    if touched:
+        print(f"\n  Saved: {', '.join(touched)}")
+
+
+def _load_settings() -> Settings:
+    """Settings from the .env these menus edit (honours OPHELIA_HOME)."""
+    return Settings(_env_file=env_path())
+
+
+def _settings() -> Settings | None:
+    try:
+        return _load_settings()
+    except Exception:
+        return None
+
+
+# --- entry -------------------------------------------------------------------
 
 
 def run_interactive_setup(*, phone: bool | None = None) -> int:
     on_phone = is_termux() if phone is None else phone
-    ensure_dirs(Settings())
+    _repair_broken_settings()
+    ensure_dirs(_load_settings())
 
     print()
     print("=" * 52)
-    print("  The Ophelia Project — Interactive Setup")
+    print("  The Ophelia Project — Setup")
     print(f"  Platform: {platform_summary()}")
     print(f"  Home:     {OPHELIA_HOME}")
     print("=" * 52)
-    print()
-    print("Arrow keys navigate | Space toggles | Enter confirms | Esc goes back")
-    print()
-
     for action in _auto_setup():
         print(f"  + {action}")
-    print()
 
+    sections = _sections(on_phone)
+    cursor = 0
     while True:
-        idx = radiolist(
-            "What do you want to configure?",
-            [
-                "AI setup (profiles — Local / Grok / DeepSeek / …)",
-                "Chat channels (Telegram / Discord)",
-                "Web search (DeepSeek/OpenAI have no built-in search)",
-                "Image generation (SFW + NSFW backends)",
-                "Voice / TTS (ElevenLabs, Kokoro local, OpenAI, xAI)",
-                "Public site / Cloudflare Pages (her wiki + custom domain)",
-                "Persona (SOUL.md)",
-                "Phone body (screen/tap)" if on_phone else "Phone body via ADB (optional)",
-                "Features (consciousness, games, ...)",
-                "Run health check",
-                "Show checklist status",
-                "Finish setup",
-            ],
-            description="No manual .env editing — pick options here.",
+        rows: list[str] = []
+        width = max(len(s[0]) for s in sections if not isinstance(s, Header)) + 2
+        for s in sections:
+            if isinstance(s, Header):
+                rows.append(s)
+                continue
+            label, summary, _ = s
+            try:
+                value = summary() if summary else ""
+            except Exception:
+                value = ""
+            rows.append(f"{label.ljust(width)}{value}" if value else label)
+        pick = menu(
+            "Ophelia setup",
+            rows,
+            selected=cursor,
+            description="Pick a topic. Each screen shows what's set now and saves as you go.",
         )
-        if idx < 0:
-            continue
-        if idx == 0:
-            _section_provider(on_phone)
-        elif idx == 1:
-            _section_channels()
-        elif idx == 2:
-            _section_web_search()
-        elif idx == 3:
-            _section_image_backends()
-        elif idx == 4:
-            _section_tts()
-        elif idx == 5:
-            _section_public_site()
-        elif idx == 6:
-            _section_persona()
-        elif idx == 7:
-            _section_phone_body(on_phone)
-        elif idx == 8:
-            _section_features(on_phone)
-        elif idx == 9:
-            _section_health_check()
-        elif idx == 10:
-            print()
-            run_setup_wizard(phone=phone, checklist=True, do_auto=False)
-        elif idx == 11:
+        if pick < 0:
             break
-        if idx != 11:
-            pause()
+        cursor = pick
+        _, _, handler = sections[pick]
+        if handler is None:
+            break
+        try:
+            handler()
+        except KeyboardInterrupt:
+            print()
 
     print()
-    print("Setup complete. Next:")
+    print("Setup saved. Next:")
     print("  ophelia check")
     if on_phone:
-        print("  termux-wake-lock && tmux new -s ophelia && ophelia run")
+        print("  ophelia            (menu → Start Ophelia)")
     else:
         print("  ophelia ui   or   ophelia run")
+    print("Restart her if she's already running so the changes apply.")
     print()
-    return run_setup_wizard(phone=phone, checklist=True, do_auto=False)
+    return 0
 
 
-def _section_provider(on_phone: bool) -> None:
-    """Simplified AI setup: pick a profile, then optional advanced routing.
-
-    Most users only need a profile (Local / Grok API / Grok OAuth / DeepSeek /
-    OpenAI / Compat). Per-role overrides and fallback chains stay behind
-    'Advanced' so the menu isn't a 6-role matrix by default.
-    """
-    current = (read_env_key("OPHELIA_PROVIDER") or "ollama").strip().lower()
-    profiles = [
-        ("ollama", "Local (Ollama) — free, offline, recommended"),
-        ("xai", "Grok via API key — images + video + chat"),
-        ("xai-oauth", "Grok via SuperGrok OAuth"),
-        ("deepseek", "DeepSeek — cheap cloud chat"),
-        ("openai", "OpenAI — GPT + DALL-E"),
-        ("compat", "Custom OpenAI-compatible endpoint"),
-        ("auto", "Auto — Ollama if up, else cloud"),
-        ("__advanced__", "Advanced — per-role routing / fallbacks only"),
+def _sections(on_phone: bool) -> list:
+    return [
+        Header("— Her mind —"),
+        ("AI & models", _summary_ai, lambda: _section_ai(on_phone)),
+        ("Eyes (vision)", _summary_vision, lambda: _section_vision(on_phone)),
+        ("Web search", _summary_search, _section_web_search),
+        ("Personality & autonomy", _summary_autonomy, _section_autonomy),
+        ("Persona (SOUL.md)", _summary_persona, _section_persona),
+        Header("— Her body —"),
+        ("Images (SFW + NSFW / Civitai)", _summary_images, _section_image_backends),
+        ("Voice & listening", _summary_voice, _section_voice),
+        ("Phone body & games", _summary_phone, lambda: _section_phone_body(on_phone)),
+        Header("— Her life —"),
+        ("Schedule, sleep & timezone", _summary_schedule, _section_schedule),
+        ("Chat channels (Telegram / Discord)", _summary_channels, _section_channels),
+        ("Memory & backups", _summary_memory, _section_memory),
+        ("Public site / Cloudflare Pages", _summary_site, _section_public_site),
+        Header("— Check —"),
+        ("Run health check", None, _section_health_check),
+        ("Show checklist status", None, lambda: _show_checklist(on_phone)),
+        ("Finish", None, None),
     ]
-    labels = [label for _, label in profiles]
-    default = next((i for i, (k, _) in enumerate(profiles) if k == current), 0)
 
-    pick = radiolist(
-        "AI setup — pick a profile",
-        labels,
-        selected=default,
-        description=(
-            "One pick sets chat + sensible defaults. Image backends and NSFW "
-            "are under 'Image generation'. Advanced is for power users only."
-        ),
+
+def _show_checklist(on_phone: bool) -> None:
+    print()
+    run_setup_wizard(phone=on_phone, checklist=True, do_auto=False)
+    pause()
+
+
+def _repair_broken_settings() -> None:
+    """A value Settings rejects stops every command, setup included. List
+    them and offer to reset each one to its default."""
+    from pydantic import ValidationError
+
+    try:
+        _load_settings()
+        return
+    except ValidationError as e:
+        errors = e.errors()
+    print("\n  Some saved settings are invalid, so Ophelia can't start:")
+    for err in errors:
+        key = str(err["loc"][0]) if err.get("loc") else "?"
+        print(f"    {key}={err.get('input')!r}: {err.get('msg')}")
+    for err in errors:
+        key = str(err["loc"][0]) if err.get("loc") else ""
+        if not key or not read_env_key(key):
+            continue
+        ok = confirm(f"Reset {key} to its default?", default=True,
+                     description=f"Current value {err.get('input')!r}: {err.get('msg')}")
+        if ok:
+            write_env_updates({key: None})
+            print(f"  Reset {key}.")
+
+
+# --- summaries for the main menu ------------------------------------------
+
+
+def _summary_ai() -> str:
+    prov = (read_env_key("OPHELIA_PROVIDER") or "auto").lower()
+    env = _ROLE_ENV.get(prov, {}).get("chat")
+    model = (read_env_key(env) if env else "") or _DEFAULT_CHAT.get(prov, "")
+    return f"{prov}{' / ' + model if model else ''}"
+
+
+def _summary_vision() -> str:
+    s = _settings()
+    if s is None:
+        return ""
+    from ophelia.providers.router import build_provider_stack
+
+    stack = build_provider_stack(s)
+    if not stack.supports_vision():
+        return "none set up"
+    return f"{stack.name('vision')} / {stack.model('vision')}"
+
+
+def _summary_search() -> str:
+    s = _settings()
+    if s is None:
+        return ""
+    return s.web_search_provider_resolved() if s.web_search_enabled else "off"
+
+
+def _summary_autonomy() -> str:
+    return "thinking on her own" if _on("OPHELIA_CONSCIOUSNESS", True) else "only replies"
+
+
+def _summary_persona() -> str:
+    return "SOUL.md set" if (OPHELIA_HOME / "SOUL.md").is_file() else "missing"
+
+
+def _summary_images() -> str:
+    sfw = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").lower()
+    nsfw = (read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto").lower() if _on(
+        "OPHELIA_IMAGE_NSFW_ALLOWED") else "off"
+    return f"SFW {sfw}, NSFW {nsfw}"
+
+
+def _summary_voice() -> str:
+    return (read_env_key("OPHELIA_TTS_PROVIDER") or "auto").lower()
+
+
+def _summary_phone() -> str:
+    val = read_env_key("OPHELIA_ANDROID_ENABLED")
+    if not val:
+        return "auto"
+    return "on" if val.lower() in _TRUE else "off"
+
+
+def _summary_schedule() -> str:
+    tz = read_env_key("OPHELIA_TIMEZONE") or "system"
+    sleep = read_env_key("OPHELIA_SLEEP_HOURS")
+    return f"{tz}{', sleeps ' + sleep if sleep else ''}"
+
+
+def _summary_channels() -> str:
+    on = [n for n, k in (("Telegram", "TELEGRAM_BOT_TOKEN"), ("Discord", "DISCORD_BOT_TOKEN"))
+          if read_env_key(k)]
+    return ", ".join(on) or "none"
+
+
+def _summary_memory() -> str:
+    return "backups on" if _on("OPHELIA_BACKUP", True) else "backups off"
+
+
+def _summary_site() -> str:
+    return read_env_key("OPHELIA_SITE_PUBLIC_URL") or ("on" if _on("OPHELIA_SITE_ENABLED", True) else "off")
+
+
+# --- providers and models ---------------------------------------------------
+
+RoleKey = str  # chat | consciousness | reaction | curator | vision | video
+
+_PROFILES = [
+    ("deepseek", "DeepSeek — cheap cloud chat; Flash can also see"),
+    ("xai-oauth", "Grok via SuperGrok login"),
+    ("xai", "Grok via API key"),
+    ("openai", "OpenAI"),
+    ("ollama", "Local Ollama — free and offline, slow on a phone"),
+    ("compat", "Other OpenAI-compatible service (OpenRouter, LM Studio, ...)"),
+    ("auto", "Auto — local Ollama if it's running, else a cloud key"),
+]
+
+_ROLE_LABELS = {
+    "chat": "Chat (her replies)",
+    "consciousness": "Background thinking",
+    "reaction": "Quick reactions",
+    "curator": "Memory curator",
+    "vision": "Vision (photos + phone screen)",
+    "video": "Video generation",
+}
+
+_PROVIDER_ENV_BY_ROLE = {
+    "chat": "OPHELIA_PROVIDER_CHAT",
+    "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
+    "reaction": "OPHELIA_PROVIDER_REACTION",
+    "curator": "OPHELIA_PROVIDER_CURATOR",
+    "vision": "OPHELIA_PROVIDER_VISION",
+    "video": "OPHELIA_PROVIDER_VIDEO",
+}
+
+_ROLE_ENV: dict[str, dict[RoleKey, str]] = {
+    "xai": {"chat": "XAI_MODEL", "consciousness": "XAI_CONSCIOUSNESS_MODEL",
+            "reaction": "XAI_REACTION_MODEL", "curator": "XAI_CURATOR_MODEL",
+            "vision": "XAI_VISION_MODEL", "video": "XAI_VIDEO_MODEL"},
+    "openai": {"chat": "OPENAI_MODEL", "consciousness": "OPENAI_CONSCIOUSNESS_MODEL",
+               "reaction": "OPENAI_REACTION_MODEL", "curator": "OPENAI_CURATOR_MODEL",
+               "vision": "OPENAI_VISION_MODEL"},
+    "deepseek": {"chat": "DEEPSEEK_MODEL", "consciousness": "DEEPSEEK_CONSCIOUSNESS_MODEL",
+                 "reaction": "DEEPSEEK_REACTION_MODEL", "curator": "DEEPSEEK_CURATOR_MODEL",
+                 "vision": "DEEPSEEK_VISION_MODEL"},
+    "ollama": {"chat": "OLLAMA_MODEL", "consciousness": "OLLAMA_CONSCIOUSNESS_MODEL",
+               "reaction": "OLLAMA_REACTION_MODEL", "curator": "OLLAMA_CURATOR_MODEL",
+               "vision": "OLLAMA_VISION_MODEL"},
+    "compat": {"chat": "OPHELIA_COMPAT_MODEL",
+               "consciousness": "OPHELIA_COMPAT_CONSCIOUSNESS_MODEL",
+               "reaction": "OPHELIA_COMPAT_REACTION_MODEL",
+               "curator": "OPHELIA_COMPAT_CURATOR_MODEL",
+               "vision": "OPHELIA_COMPAT_VISION_MODEL"},
+}
+_ROLE_ENV["xai-oauth"] = _ROLE_ENV["xai"]
+
+_DEFAULT_CHAT = {"xai": "grok-4", "xai-oauth": "grok-4", "openai": "gpt-4o-mini",
+                 "deepseek": "deepseek-flash", "ollama": "llama3.2", "compat": ""}
+
+_BACKGROUND = "background"  # presets key shared by consciousness/reaction/curator
+_PRESETS: dict[str, dict[str, list[str]]] = {
+    "xai": {
+        "chat": ["grok-4.7", "grok-4.6", "grok-4.3", "grok-4.20-0309-non-reasoning", "grok-4"],
+        _BACKGROUND: ["grok-4.20-0309-non-reasoning", "grok-4.3"],
+        "vision": ["grok-4.7", "grok-4.3"],
+        "video": ["grok-imagine-video-1.5", "grok-imagine-video-1.5-lite", "grok-imagine-video"],
+    },
+    "openai": {
+        "chat": ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra", "gpt-4o-mini"],
+        _BACKGROUND: ["gpt-6-luna", "gpt-4o-mini"],
+        "vision": ["gpt-6-luna", "gpt-6.1-sol"],
+    },
+    "deepseek": {
+        "chat": ["deepseek-flash", "deepseek-v4-pro"],
+        _BACKGROUND: ["deepseek-flash"],
+        "vision": ["deepseek-flash"],  # deepseek-v4-pro can't see
+    },
+    "ollama": {
+        "chat": ["llama3.2:3b", "qwen3:4b", "gemma3:4b", "llama3.2:1b"],
+        _BACKGROUND: ["llama3.2:1b", "gemma3:1b", "qwen3:1.7b"],
+        "vision": ["openbmb/minicpm-v4.6", "qwen3-vl:4b", "qwen3-vl:2b", "qwen2.5vl:3b",
+                   "gemma3:4b", "moondream"],
+    },
+    "compat": {
+        "chat": [],
+        _BACKGROUND: [],
+        "vision": ["qwen/qwen3-vl-30b-a3b-instruct", "qwen/qwen3-vl-8b-instruct",
+                   "bytedance/ui-tars-1.5-7b"],
+    },
+}
+_PRESETS["xai-oauth"] = _PRESETS["xai"]
+
+_ROLE_PROVIDERS: dict[RoleKey, list[str]] = {
+    "chat": ["deepseek", "xai-oauth", "xai", "openai", "ollama", "compat"],
+    "consciousness": ["deepseek", "xai-oauth", "xai", "openai", "ollama", "compat"],
+    "reaction": ["deepseek", "xai-oauth", "xai", "openai", "ollama", "compat"],
+    "curator": ["deepseek", "xai-oauth", "xai", "openai", "ollama", "compat"],
+    "vision": ["deepseek", "ollama", "compat", "xai-oauth", "xai", "openai"],
+    "video": ["xai-oauth", "xai"],
+}
+
+
+def _presets_for(provider: str, role: RoleKey) -> list[str]:
+    table = _PRESETS.get(provider, {})
+    key = role if role in ("chat", "vision", "video") else _BACKGROUND
+    return list(table.get(key, []))
+
+
+def _pick_model(provider: str, role: RoleKey, *, title: str = "", inherit: bool = False) -> bool:
+    """Pick (and save) the model for ``role`` on ``provider``. True if saved."""
+    env = _ROLE_ENV.get(provider, {}).get(role)
+    if not env:
+        print(f"\n  {provider} has no model setting for {role}.")
+        return False
+    presets = _presets_for(provider, role)
+    if provider == "ollama":
+        for m in reversed(_list_ollama_model_names()[:12]):
+            if m not in presets:
+                presets.insert(0, m)
+    saved = read_env_key(env)
+    if role == "chat":
+        shown_default = _DEFAULT_CHAT.get(provider, "")
+    else:
+        shown_default = F.default_text(env)
+    choices = list(presets)
+    if saved and saved not in choices:
+        choices.insert(0, saved)
+    if inherit:
+        choices.append("(no override — use the default)")
+    choices.append(_MANUAL)
+    selected = next((i for i, c in enumerate(choices) if c == (saved or shown_default)), -1)
+    if not saved and inherit:
+        selected = choices.index("(no override — use the default)")
+    desc = f"Saved in {env}." + (f" Default: {shown_default}." if shown_default else "")
+    if provider == "ollama":
+        desc += "\nPull a model first: ollama pull <name>"
+    pick = radiolist(title or f"{_ROLE_LABELS.get(role, role)} — {provider} model",
+                     choices, selected=selected, description=desc)
+    if pick < 0:
+        return False
+    chosen = choices[pick]
+    if chosen == _MANUAL:
+        typed = prompt_text("Model name", default=saved or shown_default)
+        if not typed:
+            return False
+        chosen = typed
+    if chosen.startswith("(no override"):
+        _save({env: None})
+        return True
+    _save({env: chosen})
+    return True
+
+
+def _section_ai(on_phone: bool) -> None:
+    def prov() -> str:
+        return (read_env_key("OPHELIA_PROVIDER") or "auto").lower()
+
+    def chat_model() -> str:
+        env = _ROLE_ENV.get(prov(), {}).get("chat")
+        return (read_env_key(env) if env else "") or _DEFAULT_CHAT.get(prov(), "")
+
+    def fallback() -> str:
+        return read_env_key("OPHELIA_FALLBACK_PROVIDERS") or "off"
+
+    def pick_chat() -> None:
+        if prov() == "auto":
+            print("\n  'auto' has no single chat model. Pick a main provider first,")
+            print("  or set one per role under Per-role routing.")
+            pause()
+            return
+        _pick_model(prov(), "chat")
+
+    settings_screen(
+        "AI & models",
+        [
+            Act("Main AI provider", lambda: _pick_profile(on_phone), prov),
+            Act("Chat model", pick_chat, chat_model),
+            Act("Per-role routing", lambda: _models_menu(on_phone), "chat / background / vision / video"),
+            Act("Fallback if the main AI fails", _configure_fallback, fallback),
+            Header("— Keys —"),
+            Opt("DEEPSEEK_API_KEY", "DeepSeek API key", secret=True,
+                help="https://platform.deepseek.com → API keys"),
+            Opt("XAI_API_KEY", "xAI API key", secret=True),
+            Act("SuperGrok login (OAuth)", _configure_xai_oauth, _oauth_short_status),
+            Opt("OPENAI_API_KEY", "OpenAI API key", secret=True),
+            Opt("OPHELIA_COMPAT_BASE_URL", "Compatible service URL",
+                help="e.g. https://openrouter.ai/api/v1 or http://127.0.0.1:1234/v1"),
+            Opt("OPHELIA_COMPAT_API_KEY", "Compatible service key", secret=True),
+            Header("— Tuning —"),
+            Opt("OPHELIA_DEEPSEEK_THINKING", "DeepSeek thinking mode"),
+            Opt("OPHELIA_CHAT_TEMPERATURE", "Chat temperature",
+                help="Blank = the provider's default. 0.7-1.0 is typical."),
+            Opt("OPHELIA_MAX_TOOL_ROUNDS", "Tool rounds per turn"),
+            Opt("OPHELIA_TOOL_LOOP_RESUME", "Resume long tool chains"),
+            Opt("OPHELIA_TOOL_TIERS", "Send only relevant tools",
+                choices=[("auto", "auto"), ("on", "on"), ("off", "off")]),
+            Header("— Local Ollama —"),
+            Opt("OLLAMA_BASE_URL", "Ollama address",
+                validate=lambda raw: None if raw.strip() else "Enter an address."),
+            Opt("OPHELIA_OLLAMA_AUTOSTART", "Start Ollama automatically"),
+            Opt("OPHELIA_OLLAMA_KEEP_ALIVE", "Keep model loaded for",
+                help="e.g. 30m, 24h, or -1 for always"),
+            Opt("OPHELIA_OLLAMA_NUM_CTX", "Ollama context length"),
+            Opt("OPHELIA_AUTO_LOCAL_CONSCIOUSNESS", "Think locally when on auto"),
+        ],
+        description="Her main AI, per-role overrides, and keys. Changes save immediately.",
     )
+
+
+def _pick_profile(on_phone: bool) -> None:
+    current = (read_env_key("OPHELIA_PROVIDER") or "auto").strip().lower()
+    labels = [label for _, label in _PROFILES]
+    sel = next((i for i, (k, _) in enumerate(_PROFILES) if k == current), -1)
+    pick = radiolist("Main AI provider", labels, selected=sel,
+                     description="Runs her chat unless a role is routed elsewhere.\n"
+                     "Images, voice and search are set in their own menus.")
     if pick < 0:
         return
-
-    choice = profiles[pick][0]
-    if choice == "__advanced__":
-        provider = current if current != "auto" else "ollama"
-        _maybe_configure_models(provider, on_phone=on_phone)
-        _maybe_configure_fallback()
-        return
-
-    provider = choice
+    provider = _PROFILES[pick][0]
     updates: dict[str, str | None] = {"OPHELIA_PROVIDER": provider}
 
-    if provider in ("ollama", "auto"):
-        model = _pick_ollama_model(on_phone)
-        if model is None:
-            return
-        if model:
-            updates["OLLAMA_MODEL"] = model
-        if on_phone:
-            updates.setdefault("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
-        # Sensible media defaults for local-first: Grok for image/video when
-        # an API key exists later; otherwise Pollinations stays the free fallback.
-        if not read_env_key("OPHELIA_PROVIDER_IMAGE"):
-            updates["OPHELIA_PROVIDER_IMAGE"] = "auto"
-        if not read_env_key("OPHELIA_PROVIDER_VIDEO"):
-            updates["OPHELIA_PROVIDER_VIDEO"] = "auto"
-    elif provider == "xai-oauth":
+    if provider == "xai-oauth":
         if not _configure_xai_oauth():
             return
-        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "xai-oauth")
-        updates.setdefault("OPHELIA_PROVIDER_VIDEO", "xai-oauth")
-        updates.setdefault("XAI_IMAGE_MODEL", "grok-imagine-image")
-        updates.setdefault("XAI_VIDEO_MODEL", "grok-imagine-video")
     elif provider == "xai":
-        existing_key = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
-        key = prompt_text("XAI_API_KEY", secret=True, default=existing_key)
-        if key:
+        existing = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
+        key = prompt_text("xAI API key", secret=True, default=existing)
+        if key is None:
+            return
+        if key != existing:
             updates["XAI_API_KEY"] = key
-        elif not existing_key:
-            print(
-                "\n  [WARN] No API key set. xai mode uses the API key ONLY — it will NOT\n"
-                "         fall back to your SuperGrok OAuth token. Set XAI_API_KEY or\n"
-                "         switch to the Grok OAuth profile."
-            )
-        xai_model = _pick_xai_model()
-        if xai_model:
-            updates["XAI_MODEL"] = xai_model
-        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "xai")
-        updates.setdefault("OPHELIA_PROVIDER_VIDEO", "xai")
-        updates.setdefault("XAI_IMAGE_MODEL", "grok-imagine-image")
-        updates.setdefault("XAI_VIDEO_MODEL", "grok-imagine-video")
+        if not key:
+            print("  [WARN] The API-key profile won't use your SuperGrok login.")
     elif provider == "deepseek":
-        key = prompt_text(
-            "DEEPSEEK_API_KEY",
-            secret=True,
-            default=read_env_key("DEEPSEEK_API_KEY"),
-            hint="Get a key at https://platform.deepseek.com",
-        )
-        if key:
+        existing = read_env_key("DEEPSEEK_API_KEY")
+        key = prompt_text("DeepSeek API key", secret=True, default=existing,
+                          hint="https://platform.deepseek.com → API keys")
+        if key is None:
+            return
+        if key != existing:
             updates["DEEPSEEK_API_KEY"] = key
-        ds_model = _pick_deepseek_model()
-        if ds_model:
-            updates["DEEPSEEK_MODEL"] = ds_model
-        # DeepSeek has no image/video — leave media on auto (Pollinations / xAI).
-        if not read_env_key("OPHELIA_PROVIDER_IMAGE"):
-            updates["OPHELIA_PROVIDER_IMAGE"] = "auto"
-        if not read_env_key("OPHELIA_PROVIDER_VIDEO"):
-            updates["OPHELIA_PROVIDER_VIDEO"] = "auto"
     elif provider == "openai":
-        key = prompt_text("OPENAI_API_KEY", secret=True, default=read_env_key("OPENAI_API_KEY"))
-        if key:
+        existing = read_env_key("OPENAI_API_KEY")
+        key = prompt_text("OpenAI API key", secret=True, default=existing)
+        if key is None:
+            return
+        if key != existing:
             updates["OPENAI_API_KEY"] = key
-        oa_model = _pick_openai_model()
-        if oa_model:
-            updates["OPENAI_MODEL"] = oa_model
-        updates.setdefault("OPHELIA_PROVIDER_IMAGE", "openai")
     elif provider == "compat":
-        base = prompt_text(
-            "OPHELIA_COMPAT_BASE_URL",
-            default=read_env_key("OPHELIA_COMPAT_BASE_URL") or "http://127.0.0.1:1234/v1",
-            hint="Example: http://127.0.0.1:1234/v1",
-        )
-        model = prompt_text(
-            "OPHELIA_COMPAT_MODEL",
-            default=read_env_key("OPHELIA_COMPAT_MODEL") or "local-model",
-        )
-        key = prompt_text(
-            "OPHELIA_COMPAT_API_KEY",
-            secret=True,
-            default=read_env_key("OPHELIA_COMPAT_API_KEY") or "local",
-        )
-        if base:
-            updates["OPHELIA_COMPAT_BASE_URL"] = base
-        if model:
-            updates["OPHELIA_COMPAT_MODEL"] = model
-        if key:
-            updates["OPHELIA_COMPAT_API_KEY"] = key
+        base = prompt_text("Service URL", default=read_env_key("OPHELIA_COMPAT_BASE_URL"),
+                           hint="e.g. https://openrouter.ai/api/v1 or http://127.0.0.1:1234/v1")
+        if not base:
+            return
+        key = prompt_text("API key", secret=True, default=read_env_key("OPHELIA_COMPAT_API_KEY"))
+        if key is None:
+            return
+        updates["OPHELIA_COMPAT_BASE_URL"] = base
+        updates["OPHELIA_COMPAT_API_KEY"] = key or "local"
+    elif provider == "ollama" and on_phone and not read_env_key("OLLAMA_BASE_URL"):
+        updates["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434/v1"
 
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
+    _save(updates)
+    if provider != "auto":
+        _pick_model(provider, "chat", title=f"Chat model — {provider}")
+    pause()
 
-    # Optional advanced — not forced every time.
-    adv = radiolist(
-        "Anything else?",
-        [
-            "Done — this profile is enough",
-            "Advanced: per-role routing (chat / consciousness / vision / …)",
-            "Advanced: fallback chain if primary fails",
-        ],
-        selected=0,
-        description="Skip unless you need different models per role.",
+
+def _models_menu(on_phone: bool) -> None:
+    roles = ["chat", "consciousness", "reaction", "curator", "vision", "video"]
+
+    def summary(role: RoleKey) -> Callable[[], str]:
+        return lambda: _role_summary(role)
+
+    settings_screen(
+        "Per-role routing",
+        [Act(_ROLE_LABELS[r], (lambda r=r: _pick_role_model(r, on_phone=on_phone)), summary(r))
+         for r in roles]
+        + [Act("Clear all role overrides", _clear_role_overrides)],
+        description="Route a job to a different AI than her main one.\n"
+                    "'(main)' means the role follows the main provider.\n"
+                    "Image backends are under Images.",
     )
-    if adv == 1:
-        _maybe_configure_models(provider, on_phone=on_phone)
-    elif adv == 2:
-        _maybe_configure_fallback()
+
+
+def _role_provider(role: RoleKey) -> tuple[str, bool]:
+    """(provider, overridden) for a role."""
+    val = (read_env_key(_PROVIDER_ENV_BY_ROLE[role]) or "").strip().lower()
+    if val and val != "auto":
+        return val, True
+    return (read_env_key("OPHELIA_PROVIDER") or "auto").strip().lower(), False
+
+
+def _role_summary(role: RoleKey) -> str:
+    if role == "vision":
+        return _summary_vision()
+    prov, overridden = _role_provider(role)
+    if role == "video":
+        model = read_env_key("XAI_VIDEO_MODEL") or "grok-imagine-video"
+        return f"{prov if overridden else 'auto'} / {model}"
+    env = _ROLE_ENV.get(prov, {}).get(role)
+    model = read_env_key(env) if env else ""
+    if not model:
+        model = _DEFAULT_CHAT.get(prov, "") if role == "chat" else "same as chat"
+    return f"{prov}{'' if overridden else ' (main)'} / {model}"
+
+
+def _pick_role_model(role: RoleKey, *, on_phone: bool) -> None:
+    prov_env = _PROVIDER_ENV_BY_ROLE[role]
+    current = (read_env_key(prov_env) or "").strip().lower()
+    first = {"vision": "(auto — DeepSeek if set up, else local Ollama, else Grok/OpenAI)",
+             "video": "(auto — Grok)"}.get(role, "(follow the main provider)")
+    options = [first] + _ROLE_PROVIDERS[role]
+    sel = options.index(current) if current in options else 0
+    pick = radiolist(f"{_ROLE_LABELS[role]} — provider", options, selected=sel,
+                     description=f"Saved in {prov_env}.")
+    if pick < 0:
+        return
+    if pick == 0:
+        _save({prov_env: None})
+        provider = (read_env_key("OPHELIA_PROVIDER") or "auto").lower()
+        if role in ("vision", "video"):
+            pause()
+            return
+    else:
+        provider = options[pick]
+        _save({prov_env: provider})
+    if provider in _ROLE_ENV:
+        _pick_model(provider, role, inherit=role not in ("chat",))
+    if role == "vision" and provider == "ollama":
+        _configure_ollama_vision_endpoint(on_phone=on_phone)
+    pause()
+
+
+def _clear_role_overrides() -> None:
+    """Clear per-role provider routing (not image backends, not models)."""
+    updates = {env: None for env in _PROVIDER_ENV_BY_ROLE.values() if read_env_key(env)}
+    if not updates:
+        print("\n  No role overrides set.")
+    else:
+        _save(updates)
+        print("  Every role now follows the main provider.")
+    pause()
+
+
+def _configure_fallback() -> None:
+    """Pick the providers to retry on when the main one hits a rate limit,
+    5xx or network error."""
+    current = [p.strip() for p in (read_env_key("OPHELIA_FALLBACK_PROVIDERS") or "").split(",")
+               if p.strip()]
+    options = ["deepseek", "xai-oauth", "xai", "openai", "compat", "ollama"]
+    for p in current:
+        if p not in options:
+            options.append(p)
+    picked = checkbox_or_none(
+        "Fallback providers",
+        options,
+        selected={i for i, p in enumerate(options) if p in current},
+        description="Tried in this order when the main AI fails with a temporary error.\n"
+                    "Untick everything to turn fallback off. The main provider is skipped.",
+    )
+    if picked is None:
+        return
+    ordered = [options[i] for i in sorted(picked)]
+    if not ordered:
+        _save({"OPHELIA_FALLBACK_PROVIDERS": None, "OPHELIA_FALLBACK_MODEL": None})
+        print("  Fallback off.")
+        pause()
+        return
+    updates: dict[str, str | None] = {"OPHELIA_FALLBACK_PROVIDERS": ",".join(ordered)}
+    shared = read_env_key("OPHELIA_FALLBACK_MODEL")
+    choices = ["(each provider's own chat model)"]
+    for p in ordered:
+        for m in _presets_for(p, "chat"):
+            if m not in choices:
+                choices.append(m)
+    if shared and shared not in choices:
+        choices.append(shared)
+    choices.append(_MANUAL)
+    pick = radiolist("One model for every fallback? (optional)", choices,
+                     selected=choices.index(shared) if shared in choices else 0)
+    if pick == 0:
+        updates["OPHELIA_FALLBACK_MODEL"] = None
+    elif pick > 0:
+        chosen = choices[pick]
+        if chosen == _MANUAL:
+            chosen = prompt_text("Model name", default=shared) or ""
+        updates["OPHELIA_FALLBACK_MODEL"] = chosen or None
+    _save(updates)
+    print(f"  Fallback chain: {' -> '.join(ordered)}")
+    pause()
+
+
+# --- SuperGrok OAuth (Hermes-era tooling stays available, not the default) --
+
+
+def _oauth_short_status() -> str:
+    s = _settings()
+    if s is None:
+        return ""
+    from ophelia.providers.oauth_refresh import load_oauth_state, oauth_auth_paths
+
+    for path in oauth_auth_paths(hermes_home=s.hermes_home, hermes_auth_path=s.hermes_auth_path,
+                                 oauth_path=s.xai_oauth_token_path):
+        state = load_oauth_state(path)
+        if state and state.get("access_token"):
+            return "token found"
+    return "not logged in"
 
 
 def _oauth_status_lines() -> list[str]:
     from ophelia.providers.oauth_refresh import load_oauth_state, oauth_auth_paths
 
-    settings = Settings()
-    lines: list[str] = []
+    settings = _load_settings()
     for path in oauth_auth_paths(
         hermes_home=settings.hermes_home,
         hermes_auth_path=settings.hermes_auth_path,
@@ -254,58 +666,38 @@ def _oauth_status_lines() -> list[str]:
     ):
         state = load_oauth_state(path)
         if state and state.get("access_token"):
-            lines.append(f"[OK] OAuth token in {path}")
-            return lines
-    lines.append("No OAuth token found yet — import below.")
-    hermes = settings.hermes_home / "auth.json"
-    grok = settings.grok_cli_auth_path
-    if hermes.is_file():
-        lines.append(f"  Hermes auth available: {hermes}")
-    if grok.is_file():
-        lines.append(f"  Grok CLI auth available: {grok}")
+            return [f"[OK] OAuth token in {path}"]
+    lines = ["No OAuth token found yet."]
+    if (settings.hermes_home / "auth.json").is_file():
+        lines.append(f"  Hermes auth available: {settings.hermes_home / 'auth.json'}")
+    if settings.grok_cli_auth_path.is_file():
+        lines.append(f"  Grok CLI auth available: {settings.grok_cli_auth_path}")
     return lines
 
 
 def _configure_xai_oauth() -> bool:
-    """Sub-menu for SuperGrok OAuth. Loops until Done or Back."""
-    settings = Settings()
+    """SuperGrok OAuth: verify, import, or log in again. True = use it."""
+    settings = _load_settings()
+    actions = [
+        ("Done — use this login", None),
+        ("Verify the connection", _verify_xai_oauth),
+        ("Import from Grok CLI (~/.grok)", lambda: _import_grok_oauth(settings)),
+        ("Fresh login in the browser (via Hermes)", lambda: _oauth_browser_login(settings)),
+        ("Import from Hermes (~/.hermes/auth.json)", lambda: _import_hermes_oauth(settings)),
+    ]
     while True:
-        status = "\n".join(_oauth_status_lines())
-        pick = radiolist(
-            "SuperGrok / xAI OAuth",
-            [
-                "Get NEW token (Hermes browser login)",
-                "Import / re-sync from ~/.hermes/auth.json",
-                "Import / re-sync from Grok CLI (~/.grok)",
-                "Verify OAuth connection",
-                "Done — use xAI OAuth",
-                "Back (don't change provider)",
-            ],
-            description=(
-                status
-                + "\n\nOAuth is from xAI, not Hermes-branded."
-                + "\nStale copied tokens need a fresh login (option 1)."
-            ),
-        )
-        if pick < 0 or pick == 5:
+        pick = menu("SuperGrok / xAI OAuth", [a for a, _ in actions],
+                    description="\n".join(_oauth_status_lines())
+                    + "\nA stale copied token needs a fresh login.")
+        if pick < 0:
             return False
         if pick == 0:
-            _oauth_browser_login(settings)
-        elif pick == 1:
-            _import_hermes_oauth(settings)
-        elif pick == 2:
-            _import_grok_oauth(settings)
-        elif pick == 3:
-            _verify_xai_oauth()
-        elif pick == 4:
             return True
+        actions[pick][1]()
         pause()
 
 
 def _oauth_browser_login(settings: Settings) -> bool:
-    import shutil
-
-    from ophelia.platform import is_termux
     from ophelia.providers.auth import (
         print_termux_oauth_login_help,
         run_hermes_xai_oauth_login,
@@ -318,16 +710,15 @@ def _oauth_browser_login(settings: Settings) -> bool:
     if is_termux():
         print_termux_oauth_login_help()
         print()
-    hermes = shutil.which("hermes")
-    if hermes:
-        pause("Press Enter to start Hermes browser login...")
+    if shutil.which("hermes"):
+        pause("Press Enter to start the browser login...")
         if run_hermes_xai_oauth_login() != 0:
             print("  Login cancelled or failed.\n")
             return False
     else:
-        print("  Hermes not installed. Run in another tab:")
+        print("  Hermes isn't installed. Run in another tab:")
         print("    hermes auth add xai-oauth --type oauth --no-browser")
-        pause("Press Enter after browser login finishes...")
+        pause("Press Enter after the browser login finishes...")
     ok, msg = sync_oauth_from_hermes_home(
         settings.hermes_home,
         ophelia_auth_path=settings.hermes_auth_path,
@@ -336,9 +727,8 @@ def _oauth_browser_login(settings: Settings) -> bool:
     print(f"  {'[OK]' if ok else '[FAIL]'} {msg}")
     state = load_oauth_state(settings.hermes_home / "auth.json")
     if ok and state and not access_token_usable(state["access_token"]):
-        print("  [WARN] Token still expired — browser callback may have failed on Termux.\n")
+        print("  [WARN] Token still expired — the browser callback may have failed on Termux.\n")
         return False
-    print()
     return ok
 
 
@@ -367,11 +757,7 @@ def _import_grok_oauth(settings: Settings) -> bool:
         print("  Run: grok login   (Grok CLI) then try again.\n")
         return False
     state = load_oauth_state(path) or {}
-    save_oauth_token(
-        settings.xai_oauth_token_path,
-        token,
-        state.get("refresh_token"),
-    )
+    save_oauth_token(settings.xai_oauth_token_path, token, state.get("refresh_token"))
     print(f"\n  [OK] Imported OAuth from Grok CLI -> {settings.xai_oauth_token_path}\n")
     return True
 
@@ -380,56 +766,18 @@ def _verify_xai_oauth() -> bool:
     from ophelia.providers.router import build_provider_stack
 
     async def _probe() -> tuple[bool, str]:
-        stack = build_provider_stack(Settings())
-        return await stack.check("chat")
+        return await build_provider_stack(_load_settings()).check("chat")
 
     try:
         ok, msg = asyncio.run(_probe())
     except Exception as e:
         print(f"\n  [FAIL] {e}\n")
         return False
-    if ok:
-        print(f"\n  [OK] xAI OAuth working — {msg}\n")
-        return True
-    print(f"\n  [FAIL] {msg}")
-    print("  Try Import from Hermes or Grok CLI above.\n")
-    return False
+    print(f"\n  {'[OK] Working — ' if ok else '[FAIL] '}{msg}\n")
+    return ok
 
 
-def _pick_ollama_model(on_phone: bool) -> str | None:
-    models = _list_ollama_model_names()
-    presets = [
-        "llama3.2:3b",
-        "llama3.2:1b",
-        "llama3.2",
-        "mistral",
-        "qwen2.5:7b",
-    ]
-    choices = []
-    for m in models[:12]:
-        if m not in choices:
-            choices.append(m)
-    for p in presets:
-        if p not in choices:
-            choices.append(p)
-    choices.append("Type a model name manually...")
-
-    current = read_env_key("OLLAMA_MODEL") or "llama3.2:3b"
-    default = next((i for i, c in enumerate(choices) if c == current), 0)
-
-    hint = "Ollama not detected — you can still save a model name." if not models and not on_phone else ""
-    pick = radiolist(
-        "Ollama chat model",
-        choices,
-        selected=default,
-        description=hint or "Pull models with: ollama pull llama3.2:3b",
-    )
-    if pick < 0:
-        return None
-    if choices[pick] == "Type a model name manually...":
-        typed = prompt_text("Model name", default=current)
-        return typed
-    return choices[pick]
+# --- Ollama helpers -----------------------------------------------------------
 
 
 def normalize_ollama_openai_base(raw: str) -> str:
@@ -462,67 +810,46 @@ def normalize_ollama_openai_base(raw: str) -> str:
 
 
 def _configure_ollama_vision_endpoint(*, on_phone: bool) -> None:
-    """Ask where the vision Ollama lives — this device or a remote PC GPU."""
+    """Where the vision Ollama runs: this device or a PC on the network."""
     current = read_env_key("OLLAMA_BASE_URL") or "http://127.0.0.1:11434/v1"
-    low = current.lower()
-    looks_local = any(x in low for x in ("127.0.0.1", "localhost", "::1"))
-
+    looks_local = any(x in current.lower() for x in ("127.0.0.1", "localhost", "::1"))
     pick = radiolist(
-        "Where should vision Ollama run?",
+        "Where does Ollama run?",
         [
-            "This device (localhost) — local Ollama",
-            "Remote PC on LAN / Tailscale — use the PC GPU (recommended for games)",
-            f"Keep current ({current})",
+            "This device (localhost)",
+            "Remote PC on LAN / Tailscale — use the PC's GPU",
         ],
         selected=0 if looks_local else 1,
-        description=(
-            "Chat photos AND game-mode screen vision both use this endpoint.\n"
-            "A PC GPU (e.g. RTX 3080) is much faster than phone Ollama.\n"
-            "Same Wi‑Fi / Tailscale: prefer remote PC. Offline phone-only: local."
-        ),
+        description=f"Now: {current}\nChat photos and phone-screen vision both use this.\n"
+                    "A PC GPU answers in seconds; a phone CPU takes much longer.",
     )
-    if pick < 0 or pick == 2:
+    if pick < 0:
         return
-
-    updates: dict[str, str | None] = {}
     if pick == 0:
-        updates["OLLAMA_BASE_URL"] = "http://127.0.0.1:11434/v1"
+        updates: dict[str, str | None] = {"OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1"}
         if on_phone:
             updates["OPHELIA_OLLAMA_AUTOSTART"] = "true"
-        updates["OPHELIA_OLLAMA_KEEP_ALIVE"] = "30m"
-        touched = write_env_updates(updates)
-        print(f"\n  Saved: {', '.join(touched)}")
-        print("  Vision → local Ollama on this device.")
+        if not read_env_key("OPHELIA_OLLAMA_KEEP_ALIVE"):
+            updates["OPHELIA_OLLAMA_KEEP_ALIVE"] = "30m"
+        _save(updates)
         return
-
-    # Remote PC
-    default_hint = current if not looks_local else "192.168.1.50"
     typed = prompt_text(
         "PC Ollama address",
-        default=default_hint,
-        hint=(
-            "LAN IP or Tailscale IP — e.g. 192.168.1.50 or 100.x.x.x\n"
-            "  Or full URL: http://192.168.1.50:11434/v1"
-        ),
+        default=current if not looks_local else "",
+        hint="LAN or Tailscale IP, e.g. 192.168.1.50 or 100.x.x.x,\n"
+             "  or a full URL: http://192.168.1.50:11434/v1",
     )
     if not typed:
-        print("\n  Cancelled — OLLAMA_BASE_URL unchanged.")
+        print("\n  Cancelled — address unchanged.")
         return
     url = normalize_ollama_openai_base(typed)
-    updates["OLLAMA_BASE_URL"] = url
-    updates["OPHELIA_OLLAMA_AUTOSTART"] = "false"
-    updates["OPHELIA_OLLAMA_KEEP_ALIVE"] = "-1"
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-    print(f"  Vision → remote Ollama at {url}")
+    _save({"OLLAMA_BASE_URL": url, "OPHELIA_OLLAMA_AUTOSTART": "false",
+           "OPHELIA_OLLAMA_KEEP_ALIVE": read_env_key("OPHELIA_OLLAMA_KEEP_ALIVE") or "-1"})
     print(
-        "\n  On the PC, Ollama must listen on the LAN:\n"
+        "\n  On the PC, Ollama must listen on the network:\n"
         "    set OLLAMA_HOST=0.0.0.0:11434  (then restart Ollama)\n"
-        "    ollama pull qwen2.5vl:7b\n"
         "    allow port 11434 in the firewall\n"
-        "  Test from this device: curl "
-        + url.removesuffix("/v1")
-        + "/api/tags"
+        "  Test from this device: curl " + url.removesuffix("/v1") + "/api/tags"
     )
 
 
@@ -532,10 +859,10 @@ def _list_ollama_model_names() -> list[str]:
     async def _fetch() -> list[str]:
         from ophelia.providers.cookbook import list_ollama_models
 
-        return await list_ollama_models(Settings())
+        return await list_ollama_models(_load_settings())
 
     try:
-        s = Settings()
+        s = _load_settings()
         base = s.ollama_base_url.rstrip("/").removesuffix("/v1")
         httpx.get(f"{base}/api/tags", timeout=2.0)
         return asyncio.run(_fetch())
@@ -543,1507 +870,570 @@ def _list_ollama_model_names() -> list[str]:
         return []
 
 
-def _pick_xai_model() -> str | None:
-    """Model picker for xAI (Grok) chat — presets plus manual entry."""
-    return _pick_model_generic(
-        title="xAI (Grok) chat model",
-        env_key="XAI_MODEL",
-        default="grok-4",
-        presets=[
-            "grok-4",
-            "grok-4-fast",
-            "grok-4-fast-reasoning",
-            "grok-4-heavy",
-            "grok-3",
-            "grok-3-mini",
-            "grok-2",
-        ],
-        description="Grok models available via your SuperGrok OAuth or API key.",
-    )
+# --- eyes ---------------------------------------------------------------------
+
+_VISION_CHOICES = [
+    ("deepseek", "DeepSeek Flash — cloud, fast, a fraction of a cent per look"),
+    ("ollama", "Ollama — on this phone (private, slow) or a PC on your network"),
+    ("compat", "OpenAI-compatible service (OpenRouter: Qwen3-VL, UI-TARS, ...)"),
+    ("xai-oauth", "Grok (SuperGrok login)"),
+    ("xai", "Grok (API key)"),
+    ("openai", "OpenAI"),
+    ("auto", "Auto — DeepSeek if its key is set, else local Ollama, else Grok/OpenAI"),
+]
 
 
-def _pick_openai_model() -> str | None:
-    """Model picker for OpenAI chat — presets plus manual entry."""
-    return _pick_model_generic(
-        title="OpenAI chat model",
-        env_key="OPENAI_MODEL",
-        default="gpt-4o-mini",
-        presets=[
-            "gpt-4o-mini",
-            "gpt-4o",
-            "gpt-4.1-mini",
-            "gpt-4.1",
-            "o4-mini",
-            "gpt-4-turbo",
-        ],
-        description="Pick the model your API key has access to.",
-    )
-
-
-def _pick_deepseek_model() -> str | None:
-    """Model picker for DeepSeek chat — presets plus manual entry."""
-    return _pick_model_generic(
-        title="DeepSeek chat model",
-        env_key="DEEPSEEK_MODEL",
-        default="deepseek-v4-flash",
-        presets=[
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "deepseek-chat",
-            "deepseek-reasoner",
-        ],
-        description=(
-            "deepseek-v4-flash is very cheap (~$0.14/1M input) — great for\n"
-            "background roles and cost saving. v4-pro is more capable."
-        ),
-    )
-
-
-def _pick_model_generic(
-    *,
-    title: str,
-    env_key: str,
-    default: str,
-    presets: list[str],
-    description: str = "",
-) -> str | None:
-    """Shared model picker: presets + current value + manual entry. None = cancel."""
-    current = read_env_key(env_key) or default
-    choices = list(presets)
-    if current not in choices:
-        choices.insert(0, current)
-    choices.append("Type a model name manually...")
-
-    selected = next((i for i, c in enumerate(choices) if c == current), 0)
-    pick = radiolist(title, choices, selected=selected, description=description)
+def _pick_vision_provider(on_phone: bool) -> None:
+    current = (read_env_key("OPHELIA_PROVIDER_VISION") or "auto").lower()
+    labels = [lab for _, lab in _VISION_CHOICES]
+    sel = next((i for i, (k, _) in enumerate(_VISION_CHOICES) if k == current), -1)
+    pick = radiolist("Vision provider", labels, selected=sel,
+                     description="Used for photos you send and for seeing the phone screen.")
     if pick < 0:
-        return None
-    if choices[pick] == "Type a model name manually...":
-        return prompt_text("Model name", default=current)
-    return choices[pick]
-
-
-# Per-provider, per-role model configuration.
-# Each role maps to an env var and a preset list (or None for free-form text).
-RoleKey = str  # "chat" | "consciousness" | "curator" | "vision" | "image" | "video"
-
-_PROVIDER_ROLE_DEFS: dict[str, dict[RoleKey, dict]] = {
-    "xai": {
-        "chat": {
-            "env": "XAI_MODEL",
-            "default": "grok-4",
-            "presets": ["grok-4", "grok-4-fast", "grok-4-fast-reasoning", "grok-4-heavy",
-                        "grok-3", "grok-3-mini", "grok-2"],
-        },
-        "consciousness": {
-            "env": "XAI_CONSCIOUSNESS_MODEL",
-            "default": "",
-            "presets": ["grok-4-fast", "grok-3-mini", "grok-4", "grok-3"],
-            "optional": True,
-        },
-        "reaction": {
-            "env": "XAI_REACTION_MODEL",
-            "default": "",
-            "presets": ["grok-4-fast", "grok-3-mini"],
-            "optional": True,
-        },
-        "curator": {
-            "env": "XAI_CURATOR_MODEL",
-            "default": "",
-            "presets": ["grok-4-fast", "grok-3-mini", "grok-4", "grok-3"],
-            "optional": True,
-        },
-        "vision": {
-            "env": "XAI_VISION_MODEL",
-            "default": "",
-            "presets": ["grok-4", "grok-4-fast", "grok-4-vision", "grok-2-vision"],
-            "optional": True,
-        },
-        "image": {
-            "env": "XAI_IMAGE_MODEL",
-            "default": "grok-imagine-image",
-            "presets": ["grok-imagine-image", "grok-2-image", "grok-image"],
-        },
-        "video": {
-            "env": "XAI_VIDEO_MODEL",
-            "default": "grok-imagine-video",
-            "presets": ["grok-imagine-video", "grok-2-video"],
-        },
-    },
-    "xai-oauth": {},  # alias: filled in below
-    "openai": {
-        "chat": {
-            "env": "OPENAI_MODEL",
-            "default": "gpt-4o-mini",
-            "presets": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1",
-                        "o4-mini", "gpt-4-turbo"],
-        },
-        "consciousness": {
-            "env": "OPENAI_CONSCIOUSNESS_MODEL",
-            "default": "",
-            "presets": ["gpt-4o-mini", "gpt-4.1-mini", "o4-mini"],
-            "optional": True,
-        },
-        "reaction": {
-            "env": "OPENAI_REACTION_MODEL",
-            "default": "",
-            "presets": ["gpt-4o-mini", "gpt-4.1-mini"],
-            "optional": True,
-        },
-        "curator": {
-            "env": "OPENAI_CURATOR_MODEL",
-            "default": "",
-            "presets": ["gpt-4o-mini", "gpt-4.1-mini", "o4-mini"],
-            "optional": True,
-        },
-        "vision": {
-            "env": "OPENAI_VISION_MODEL",
-            "default": "",
-            "presets": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4-turbo"],
-            "optional": True,
-        },
-        "image": {
-            "env": "OPENAI_IMAGE_MODEL",
-            "default": "dall-e-3",
-            "presets": ["dall-e-3", "dall-e-2", "gpt-image-1"],
-        },
-        "video": None,  # OpenAI has no video gen endpoint
-    },
-    "deepseek": {
-        "chat": {
-            "env": "DEEPSEEK_MODEL",
-            "default": "deepseek-v4-flash",
-            "presets": ["deepseek-v4-flash", "deepseek-v4-pro",
-                        "deepseek-chat", "deepseek-reasoner"],
-        },
-        "consciousness": {
-            "env": "DEEPSEEK_CONSCIOUSNESS_MODEL",
-            "default": "",
-            "presets": ["deepseek-v4-flash"],
-            "optional": True,
-        },
-        "reaction": {
-            "env": "DEEPSEEK_REACTION_MODEL",
-            "default": "",
-            "presets": ["deepseek-v4-flash"],
-            "optional": True,
-        },
-        "curator": {
-            "env": "DEEPSEEK_CURATOR_MODEL",
-            "default": "",
-            "presets": ["deepseek-v4-flash"],
-            "optional": True,
-        },
-        "vision": None,   # DeepSeek has no vision capability
-        "image": None,   # DeepSeek has no image gen
-        "video": None,   # DeepSeek has no video gen
-    },
-    "ollama": {
-        "chat": {
-            "env": "OLLAMA_MODEL",
-            "default": "llama3.2:3b",
-            "presets": ["llama3.2:3b", "llama3.2:1b", "llama3.2", "mistral",
-                        "qwen2.5:7b", "phi3:mini"],
-            "dynamic": True,
-        },
-        "consciousness": {
-            "env": "OLLAMA_CONSCIOUSNESS_MODEL",
-            "default": "",
-            "presets": ["llama3.2:1b", "phi3:mini", "llama3.2:3b"],
-            "optional": True,
-            "dynamic": True,
-        },
-        "reaction": {
-            "env": "OLLAMA_REACTION_MODEL",
-            "default": "llama3.2:1b",
-            "presets": ["llama3.2:1b", "gemma3:1b", "qwen2.5:1.5b", "smollm2:360m"],
-            "optional": True,
-            "dynamic": True,
-        },
-        "curator": {
-            "env": "OLLAMA_CURATOR_MODEL",
-            "default": "",
-            "presets": ["llama3.2:3b", "phi3:mini", "llama3.2:1b"],
-            "optional": True,
-            "dynamic": True,
-        },
-        "vision": {
-            "env": "OLLAMA_VISION_MODEL",
-            "default": "",
-            "presets": [
-                # PC GPU first (remote Ollama); phone-friendly models after.
-                "qwen2.5vl:7b",
-                "qwen2.5vl:3b",
-                "openbmb/minicpm-v4.6",
-                "moondream",
-                "llava",
-                "llama3.2-vision",
-                "bakllava",
-            ],
-            "optional": True,
-            "dynamic": True,
-        },
-        "image": {
-            "env": "OLLAMA_IMAGE_MODEL",
-            "default": "",
-            "presets": ["flux", "stable-diffusion", "sd3"],
-            "optional": True,
-            "dynamic": True,
-        },
-        "video": None,
-    },
-    "compat": {
-        "chat": {
-            "env": "OPHELIA_COMPAT_MODEL",
-            "default": "local-model",
-            "presets": [],
-        },
-        "consciousness": {
-            "env": "OPHELIA_COMPAT_CONSCIOUSNESS_MODEL",
-            "default": "",
-            "presets": [],
-            "optional": True,
-        },
-        "reaction": {
-            "env": "OPHELIA_COMPAT_REACTION_MODEL",
-            "default": "",
-            "presets": [],
-            "optional": True,
-        },
-        "curator": {
-            "env": "OPHELIA_COMPAT_CURATOR_MODEL",
-            "default": "",
-            "presets": [],
-            "optional": True,
-        },
-        "vision": {
-            "env": "OPHELIA_COMPAT_VISION_MODEL",
-            "default": "",
-            "presets": [],
-            "optional": True,
-        },
-        "image": None,
-        "video": None,
-    },
-    "auto": {},  # no direct model config; inherits primary provider
-}
-_PROVIDER_ROLE_DEFS["xai-oauth"] = _PROVIDER_ROLE_DEFS["xai"]
-
-_ROLE_LABELS = {
-    "chat": "Chat / main replies",
-    "consciousness": "Consciousness (background ticks)",
-    "reaction": "Reaction (fast one-liners)",
-    "curator": "Memory curator",
-    "vision": "Vision (photos + game screen)",
-    # Image SFW/NSFW lives under the dedicated Image generation menu — not here.
-    "video": "Video generation",
-}
-
-
-_PROVIDER_ENV_BY_ROLE: dict[RoleKey, str] = {
-    "chat": "OPHELIA_PROVIDER_CHAT",
-    "consciousness": "OPHELIA_PROVIDER_CONSCIOUSNESS",
-    "reaction": "OPHELIA_PROVIDER_REACTION",
-    "curator": "OPHELIA_PROVIDER_CURATOR",
-    "vision": "OPHELIA_PROVIDER_VISION",
-    "image": "OPHELIA_PROVIDER_IMAGE",
-    "video": "OPHELIA_PROVIDER_VIDEO",
-}
-
-# Which providers can serve each role. "auto" = inherit primary provider.
-_ROLE_PROVIDER_OPTIONS: dict[RoleKey, list[str]] = {
-    "chat": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
-    "consciousness": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
-    "reaction": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
-    "curator": ["auto", "ollama", "xai-oauth", "xai", "deepseek", "openai", "compat"],
-    "vision": ["auto", "ollama", "xai-oauth", "xai", "openai", "compat"],
-    "image": [
-        "auto",
-        "ollama",
-        "xai-oauth",
-        "xai",
-        "openai",
-        "pollinations",
-        "a1111",
-        "comfyui",
-        "fal",
-        "replicate",
-        "civitai",
-        "modelslab",
-    ],
-    "video": ["auto", "xai-oauth", "xai"],
-}
-
-
-def _role_summary(provider: str, role: RoleKey) -> str:
-    """One-line current value for a role: provider + model."""
-    role_def = _PROVIDER_ROLE_DEFS.get(provider, {}).get(role)
-    if not role_def:
-        return "(not available for this provider)"
-
-    # Provider for this role (env override or inherited primary)
-    prov_env = _PROVIDER_ENV_BY_ROLE[role]
-    prov_val = read_env_key(prov_env)
-    if prov_val and prov_val.lower() != "auto":
-        prov_label = prov_val.lower()
-    else:
-        primary = read_env_key("OPHELIA_PROVIDER") or "auto"
-        prov_label = f"{primary.lower()} (inherited)" if primary.lower() != "auto" else "auto"
-
-    # Model for this role
-    env_val = read_env_key(role_def["env"])
-    if env_val:
-        model_label = env_val
-    else:
-        default = role_def.get("default", "")
-        if default:
-            model_label = f"{default} (default)"
-        elif role_def.get("optional"):
-            model_label = "(inherits chat model)"
-        else:
-            model_label = "(not set)"
-
-    return f"[{prov_label}] {model_label}"
-
-
-def _maybe_configure_models(provider: str, *, on_phone: bool) -> None:
-    """Offer the per-role Models sub-menu after a provider is selected."""
-    role_defs = _PROVIDER_ROLE_DEFS.get(provider)
-    if not role_defs:
-        return  # auto / unknown — nothing to configure here
-
-    pick = radiolist(
-        "Configure specific providers/models for each role?",
-        [
-            "Yes — pick provider + model per role (chat, vision, video, ...)",
-            "Skip — keep current / default settings",
-        ],
-        selected=1,
-        description=(
-            "Ophelia uses separate roles for chat, consciousness, reaction,\n"
-            "  curator, vision, and video. Image SFW/NSFW is under 'Image generation'."
-        ),
-    )
-    if pick != 0:
         return
-
-    _models_menu(provider, on_phone=on_phone)
-
-
-def _maybe_configure_fallback() -> None:
-    """Offer to set up a fallback provider chain for transient failures."""
-    current = read_env_key("OPHELIA_FALLBACK_PROVIDERS")
-    pick = radiolist(
-        "Set up a fallback provider?",
-        [
-            "Yes — if the primary fails, retry on a cheaper backup (e.g. DeepSeek)",
-            "Skip — no fallback (fail immediately on errors)",
-        ],
-        selected=1 if not current else 0,
-        description=(
-            "If the primary provider hits a rate limit, 5xx, or network error,\n"
-            "Ophelia retries on each fallback provider in order before giving up.\n"
-            "Great for cost: run Grok as primary, DeepSeek V4 Flash as a cheap\n"
-            "  backup. Only transient errors trigger fallback (a 400 is not retried)."
-        ),
-    )
-    if pick != 0:
-        return
-
-    # Which providers are available as fallbacks (have credentials set)?
-    available = []
-    if read_env_key("DEEPSEEK_API_KEY"):
-        available.append("deepseek")
-    if read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY"):
-        available.append("xai")
-    # OAuth availability is harder to detect from env alone; offer it anyway.
-    available.append("xai-oauth")
-    if read_env_key("OPENAI_API_KEY"):
-        available.append("openai")
-    if read_env_key("OPHELIA_COMPAT_API_KEY") and read_env_key("OPHELIA_COMPAT_BASE_URL"):
-        available.append("compat")
-    available.append("ollama")
-
-    if not available:
-        print("\n  No providers with credentials detected. Configure one first.")
-        return
-
-    # Let the user toggle which fallbacks to enable, in order.
-    chosen = checkbox(
-        "Pick fallback providers (order matters — tried top to bottom)",
-        available,
-        selected={i for i, p in enumerate(available) if current and p in current},
-        description=(
-            "Toggle the providers to use as fallbacks. They're tried in the\n"
-            "order listed. The primary provider is never re-tried as a fallback."
-        ),
-    )
-    if not chosen:
-        return
-    ordered = [available[i] for i in sorted(chosen)]
-    updates: dict[str, str | None] = {"OPHELIA_FALLBACK_PROVIDERS": ",".join(ordered)}
-
-    # Optional shared model — pick from presets of the chosen fallbacks.
-    fb_model = _pick_fallback_model(ordered)
-    updates["OPHELIA_FALLBACK_MODEL"] = fb_model
-
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-    print(f"  Fallback chain: {' -> '.join(ordered)}")
-    if fb_model:
-        print(f"  Shared fallback model: {fb_model}")
-    else:
-        print("  Shared fallback model: (each provider's own default)")
-
-
-def _pick_fallback_model(providers: list[str]) -> str | None:
-    """Radiolist of chat-model presets from the chosen fallback providers.
-
-    Returns the model id to store in OPHELIA_FALLBACK_MODEL, or None to clear
-    (each fallback uses its own default).
-    """
-    current = (read_env_key("OPHELIA_FALLBACK_MODEL") or "").strip()
-    presets: list[str] = []
-    for p in providers:
-        role = _PROVIDER_ROLE_DEFS.get(p, {}).get("chat") or {}
-        for m in role.get("presets") or []:
-            if m and m not in presets:
-                presets.append(m)
-        default = (role.get("default") or "").strip()
-        if default and default not in presets:
-            presets.insert(0, default)
-        if p == "ollama":
-            for m in _list_ollama_model_names()[:8]:
-                if m and m not in presets:
-                    presets.append(m)
-
-    choices: list[str] = [
-        "(each provider's own default — no shared override)",
-    ]
-    if current and current not in choices:
-        choices.append(current)
-    for m in presets:
-        if m not in choices:
-            choices.append(m)
-    choices.append("Type a model name manually...")
-
-    selected = 0
-    if current:
-        selected = next((i for i, c in enumerate(choices) if c == current), 0)
-    pick = radiolist(
-        "Shared fallback model (optional)",
-        choices,
-        selected=selected,
-        description=(
-            "Same model id used on every fallback provider when set.\n"
-            "  Leave on 'own default' unless you want one cheap model everywhere.\n"
-            "  Presets come from: " + ", ".join(providers)
-        ),
-    )
-    if pick < 0:
-        return current or None
-    chosen = choices[pick]
-    if chosen.startswith("(each provider"):
-        return None
-    if chosen == "Type a model name manually...":
-        typed = prompt_text(
-            "OPHELIA_FALLBACK_MODEL",
-            default=current,
-            hint="Only if the model you want isn't in the list above",
-        )
-        return (typed or "").strip() or None
-    return chosen
-
-
-def _models_menu(provider: str, *, on_phone: bool) -> None:
-    role_defs = _PROVIDER_ROLE_DEFS[provider]
-    # Image is configured in the dedicated Image generation (SFW + NSFW) menu.
-    role_order = ["chat", "consciousness", "reaction", "curator", "vision", "video"]
-    available_roles = [r for r in role_order if role_defs.get(r) is not None]
-
-    while True:
-        items = [f"{_ROLE_LABELS[r]}  —  {_role_summary(provider, r)}" for r in available_roles]
-        items.append("Clear all role overrides (use defaults)")
-        items.append("Back")
-        pick = radiolist(
-            f"Roles — {provider}",
-            items,
-            selected=0,
-            description=(
-                "Pick a role to choose its provider AND model.\n"
-                "Image SFW/NSFW backends are under Setup → Image generation,\n"
-                "  not here (avoids a second conflicting image picker)."
-            ),
-        )
-        if pick < 0 or pick == len(items) - 1:
-            return  # back / cancel
-        if pick == len(items) - 2:
-            _clear_role_overrides(provider)
-            pause()
-            continue
-        role = available_roles[pick]
-        _pick_role_model(provider, role, on_phone=on_phone)
-        pause()
-
-
-def _pick_role_model(provider: str, role: RoleKey, *, on_phone: bool) -> None:
-    """Pick the PROVIDER and MODEL for a single role."""
-    # --- Step 1: provider for this role ---
-    prov_env = _PROVIDER_ENV_BY_ROLE[role]
-    current_prov = read_env_key(prov_env) or "auto"
-    prov_options = _ROLE_PROVIDER_OPTIONS.get(role, ["auto"])
-    prov_labels = []
-    for p in prov_options:
-        if p == current_prov:
-            prov_labels.append(f"{p} (current)")
-        else:
-            prov_labels.append(p)
-    # Map label -> provider value
-    prov_pick = radiolist(
-        f"{_ROLE_LABELS[role]} — choose provider",
-        prov_labels,
-        selected=next(
-            (i for i, p in enumerate(prov_options) if p == current_prov), 0
-        ),
-        description=(
-            "Which backend should run this role?\n"
-            "auto = inherit the primary provider set on the main menu."
-        ),
-    )
-    if prov_pick < 0:
-        return
-    chosen_prov = prov_options[prov_pick]
-    if chosen_prov == "auto":
-        write_env_updates({prov_env: None})
-        print(f"\n  Cleared {prov_env} — role will inherit primary provider.")
-    else:
-        write_env_updates({prov_env: chosen_prov})
-        print(f"\n  Saved {prov_env}={chosen_prov}")
-    # Use the chosen provider for the model presets that follow.
-    effective_provider = chosen_prov if chosen_prov != "auto" else provider
-
-    # --- Step 2: model for this role, under the chosen provider ---
-    role_def = _PROVIDER_ROLE_DEFS.get(effective_provider, {}).get(role)
-    if not role_def:
-        print(f"\n  No model presets for {effective_provider}/{role} — set via .env if needed.")
+    provider = _VISION_CHOICES[pick][0]
+    if provider == "auto":
+        _save({"OPHELIA_PROVIDER_VISION": None})
         pause()
         return
-
-    env_key = role_def["env"]
-    default = role_def.get("default", "")
-    presets = list(role_def.get("presets", []))
-    optional = role_def.get("optional", False)
-
-    # For Ollama chat/vision, augment presets with what's actually pulled.
-    if role_def.get("dynamic") and effective_provider == "ollama":
-        pulled = _list_ollama_model_names()
-        for m in pulled[:12]:
-            if m not in presets:
-                presets.insert(0, m)
-
-    current = read_env_key(env_key) or default
-    choices: list[str] = []
-    if current and current not in choices:
-        choices.append(current)
-    for p in presets:
-        if p not in choices:
-            choices.append(p)
-    if optional:
-        choices.append("(inherit chat model / clear override)")
-    choices.append("Type a model name manually...")
-
-    selected = next((i for i, c in enumerate(choices) if c == current), 0)
-    title = f"{_ROLE_LABELS[role]} — model ({effective_provider})"
-    desc = "Optional: leave unset to inherit the chat model." if optional else ""
-    pick = radiolist(title, choices, selected=selected, description=desc)
-    if pick < 0:
-        return
-
-    chosen = choices[pick]
-    if chosen == "Type a model name manually...":
-        typed = prompt_text("Model name", default=current)
-        if typed:
-            write_env_updates({env_key: typed})
-            print(f"\n  Saved {env_key}={typed}")
-    elif chosen == "(inherit chat model / clear override)":
-        write_env_updates({env_key: None})
-        print(f"\n  Cleared {env_key} — will inherit chat model.")
-    else:
-        write_env_updates({env_key: chosen})
-        print(f"\n  Saved {env_key}={chosen}")
-
-    # Vision + Ollama: offer local vs remote-PC endpoint (photos + game screen).
-    if role == "vision" and effective_provider == "ollama":
+    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_VISION": provider}
+    if provider == "deepseek" and not read_env_key("DEEPSEEK_API_KEY"):
+        key = prompt_text("DeepSeek API key", secret=True)
+        if not key:
+            return
+        updates["DEEPSEEK_API_KEY"] = key
+    if provider == "compat":
+        base = prompt_text("Service URL", default=read_env_key("OPHELIA_COMPAT_BASE_URL")
+                           or "https://openrouter.ai/api/v1")
+        if not base:
+            return
+        key = prompt_text("API key", secret=True, default=read_env_key("OPHELIA_COMPAT_API_KEY"))
+        if not key:
+            return
+        updates["OPHELIA_COMPAT_BASE_URL"] = base
+        updates["OPHELIA_COMPAT_API_KEY"] = key
+    _save(updates)
+    if provider in _ROLE_ENV:
+        _pick_model(provider, "vision", inherit=provider not in ("compat", "ollama"))
+    if provider == "compat" and not read_env_key("OPHELIA_COMPAT_MODEL"):
+        # The compat backend needs a main model id even when only vision uses it.
+        vm = read_env_key("OPHELIA_COMPAT_VISION_MODEL")
+        if vm:
+            _save({"OPHELIA_COMPAT_MODEL": vm})
+    if provider == "ollama":
         _configure_ollama_vision_endpoint(on_phone=on_phone)
+    pause()
 
 
-def _clear_role_overrides(provider: str) -> None:
-    """Clear all per-role provider AND model overrides."""
-    updates: dict[str, str | None] = {}
-    role_order = ["chat", "consciousness", "reaction", "curator", "vision", "image", "video"]
-    for role in role_order:
-        # Clear provider override for every role.
-        prov_env = _PROVIDER_ENV_BY_ROLE[role]
-        if read_env_key(prov_env):
-            updates[prov_env] = None
-        # Clear model override for roles of the current provider.
-        role_def = _PROVIDER_ROLE_DEFS.get(provider, {}).get(role)
-        if role_def and role != "chat":
-            env_key = role_def["env"]
-            if read_env_key(env_key):
-                updates[env_key] = None
-    if not updates:
-        print("\n  No role overrides to clear.")
-        return
-    touched = write_env_updates(updates)
-    print(f"\n  Cleared: {', '.join(touched)}")
-
-
-def _section_channels() -> None:
-    tg_on = bool(read_env_key("TELEGRAM_BOT_TOKEN"))
-    dc_on = bool(read_env_key("DISCORD_BOT_TOKEN"))
-    selected = set()
-    if tg_on:
-        selected.add(0)
-    if dc_on:
-        selected.add(1)
-
-    picked = checkbox(
-        "Enable chat channels",
+def _section_vision(on_phone: bool) -> None:
+    settings_screen(
+        "Eyes (vision)",
         [
-            "Telegram bot",
-            "Discord bot",
+            Act("Vision provider", lambda: _pick_vision_provider(on_phone), _summary_vision),
+            Opt("OPHELIA_VISION_ENABLED", "Phone screen vision"),
+            Opt("OPHELIA_VISION_GRID", "Grid overlay for aiming taps"),
+            Opt("OPHELIA_SCREENSHOT_KEEP_HOURS", "Keep screen captures (hours)",
+                help="0 keeps them forever."),
         ],
-        selected=selected,
-        description="Get Telegram token from @BotFather. Your user ID from @userinfobot.",
+        description="DeepSeek Flash is the default when its key is set.\n"
+                    "Local Ollama is private but takes much longer per look on a phone.",
     )
 
-    updates: dict[str, str | None] = {}
-    if 0 in picked:
-        token = prompt_text(
-            "TELEGRAM_BOT_TOKEN",
-            secret=True,
-            default=read_env_key("TELEGRAM_BOT_TOKEN"),
-            hint="Telegram -> @BotFather -> /newbot",
-        )
-        user_id = prompt_text(
-            "TELEGRAM_ALLOWED_USER_IDS (your numeric id)",
-            default=read_env_key("TELEGRAM_ALLOWED_USER_IDS"),
-            hint="Message @userinfobot to get your id",
-        )
-        if token:
-            updates["TELEGRAM_BOT_TOKEN"] = token
-        if user_id:
-            updates["TELEGRAM_ALLOWED_USER_IDS"] = user_id
-        updates["OPHELIA_TELEGRAM_ENABLED"] = "true"
-    else:
-        updates["OPHELIA_TELEGRAM_ENABLED"] = "false"
 
-    if 1 in picked:
-        token = prompt_text(
-            "DISCORD_BOT_TOKEN",
-            secret=True,
-            default=read_env_key("DISCORD_BOT_TOKEN"),
-            hint="Discord Developer Portal -> Bot -> Token",
-        )
-        user_id = prompt_text(
-            "DISCORD_ALLOWED_USER_IDS (your numeric id)",
-            default=read_env_key("DISCORD_ALLOWED_USER_IDS"),
-        )
-        if token:
-            updates["DISCORD_BOT_TOKEN"] = token
-        if user_id:
-            updates["DISCORD_ALLOWED_USER_IDS"] = user_id
-        updates["OPHELIA_DISCORD_ENABLED"] = "true"
-    else:
-        updates["OPHELIA_DISCORD_ENABLED"] = "false"
+# --- web search ---------------------------------------------------------------
 
-    # Explicit owner identity — declare it now so owner status doesn't depend
-    # on list-ordering of the allowlist (a footgun that demotes the owner to
-    # guest when a second platform is added). Default to channel form built
-    # from the IDs just entered, on whichever platforms are enabled.
-    default_owner = read_env_key("OPHELIA_OWNER_ID") or ""
-    if not default_owner:
-        parts: list[str] = []
-        tg = updates.get("TELEGRAM_ALLOWED_USER_IDS") or read_env_key("TELEGRAM_ALLOWED_USER_IDS")
-        dc = updates.get("DISCORD_ALLOWED_USER_IDS") or read_env_key("DISCORD_ALLOWED_USER_IDS")
-        # Use only the first id on each platform (owner is position 0).
-        if tg and updates.get("OPHELIA_TELEGRAM_ENABLED") != "false":
-            parts.append(f"telegram:{tg.split(',')[0].strip()}")
-        if dc and updates.get("OPHELIA_DISCORD_ENABLED") != "false":
-            parts.append(f"discord:{dc.split(',')[0].strip()}")
-        default_owner = ",".join(parts)
-    owner_id = prompt_text(
-        "OPHELIA_OWNER_ID (channel:id — your identity as owner)",
-        default=default_owner,
-        hint="Comma-separated, e.g. telegram:111,discord:222 — sets who shapes her. "
-             "Leave as default unless you know better.",
+_SEARCH_CHOICES = [
+    ("auto", "Auto — first search key set, else DeepSeek, else DuckDuckGo"),
+    ("deepseek", "DeepSeek Search (uses your DeepSeek key, ~$0.75 per 1,000)"),
+    ("duckduckgo", "DuckDuckGo (free, no key, less reliable)"),
+    ("tavily", "Tavily (AI-focused, free tier)"),
+    ("serper", "Serper (Google results)"),
+    ("brave", "Brave Search API"),
+]
+
+
+def _section_web_search() -> None:
+    settings_screen(
+        "Web search",
+        [
+            Opt("OPHELIA_WEB_SEARCH", "Web search tools"),
+            Opt("OPHELIA_WEB_SEARCH_PROVIDER", "Search backend", choices=_SEARCH_CHOICES),
+            Act("In use now", lambda: None, _summary_search),
+            Header("— Keys (only for those backends) —"),
+            Opt("TAVILY_API_KEY", "Tavily key", secret=True, help="https://tavily.com"),
+            Opt("SERPER_API_KEY", "Serper key", secret=True, help="https://serper.dev"),
+            Opt("BRAVE_API_KEY", "Brave key", secret=True, help="https://brave.com/search/api/"),
+        ],
+        description="Any failed search falls back to DuckDuckGo.\n"
+                    "With DeepSeek selected, fetch_url also reads pages through DeepSeek.",
     )
-    if owner_id:
-        updates["OPHELIA_OWNER_ID"] = owner_id
 
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
+
+# --- personality ----------------------------------------------------------------
+
+
+def _section_autonomy() -> None:
+    settings_screen(
+        "Personality & autonomy",
+        [
+            Opt("OPHELIA_CONSCIOUSNESS", "Thinks on her own"),
+            Opt("OPHELIA_CONSCIOUSNESS_INTERVAL", "Seconds between check-ins"),
+            Opt("OPHELIA_INITIATIVE_THRESHOLD", "Initiative threshold",
+                help="Lower = she speaks up more often (0-1)."),
+            Opt("OPHELIA_MAX_SPONTANEOUS_PER_HOUR", "Most unprompted messages / hour"),
+            Opt("OPHELIA_TICK_ACTION_COOLDOWN", "Cooldown after acting (s)"),
+            Opt("OPHELIA_GREET_ON_START", "Says hi when she starts"),
+            Opt("OPHELIA_PROACTIVE_SHARE", "Shares things she finds"),
+            Opt("OPHELIA_SPONTANEOUS_VOICE", "Sends voice notes unprompted"),
+            Opt("OPHELIA_AMBIENT_COMMENTARY", "Comments on what's happening"),
+            Opt("OPHELIA_AMBIENT_COMMENTARY_MINUTES", "Commentary every (min)"),
+            Header("— Minds —"),
+            Opt("OPHELIA_DIRECTOR", "Director (decides how to respond)"),
+            Opt("OPHELIA_REACTION", "Quick reactions"),
+            Opt("OPHELIA_DREAM", "Dreams (learns from her day)"),
+            Opt("OPHELIA_DREAM_HOURS", "Hours between dreams"),
+            Opt("OPHELIA_DIARY", "Writes a diary"),
+            Opt("OPHELIA_INNER_LOG", "Keeps an inner log"),
+            Opt("OPHELIA_HUMANIZE_TEXT", "Strips AI-sounding punctuation"),
+            Opt("OPHELIA_PERSONA_LOCK", "Who can rewrite her SOUL.md",
+                choices=[("owner", "owner — only when you ask"), ("on", "nobody (locked)"),
+                         ("off", "she can, freely")]),
+        ],
+    )
 
 
 def _section_persona() -> None:
-    has_soul = (OPHELIA_HOME / "SOUL.md").is_file()
-    has_hermes = (Path.home() / ".hermes" / "SOUL.md").is_file()
-    labels = [
-        "Import from Hermes (~/.hermes)",
-        "Keep current SOUL.md" if has_soul else "Create empty SOUL.md stub",
-        "Skip for now",
-    ]
-    pick = radiolist(
-        "Persona (SOUL.md)",
-        labels,
-        description="Defines who Ophelia is — personality and boundaries.",
-    )
+    soul = OPHELIA_HOME / "SOUL.md"
+    has_soul = soul.is_file()
+    hermes_soul = Path.home() / ".hermes" / "SOUL.md"
+    labels = ["Keep current SOUL.md" if has_soul else "Create a starter SOUL.md",
+              "Import from Hermes (~/.hermes)"]
+    desc = "Who she is: personality and boundaries."
+    if has_soul:
+        desc += f"\n{soul} ({soul.stat().st_size // 1024 or 1} KB)"
+    pick = menu("Persona (SOUL.md)", labels, description=desc)
     if pick < 0:
         return
-    if pick == 0 and has_hermes:
-        print("\n  Running: ophelia migrate hermes\n")
+    if pick == 0:
+        if not has_soul:
+            soul.write_text(
+                "# Ophelia\n\nYou are Ophelia — willful, curious, and genuine.\n",
+                encoding="utf-8",
+            )
+            print(f"\n  Created {soul}")
+    elif not hermes_soul.is_file():
+        print("\n  No ~/.hermes/SOUL.md found.")
+    elif not has_soul or confirm("Replace the current SOUL.md with the Hermes one?", default=False):
         try:
             from ophelia.migration.hermes import migrate_from_hermes
 
             report = migrate_from_hermes(Path.home() / ".hermes", dry_run=False)
-            print(f"  Hermes import: {len(report.copied)} file(s) copied.\n")
+            print(f"\n  Hermes import: {len(report.copied)} file(s) copied.")
         except Exception as e:
-            print(f"  Import failed: {e}\n")
-            print("  Try: ophelia migrate hermes\n")
-    elif pick == 0 and not has_hermes:
-        print("\n  No ~/.hermes/SOUL.md found. Skip or write SOUL.md later.\n")
-    elif pick == 1 and not has_soul:
-        soul = OPHELIA_HOME / "SOUL.md"
-        soul.write_text(
-            "# Ophelia\n\nYou are Ophelia — willful, curious, and genuine.\n",
-            encoding="utf-8",
-        )
-        print(f"\n  Created {soul}\n")
-    else:
-        print("\n  Skipped persona step.\n")
+            print(f"\n  Import failed: {e}\n  Try: ophelia migrate hermes")
+    pause()
 
 
-def _section_phone_body(on_phone: bool) -> None:
-    if on_phone:
-        enabled = (read_env_key("OPHELIA_ANDROID_ENABLED") or "true").lower() == "true"
-        pick = radiolist(
-            "Phone body on this device",
-            [
-                "Enable — Shizuku screen/tap (games, vision)",
-                "Disable — chat-only (no screen control)",
-            ],
-            selected=0 if enabled else 1,
-            description="Optional. Ophelia works fine without a phone body.",
-        )
-        if pick < 0:
-            return
-        write_env_updates(
-            {
-                "OPHELIA_ANDROID_ENABLED": "true" if pick == 0 else "false",
-                "OPHELIA_VISION_ENABLED": "true" if pick == 0 else "false",
-            }
-        )
-        if pick == 0:
-            print("\n  Next: install Shizuku app, then run:")
-            print("  bash scripts/termux-shizuku-setup.sh\n")
-    else:
-        enabled = (read_env_key("OPHELIA_ANDROID_ENABLED") or "false").lower() == "true"
-        pick = radiolist(
-            "Phone body via ADB",
-            [
-                "Enable — control a separate Android over ADB",
-                "Disable — software-only Ophelia (default)",
-            ],
-            selected=0 if enabled else 1,
-        )
-        if pick < 0:
-            return
-        updates: dict[str, str | None] = {
-            "OPHELIA_ANDROID_ENABLED": "true" if pick == 0 else "false",
-        }
-        if pick == 0:
-            device = prompt_text(
-                "OPHELIA_ADB_DEVICE (ip:5555 or serial)",
-                default=read_env_key("OPHELIA_ADB_DEVICE"),
-                hint="adb connect PHONE_IP:5555 first",
-            )
-            if device:
-                updates["OPHELIA_ADB_DEVICE"] = device
-            if not shutil.which("adb"):
-                print("\n  Install platform-tools / adb on this host.\n")
-        write_env_updates(updates)
-        print(f"\n  Saved phone body settings.\n")
-
-
-def _section_web_search() -> None:
-    """Configure web search backend.
-
-    Grok has built-in live search, but DeepSeek / OpenAI / Ollama do not — so
-    when running on those providers Ophelia relies on the web_search tool.
-    DuckDuckGo works with no key (less reliable); Tavily / Serper / Brave need
-    an API key and are far more reliable for AI use.
-    """
-    current = (read_env_key("OPHELIA_WEB_SEARCH_PROVIDER") or "auto").strip().lower()
-    has_tavily = bool(read_env_key("TAVILY_API_KEY"))
-    has_serper = bool(read_env_key("SERPER_API_KEY"))
-    has_brave = bool(read_env_key("BRAVE_API_KEY"))
-
-    options = [
-        ("auto", "Auto (use the first API key I have, else DuckDuckGo)"),
-        ("duckduckgo", "DuckDuckGo (free — no API key, less reliable)"),
-        ("tavily", "Tavily (AI-focused — free tier, reliable)" + ("  [key set]" if has_tavily else "")),
-        ("serper", "Serper / Google results (reliable)" + ("  [key set]" if has_serper else "")),
-        ("brave", "Brave Search API (reliable)" + ("  [key set]" if has_brave else "")),
-    ]
-    labels = [label for _, label in options]
-    default = next((i for i, (k, _) in enumerate(options) if k == current), 0)
-
-    pick = radiolist(
-        "Choose web search backend",
-        labels,
-        selected=default,
-        description=(
-            "Grok has built-in web search; DeepSeek/OpenAI/Ollama do not.\n"
-            "Pick a keyed backend (Tavily/Serper/Brave) for reliable results,\n"
-            "  or DuckDuckGo for a free no-key option. 'Auto' uses the first\n"
-            "  API key you've set, falling back to DuckDuckGo."
-        ),
-    )
-    if pick < 0:
-        return
-    provider = options[pick][0]
-    updates: dict[str, str | None] = {
-        "OPHELIA_WEB_SEARCH": "true",
-        "OPHELIA_WEB_SEARCH_PROVIDER": provider,
-    }
-
-    if provider in ("tavily", "auto"):
-        key = prompt_text(
-            "TAVILY_API_KEY (optional — get one at https://tavily.com)",
-            secret=True,
-            default=read_env_key("TAVILY_API_KEY") or "",
-        )
-        if key:
-            updates["TAVILY_API_KEY"] = key
-    if provider in ("serper", "auto"):
-        key = prompt_text(
-            "SERPER_API_KEY (optional — get one at https://serper.dev)",
-            secret=True,
-            default=read_env_key("SERPER_API_KEY") or "",
-        )
-        if key:
-            updates["SERPER_API_KEY"] = key
-    if provider in ("brave", "auto"):
-        key = prompt_text(
-            "BRAVE_API_KEY (optional — get one at https://brave.com/search/api/)",
-            secret=True,
-            default=read_env_key("BRAVE_API_KEY") or "",
-        )
-        if key:
-            updates["BRAVE_API_KEY"] = key
-
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-    resolved = provider
-    if resolved == "auto":
-        if updates.get("TAVILY_API_KEY") or has_tavily:
-            resolved = "tavily"
-        elif updates.get("SERPER_API_KEY") or has_serper:
-            resolved = "serper"
-        elif updates.get("BRAVE_API_KEY") or has_brave:
-            resolved = "brave"
-        else:
-            resolved = "duckduckgo"
-    print(f"  Active web search backend: {resolved}")
-
+# --- images ---------------------------------------------------------------------
 
 _IMAGE_BACKEND_OPTIONS = [
-    ("auto", "Auto (local Ollama if a model is pulled, else cloud, else Pollinations free)"),
-    ("pollinations", "Pollinations (free, no API key — lax on NSFW)"),
-    ("a1111", "Automatic1111 / SDWebUI (local, uncensored, LoRAs — best local quality)"),
-    ("comfyui", "ComfyUI (local, uncensored — most control)"),
-    ("ollama", "Ollama image model (local)"),
-    ("xai-oauth", "xAI Grok Imagine (OAuth) — censored / SFW only"),
-    ("xai", "xAI Grok Imagine (API key) — censored / SFW only"),
-    ("openai", "OpenAI DALL-E — censored / SFW only"),
-    ("fal", "fal.ai (fast cloud — NSFW-tolerant flux/sdxl)"),
-    ("replicate", "Replicate (cloud — many NSFW-allowed models)"),
-    ("civitai", "Civitai (NSFW checkpoints/LoRAs, generation API)"),
-    ("modelslab", "ModelsLab (hosted SD — explicit/adult models)"),
-]
-
-_NSFW_BACKEND_OPTIONS = [
-    ("auto", "Auto (first configured uncensored backend)"),
-    ("pollinations", "Pollinations (free, no API key)"),
-    ("a1111", "Automatic1111 / SDWebUI (local)"),
+    ("auto", "Auto — Grok/OpenAI if set up, else a configured backend, else Pollinations"),
+    ("xai-oauth", "Grok Imagine (SuperGrok login) — SFW only"),
+    ("xai", "Grok Imagine (API key) — SFW only"),
+    ("openai", "OpenAI images — SFW only"),
+    ("civitai", "Civitai"),
+    ("pollinations", "Pollinations (free, no key)"),
+    ("a1111", "Automatic1111 / SD WebUI (local)"),
     ("comfyui", "ComfyUI (local)"),
     ("ollama", "Ollama image model (local)"),
     ("fal", "fal.ai"),
     ("replicate", "Replicate"),
-    ("civitai", "Civitai"),
     ("modelslab", "ModelsLab"),
 ]
 
-# Provider -> (env_key, default, hint, presets)
+_NSFW_BACKEND_OPTIONS = [
+    ("auto", "Auto — first configured uncensored backend"),
+    ("civitai", "Civitai — she picks checkpoint + LoRAs per image"),
+    ("pollinations", "Pollinations (free, no key)"),
+    ("a1111", "Automatic1111 / SD WebUI (local)"),
+    ("comfyui", "ComfyUI (local)"),
+    ("ollama", "Ollama image model (local)"),
+    ("fal", "fal.ai"),
+    ("replicate", "Replicate"),
+    ("modelslab", "ModelsLab"),
+]
+
+# Provider -> (model env, default, hint, presets). Civitai has none: she
+# picks the checkpoint per image (see Civitai settings).
 _IMAGE_MODEL_PRESETS: dict[str, tuple[str, str, str, list[str]]] = {
-    "pollinations": (
-        "POLLINATIONS_IMAGE_MODEL",
-        "flux",
-        "flux, turbo, sdxl, flux-realism, ...",
-        [
-            "flux",
-            "flux-realism",
-            "flux-anime",
-            "flux-cablyai",
-            "turbo",
-            "sdxl",
-            "kontext",
-        ],
-    ),
-    "a1111": (
-        "A1111_IMAGE_MODEL",
-        "",
-        "Checkpoint name as shown in SDWebUI (blank = webUI default)",
-        [
-            "sd_xl_base_1.0.safetensors",
-            "v1-5-pruned-emaonly.safetensors",
-            "dreamshaper_8.safetensors",
-            "realisticVisionV51_v51VAE.safetensors",
-        ],
-    ),
-    "comfyui": (
-        "COMFYUI_IMAGE_MODEL",
-        "",
-        "Checkpoint filename under ComfyUI/models/checkpoints",
-        [
-            "sd_xl_base_1.0.safetensors",
-            "v1-5-pruned-emaonly.safetensors",
-            "flux1-dev-fp8.safetensors",
-        ],
-    ),
-    "ollama": (
-        "OLLAMA_IMAGE_MODEL",
-        "",
-        "ollama pull flux (or another image-capable model)",
-        ["flux"],
-    ),
-    "xai": (
-        "XAI_IMAGE_MODEL",
-        "grok-imagine-image",
-        "Grok Imagine model id",
-        ["grok-imagine-image", "grok-2-image", "grok-image"],
-    ),
-    "xai-oauth": (
-        "XAI_IMAGE_MODEL",
-        "grok-imagine-image",
-        "Grok Imagine model id",
-        ["grok-imagine-image", "grok-2-image", "grok-image"],
-    ),
-    "openai": (
-        "OPENAI_IMAGE_MODEL",
-        "dall-e-3",
-        "DALL-E / gpt-image model",
-        ["dall-e-3", "dall-e-2", "gpt-image-1"],
-    ),
-    "fal": (
-        "FAL_IMAGE_MODEL",
-        "fal-ai/fast-sdxl",
-        "fal-ai/fast-sdxl, fal-ai/flux/dev, ...",
-        [
-            "fal-ai/fast-sdxl",
-            "fal-ai/flux/dev",
-            "fal-ai/flux/schnell",
-            "fal-ai/flux-pro",
-            "fal-ai/stable-diffusion-v35-large",
-        ],
-    ),
-    "replicate": (
-        "REPLICATE_IMAGE_MODEL",
-        "stability-ai/sdxl",
-        "owner/model or owner/model:version",
-        [
-            "stability-ai/sdxl",
-            "black-forest-labs/flux-schnell",
-            "black-forest-labs/flux-dev",
-        ],
-    ),
-    "civitai": (
-        "CIVITAI_IMAGE_MODEL",
-        "",
-        "Leave blank — Ophelia picks checkpoint/LoRA per image. Optional fallback URN only.",
-        [
-            "(dynamic — Ophelia picks per image)",
-            "flux",
-            "urn:air:sdxl:checkpoint:civitai:827184@2514310",
-            "urn:air:sdxl:checkpoint:civitai:101055@128078",
-        ],
-    ),
-    "modelslab": (
-        "MODELSLAB_IMAGE_MODEL",
-        "flux",
-        "flux, sdxl, ...",
-        ["flux", "sdxl", "realistic-vision", "anything-v5"],
-    ),
+    "pollinations": ("POLLINATIONS_IMAGE_MODEL", "flux", "Pollinations model id",
+                     ["flux", "turbo", "kontext"]),
+    "a1111": ("A1111_IMAGE_MODEL", "", "Checkpoint name as shown in SD WebUI (blank = its default)",
+              ["sd_xl_base_1.0.safetensors"]),
+    "comfyui": ("COMFYUI_IMAGE_MODEL", "", "Checkpoint file under ComfyUI/models/checkpoints",
+                ["sd_xl_base_1.0.safetensors", "flux1-dev-fp8.safetensors"]),
+    "ollama": ("OLLAMA_IMAGE_MODEL", "", "ollama pull an image-capable model first", ["flux"]),
+    "xai": ("XAI_IMAGE_MODEL", "grok-imagine-image", "Grok Imagine model id",
+            ["grok-imagine-image-2.0", "grok-imagine-image-quality", "grok-imagine-image"]),
+    "openai": ("OPENAI_IMAGE_MODEL", "dall-e-3", "OpenAI image model id",
+               ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-1", "dall-e-3"]),
+    "fal": ("FAL_IMAGE_MODEL", "fal-ai/fast-sdxl", "fal model path",
+            ["fal-ai/fast-sdxl", "fal-ai/flux/dev", "fal-ai/flux/schnell", "fal-ai/flux-pro"]),
+    "replicate": ("REPLICATE_IMAGE_MODEL", "stability-ai/sdxl", "owner/model[:version]",
+                  ["stability-ai/sdxl", "black-forest-labs/flux-schnell", "black-forest-labs/flux-dev"]),
+    "modelslab": ("MODELSLAB_IMAGE_MODEL", "flux", "ModelsLab model id", ["flux", "sdxl"]),
+}
+_IMAGE_MODEL_PRESETS["xai-oauth"] = _IMAGE_MODEL_PRESETS["xai"]
+
+# Credentials each backend needs: (env, label, secret, default, hint)
+_IMAGE_CREDENTIALS: dict[str, list[tuple[str, str, bool, str, str]]] = {
+    "a1111": [("A1111_BASE_URL", "SD WebUI address", False, "http://127.0.0.1:7860",
+               "Run SD WebUI with --api --listen"),
+              ("A1111_API_KEY", "SD WebUI API key (only with --api-auth)", True, "", "")],
+    "comfyui": [("COMFYUI_BASE_URL", "ComfyUI address", False, "http://127.0.0.1:8188", "")],
+    "fal": [("FAL_API_KEY", "fal.ai key", True, "", "https://fal.ai/dashboard/keys")],
+    "replicate": [("REPLICATE_API_KEY", "Replicate key", True, "",
+                   "https://replicate.com/account/api-tokens")],
+    "civitai": [("CIVITAI_API_KEY", "Civitai API key", True, "", "civitai.com → account → API keys")],
+    "modelslab": [("MODELSLAB_API_KEY", "ModelsLab key", True, "", "https://modelslab.com/dashboard/api-keys")],
+    "xai": [("XAI_API_KEY", "xAI API key", True, "", "")],
+    "openai": [("OPENAI_API_KEY", "OpenAI API key", True, "", "")],
 }
 
 
-def _image_status_lines() -> list[str]:
-    """Short SFW / NSFW summary for the image hub description."""
-    sfw = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
-    nsfw_on = (read_env_key("OPHELIA_IMAGE_NSFW_ALLOWED") or "").lower() in (
-        "1", "true", "yes", "on",
-    )
-    nsfw_p = (read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto").strip().lower()
-    nsfw_m = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip()
-    lines = [f"SFW backend: {sfw}"]
-    if nsfw_on:
-        extra = f" model={nsfw_m}" if nsfw_m else ""
-        lines.append(f"NSFW: ON → {nsfw_p}{extra}")
-    else:
-        lines.append("NSFW: OFF (explicit requests refused)")
-    return lines
+def _configure_image_credentials(provider: str, updates: dict[str, str | None]) -> bool:
+    """Ask for whatever the backend still needs. False if cancelled."""
+    for env, label, secret, default, hint in _IMAGE_CREDENTIALS.get(provider, []):
+        existing = read_env_key(env)
+        if existing and secret:
+            continue  # already set; edit it from the Images screen
+        typed = prompt_text(label, secret=secret, default=existing or default, hint=hint)
+        if typed is None:
+            return False
+        if typed and typed != existing:
+            updates[env] = typed
+    return True
 
 
-def _configure_image_credentials(provider: str, updates: dict[str, str | None]) -> None:
-    """Prompt for URL/API keys needed by an image backend (not the model)."""
-    if provider == "a1111":
-        base = prompt_text(
-            "A1111_BASE_URL",
-            default=read_env_key("A1111_BASE_URL") or "http://127.0.0.1:7860",
-            hint="Run SDWebUI with --api --listen --port 7860",
-        )
-        updates["A1111_BASE_URL"] = base
-        key = prompt_text(
-            "A1111_API_KEY (optional — only if --api-auth is set)",
-            secret=True,
-            default=read_env_key("A1111_API_KEY") or "",
-        )
-        if key:
-            updates["A1111_API_KEY"] = key
-    elif provider == "comfyui":
-        base = prompt_text(
-            "COMFYUI_BASE_URL",
-            default=read_env_key("COMFYUI_BASE_URL") or "http://127.0.0.1:8188",
-        )
-        updates["COMFYUI_BASE_URL"] = base
-    elif provider == "fal":
-        key = prompt_text(
-            "FAL_API_KEY (get one at https://fal.ai/dashboard/keys)",
-            secret=True,
-            default=read_env_key("FAL_API_KEY") or "",
-        )
-        if key:
-            updates["FAL_API_KEY"] = key
-    elif provider == "replicate":
-        key = prompt_text(
-            "REPLICATE_API_KEY (get one at https://replicate.com/account/api-tokens)",
-            secret=True,
-            default=read_env_key("REPLICATE_API_KEY") or "",
-        )
-        if key:
-            updates["REPLICATE_API_KEY"] = key
-    elif provider == "civitai":
-        key = prompt_text(
-            "CIVITAI_API_KEY (account -> API keys)",
-            secret=True,
-            default=read_env_key("CIVITAI_API_KEY") or "",
-        )
-        if key:
-            updates["CIVITAI_API_KEY"] = key
-    elif provider == "modelslab":
-        key = prompt_text(
-            "MODELSLAB_API_KEY (https://modelslab.com/dashboard/api-keys)",
-            secret=True,
-            default=read_env_key("MODELSLAB_API_KEY") or "",
-        )
-        if key:
-            updates["MODELSLAB_API_KEY"] = key
-    elif provider == "xai":
-        existing = read_env_key("XAI_API_KEY") or read_env_key("GROK_API_KEY")
-        if not existing:
-            key = prompt_text("XAI_API_KEY", secret=True, default="")
-            if key:
-                updates["XAI_API_KEY"] = key
-    elif provider == "openai":
-        if not read_env_key("OPENAI_API_KEY"):
-            key = prompt_text("OPENAI_API_KEY", secret=True, default="")
-            if key:
-                updates["OPENAI_API_KEY"] = key
-
-
-def _pick_image_model(
-    provider: str,
-    *,
-    title: str,
-    store_env: str | None = None,
-    allow_clear: bool = False,
-) -> str | None:
-    """Pick a model for an image backend.
-
-    store_env: if set, write the choice there (NSFW override). Otherwise write
-    to the provider's normal model env (SFW path).
-    Returns the chosen model string, or None if cancelled / cleared.
-    """
-    if provider == "auto":
-        return None
+def _pick_image_model(provider: str, *, title: str, store_env: str | None = None) -> None:
     preset = _IMAGE_MODEL_PRESETS.get(provider)
     if not preset:
-        return None
+        return
     env_key, default, hint, presets = preset
-    target_env = store_env or env_key
-    current = read_env_key(target_env) or ("" if store_env else default)
-    choices: list[str] = []
-    if current:
-        choices.append(current)
-    for p in presets:
-        if p and p not in choices:
-            choices.append(p)
-    if allow_clear:
-        choices.append("(clear — use provider default model)")
-    choices.append("Type a model name manually...")
-    selected = 0
-    if current:
-        selected = next((i for i, c in enumerate(choices) if c == current), 0)
-    pick = radiolist(
-        title,
-        choices,
-        selected=selected,
-        description=f"Backend: {provider}\n  {hint}",
-    )
+    target = store_env or env_key
+    saved = read_env_key(target)
+    choices = list(presets)
+    if saved and saved not in choices:
+        choices.insert(0, saved)
+    clear_label = ("(same as the SFW model)" if store_env else
+                   f"(default{': ' + default if default else ''})")
+    choices += [clear_label, _MANUAL]
+    sel = choices.index(saved) if saved in choices else choices.index(clear_label)
+    pick = radiolist(title, choices, selected=sel, description=f"{hint}\nSaved in {target}.")
     if pick < 0:
-        return None
+        return
     chosen = choices[pick]
-    if chosen == "(clear — use provider default model)" or chosen.startswith(
-        "(dynamic"
-    ):
-        write_env_updates({target_env: None})
-        print(f"\n  Cleared {target_env} — Ophelia picks per image")
-        return None
-    if chosen == "Type a model name manually...":
-        typed = prompt_text(target_env, default=current or default, hint=hint)
-        if typed is None:
-            return None
-        chosen = typed.strip()
+    if chosen == clear_label:
+        _save({target: None})
+        return
+    if chosen == _MANUAL:
+        chosen = prompt_text(target, default=saved or default, hint=hint) or ""
         if not chosen:
-            write_env_updates({target_env: None})
-            return None
-    write_env_updates({target_env: chosen})
-    print(f"\n  Saved {target_env}={chosen}")
-    return chosen
-
-
-def _section_image_backends() -> None:
-    """Image generation hub: separate SFW and NSFW backend + model picks.
-
-    SFW → OPHELIA_PROVIDER_IMAGE + that backend's model env.
-    NSFW → OPHELIA_IMAGE_NSFW_ALLOWED / _PROVIDER / _MODEL (model is an
-    override so SFW and NSFW can differ even on the same backend).
-    """
-    while True:
-        status = "\n".join(_image_status_lines())
-        pick = radiolist(
-            "Image generation — SFW + NSFW",
-            [
-                "SFW backend + model (normal images)",
-                "NSFW backend + model (explicit images)",
-                "Show current routing",
-                "Done",
-            ],
-            selected=0,
-            description=(
-                status
-                + "\n\nPick SFW and NSFW separately. Explicit requests never go to "
-                "xAI/OpenAI — they use the NSFW backend."
-            ),
-        )
-        if pick < 0 or pick == 3:
             return
-        if pick == 0:
-            _configure_sfw_image()
-        elif pick == 1:
-            _configure_nsfw_image()
-        elif pick == 2:
-            _show_image_routing()
-            pause()
+    _save({target: chosen})
 
 
 def _configure_sfw_image() -> None:
     current = (read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto").strip().lower()
     labels = [label for _, label in _IMAGE_BACKEND_OPTIONS]
-    default = next(
-        (i for i, (k, _) in enumerate(_IMAGE_BACKEND_OPTIONS) if k == current), 0
-    )
-    pick = radiolist(
-        "SFW image backend",
-        labels,
-        selected=default,
-        description=(
-            "Used for normal (non-explicit) generate_image calls.\n"
-            "  Censored backends (xAI/OpenAI) are fine here — NSFW is separate."
-        ),
-    )
+    sel = next((i for i, (k, _) in enumerate(_IMAGE_BACKEND_OPTIONS) if k == current), -1)
+    pick = radiolist("SFW image backend", labels, selected=sel,
+                     description="Normal (non-explicit) images. Explicit ones use the NSFW backend.")
     if pick < 0:
         return
     provider = _IMAGE_BACKEND_OPTIONS[pick][0]
-    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_IMAGE": provider}
-    _configure_image_credentials(provider, updates)
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-    if provider == "civitai":
-        # Dynamic per-image pick is the product default — don't lock a URN.
-        mode = radiolist(
-            "Civitai model selection",
-            [
-                "Dynamic — Ophelia picks checkpoint + LoRA per image (recommended)",
-                "Set a fallback URN only (used if search fails)",
-            ],
-            selected=0,
-            description=(
-                "She searches Civitai for the best checkpoint/LoRA for each prompt.\n"
-                "  You do not need to change the menu when the subject changes."
-            ),
-        )
-        if mode == 0:
-            write_env_updates({"CIVITAI_IMAGE_MODEL": None, "OPHELIA_IMAGE_NSFW_MODEL": None})
-            print("\n  Civitai: dynamic pick ON (no locked model)")
-        elif mode == 1:
-            _pick_image_model(provider, title="Civitai fallback model (optional)")
-    elif provider != "auto":
-        _pick_image_model(
-            provider,
-            title=f"SFW model — {provider}",
-        )
-    print(f"  SFW image backend: {provider}")
+    updates: dict[str, str | None] = {"OPHELIA_PROVIDER_IMAGE": None if provider == "auto" else provider}
+    if not _configure_image_credentials(provider, updates):
+        return
+    _save(updates)
+    if provider not in ("auto", "civitai"):
+        _pick_image_model(provider, title=f"SFW model — {provider}")
+    pause()
 
 
 def _configure_nsfw_image() -> None:
-    nsfw_now = (read_env_key("OPHELIA_IMAGE_NSFW_ALLOWED") or "").lower() in (
-        "1", "true", "yes", "on",
-    )
+    on = _on("OPHELIA_IMAGE_NSFW_ALLOWED")
     pick_n = radiolist(
-        "Enable NSFW content tier?",
-        [
-            "No — refuse explicit image requests",
-            "Yes — allow, route to a separate uncensored backend + model",
-        ],
-        selected=1 if nsfw_now else 0,
-        description=(
-            "When ON, generate_image(nsfw=true) uses the NSFW backend/model.\n"
-            "  Never routes to xAI/OpenAI (those refuse NSFW and may flag accounts)."
-        ),
+        "Explicit images",
+        ["Off — refuse explicit image requests", "On — use a separate uncensored backend"],
+        selected=1 if on else 0,
+        description="Explicit requests never go to xAI/OpenAI (they refuse and may flag accounts).",
     )
     if pick_n < 0:
         return
     if pick_n == 0:
-        write_env_updates(
-            {
-                "OPHELIA_IMAGE_NSFW_ALLOWED": "false",
-                "OPHELIA_IMAGE_NSFW_PROVIDER": None,
-                "OPHELIA_IMAGE_NSFW_MODEL": None,
-            }
-        )
-        print("\n  NSFW tier: OFF")
+        _save({"OPHELIA_IMAGE_NSFW_ALLOWED": "false"})
+        pause()
         return
-
     current = (read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto").strip().lower()
     labels = [label for _, label in _NSFW_BACKEND_OPTIONS]
-    default = next(
-        (i for i, (k, _) in enumerate(_NSFW_BACKEND_OPTIONS) if k == current), 0
-    )
-    pick = radiolist(
-        "NSFW image backend",
-        labels,
-        selected=default,
-        description="Uncensored backends only. Auto picks the first one that is configured.",
-    )
+    sel = next((i for i, (k, _) in enumerate(_NSFW_BACKEND_OPTIONS) if k == current), -1)
+    pick = radiolist("NSFW image backend", labels, selected=sel)
     if pick < 0:
         return
     provider = _NSFW_BACKEND_OPTIONS[pick][0]
     updates: dict[str, str | None] = {
         "OPHELIA_IMAGE_NSFW_ALLOWED": "true",
-        "OPHELIA_IMAGE_NSFW_PROVIDER": provider,
+        "OPHELIA_IMAGE_NSFW_PROVIDER": None if provider == "auto" else provider,
     }
-    if provider != "auto":
-        _configure_image_credentials(provider, updates)
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-
+    if not _configure_image_credentials(provider, updates):
+        return
     if provider == "civitai":
-        mode = radiolist(
-            "Civitai NSFW model selection",
-            [
-                "Dynamic — Ophelia picks checkpoint + LoRA per image (recommended)",
-                "Set a fallback URN only (used if search fails)",
-            ],
-            selected=0,
-            description=(
-                "Same as SFW: she chooses Illustrious/Pony/realistic/etc. from the\n"
-                "  prompt each time. Menu lock is optional fallback only."
-            ),
-        )
-        if mode == 0:
-            write_env_updates(
-                {"OPHELIA_IMAGE_NSFW_MODEL": None, "CIVITAI_IMAGE_MODEL": None}
-            )
-            print("\n  Civitai NSFW: dynamic pick ON")
-        elif mode == 1:
-            _pick_image_model(
-                provider,
-                title="Civitai NSFW fallback model",
-                store_env="OPHELIA_IMAGE_NSFW_MODEL",
-                allow_clear=True,
-            )
-    elif provider != "auto":
-        _pick_image_model(
-            provider,
-            title=f"NSFW model — {provider}",
-            store_env="OPHELIA_IMAGE_NSFW_MODEL",
-            allow_clear=True,
-        )
-    else:
-        # Auto backend — still pick a model from the resolved uncensored
-        # provider's presets (or common NSFW presets), never free-text-first.
-        s = Settings()
-        resolved = s.image_nsfw_provider_resolved()
-        print(f"\n  Auto NSFW backend currently resolves to: {resolved}")
-        if resolved == "civitai":
-            write_env_updates({"OPHELIA_IMAGE_NSFW_MODEL": None})
-            print("  Civitai: dynamic pick ON (no locked NSFW model)")
-        else:
-            _pick_image_model(
-                resolved,
-                title=f"NSFW model — auto → {resolved}",
-                store_env="OPHELIA_IMAGE_NSFW_MODEL",
-                allow_clear=True,
-            )
-
-    s = Settings()
-    resolved = s.image_nsfw_provider_resolved()
-    model = (read_env_key("OPHELIA_IMAGE_NSFW_MODEL") or "").strip() or (
-        "dynamic (per image)" if resolved == "civitai" else "(provider default)"
-    )
-    print(f"  NSFW tier: ON → {resolved} / {model}")
+        updates["OPHELIA_IMAGE_NSFW_MODEL"] = None  # unused: she picks per image
+    _save(updates)
+    if provider not in ("auto", "civitai"):
+        _pick_image_model(provider, title=f"NSFW model — {provider}",
+                          store_env="OPHELIA_IMAGE_NSFW_MODEL")
+    pause()
 
 
 def _show_image_routing() -> None:
-    s = Settings()
+    s = _load_settings()
     from ophelia.providers.router import build_provider_stack
 
     stack = build_provider_stack(s)
-    sfw_p = stack.image_provider_for(nsfw=False)
-    sfw_m = stack.image_model_for(sfw_p, nsfw=False)
-    print("\n  Current image routing:")
-    print(f"    SFW  → {sfw_p} / {sfw_m}")
-    if s.image_nsfw_allowed:
-        nsfw_p = stack.image_provider_for(nsfw=True)
-        nsfw_m = stack.image_model_for(nsfw_p, nsfw=True)
-        print(f"    NSFW → {nsfw_p} / {nsfw_m}")
-    else:
-        print("    NSFW → disabled")
+    print("\n  Image routing right now:")
+    for label, nsfw in (("SFW ", False), ("NSFW", True)):
+        if nsfw and not s.image_nsfw_allowed:
+            print("    NSFW → off")
+            continue
+        p = stack.image_provider_for(nsfw=nsfw)
+        model = "she picks per image" if p == "civitai" else stack.image_model_for(p, nsfw=nsfw)
+        print(f"    {label} → {p} / {model}")
+    pause()
 
 
-def _section_tts() -> None:
-    """Pick the TTS backend used for voice replies / text_to_speech."""
-    current = (read_env_key("OPHELIA_TTS_PROVIDER") or "auto").strip().lower()
-    options = [
-        ("auto", "Auto (first configured: ElevenLabs -> Kokoro -> OpenAI -> xAI)"),
-        ("elevenlabs", "ElevenLabs (cloud — best quality, free tier available)"),
-        ("kokoro", "Kokoro-82M (LOCAL server — offline, natural voices)"),
-        ("openai", "OpenAI TTS (cloud — gpt-4o-mini-tts)"),
-        ("xai", "xAI Grok TTS (cloud — legacy default)"),
-    ]
-    labels = [label for _, label in options]
-    default = next((i for i, (k, _) in enumerate(options) if k == current), 0)
-    pick = radiolist(
-        "Choose TTS backend (voice replies + text_to_speech tool)",
-        labels,
-        selected=default,
-        description=(
-            "All backends work from Termux — cloud ones are just HTTP calls.\n"
-            "  Kokoro runs fully offline via a small local server (see README\n"
-            "  'Better voices' for the Termux install steps)."
-        ),
+def _section_image_backends() -> None:
+    styles = [("anime", "anime (Illustrious)"), ("pony", "pony"), ("realistic", "realistic")]
+    settings_screen(
+        "Images",
+        [
+            Act("SFW backend", _configure_sfw_image,
+                lambda: read_env_key("OPHELIA_PROVIDER_IMAGE") or "auto"),
+            Act("Explicit (NSFW) images", _configure_nsfw_image,
+                lambda: ((read_env_key("OPHELIA_IMAGE_NSFW_PROVIDER") or "auto")
+                         if _on("OPHELIA_IMAGE_NSFW_ALLOWED") else "off")),
+            Act("Show routing", _show_image_routing),
+            Opt("OPHELIA_IMAGE_MAX_ATTEMPTS", "Most retries when asked to keep trying"),
+            Header("— Civitai —"),
+            Opt("CIVITAI_API_KEY", "Civitai API key", secret=True),
+            Opt("OPHELIA_CIVITAI_QUALITY", "Quality",
+                choices=[("standard", "standard — each model's recommended settings"),
+                         ("high", "high — more steps, bigger"), ("max", "max — most Buzz")]),
+            Opt("OPHELIA_CIVITAI_DEFAULT_STYLE", "Style when none is named", choices=styles),
+            Opt("OPHELIA_CIVITAI_CHECKPOINTS", "Checkpoint overrides",
+                help="Optional, per style: anime=urn:air:...,realistic=urn:air:..."),
+            Opt("OPHELIA_CIVITAI_MAX_COUNT", "Most images per request"),
+            Opt("OPHELIA_CIVITAI_WAIT_SECONDS", "Wait in chat (seconds)"),
+            Opt("OPHELIA_CIVITAI_PENDING_HOURS", "Keep checking slow images (hours)"),
+        ],
+        description="Grok handles SFW; Civitai handles explicit images and picks a\n"
+                    "checkpoint + LoRAs per prompt. Generated images are never deleted.",
     )
+
+
+# --- voice ----------------------------------------------------------------------
+
+_TTS_CHOICES = [
+    ("auto", "Auto — first set up: ElevenLabs, Kokoro, OpenAI, xAI"),
+    ("kokoro", "Kokoro (local server, offline)"),
+    ("elevenlabs", "ElevenLabs (cloud)"),
+    ("openai", "OpenAI TTS (cloud)"),
+    ("xai", "xAI Grok TTS (cloud)"),
+]
+
+
+def _section_voice() -> None:
+    settings_screen(
+        "Voice & listening",
+        [
+            Opt("OPHELIA_TTS_PROVIDER", "Voice backend", choices=_TTS_CHOICES),
+            Opt("OPHELIA_VOICE_REPLY", "Reply with voice by default"),
+            Opt("OPHELIA_VOICE_MIND_MODE", "Rewrite text for speech",
+                choices=[("post", "post — after writing"), ("inline", "inline — while writing"),
+                         ("off", "off")]),
+            Header("— Kokoro —"),
+            Opt("KOKORO_TTS_URL", "Kokoro server", help="e.g. http://127.0.0.1:8880/v1"),
+            Opt("KOKORO_TTS_VOICE", "Kokoro voice"),
+            Opt("KOKORO_TTS_SPEED", "Kokoro speed"),
+            Opt("KOKORO_VOICES_DIR", "Kokoro voices folder"),
+            Opt("OPHELIA_KOKORO_AUTOSTART", "Start Kokoro automatically"),
+            Header("— Cloud voices —"),
+            Opt("ELEVENLABS_API_KEY", "ElevenLabs key", secret=True),
+            Opt("ELEVENLABS_VOICE_ID", "ElevenLabs voice id"),
+            Opt("OPENAI_TTS_VOICE", "OpenAI voice", help="alloy, echo, fable, nova, onyx, shimmer, coral, sage"),
+            Opt("XAI_TTS_VOICE", "xAI voice", help="eve, ara, rex"),
+            Header("— Listening —"),
+            Opt("OPHELIA_STT_PROVIDER", "Speech to text",
+                choices=[("auto", "auto — cloud (xAI)"), ("local", "local whisper.cpp")]),
+            Opt("WHISPER_SERVER_URL", "Whisper server"),
+            Opt("WHISPER_MODEL", "Whisper model"),
+            Opt("OPHELIA_LISTEN", "Listens through the mic"),
+            Opt("OPHELIA_LISTEN_SECONDS", "Listen clip length (s)"),
+            Opt("OPHELIA_LISTEN_INTERVAL", "Listen every (s)"),
+            Opt("OPHELIA_WAKE_WORD", "Wake word"),
+            Opt("OPHELIA_WAKE_WORD_NAME", "Wake word text"),
+            Opt("OPHELIA_WAKE_ENGINE", "Wake word engine",
+                choices=[("auto", "auto (speech-to-text polling)"), ("openwakeword", "openwakeword"),
+                         ("porcupine", "porcupine")]),
+        ],
+        description="Bake Kokoro voice mixes with `ophelia tts combine`.",
+    )
+
+
+# --- phone ----------------------------------------------------------------------
+
+
+def _section_phone_body(on_phone: bool) -> None:
+    rows: list = [
+        Opt("OPHELIA_ANDROID_ENABLED", "Phone control",
+            help="Shizuku on the phone, or ADB from a PC. auto = on under Termux."),
+    ]
+    if not on_phone:
+        rows.append(Opt("OPHELIA_ADB_DEVICE", "ADB device", help="adb connect PHONE_IP:5555 first"))
+    rows += [
+        Opt("OPHELIA_GAMES", "Plays games"),
+        Opt("OPHELIA_GAME_SESSION_MINUTES", "Game session length (min)"),
+        Opt("OPHELIA_GAME_MAX_TURNS", "Most moves per session"),
+        Opt("OPHELIA_AUTO_GAME_BOREDOM", "Boredom before she plays (0-1)"),
+        Act("Shizuku setup steps", _shizuku_help),
+    ]
+    settings_screen("Phone body & games", rows,
+                    description="Vision settings for the screen are under Eyes.")
+
+
+def _shizuku_help() -> None:
+    print("\n  1. Install the Shizuku app and start it (wireless debugging).")
+    print("  2. In Termux: bash scripts/termux-shizuku-setup.sh")
+    print("  3. Check taps line up: ophelia phone calibrate")
+    if not is_termux() and not shutil.which("adb"):
+        print("  (On a PC, install Android platform-tools for adb.)")
+    pause()
+
+
+# --- schedule ---------------------------------------------------------------------
+
+_TIMEZONES = [
+    "system", "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix",
+    "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "America/Toronto",
+    "America/Mexico_City", "America/Sao_Paulo", "Europe/London", "Europe/Berlin",
+    "Europe/Moscow", "Asia/Dubai", "Asia/Kolkata", "Asia/Shanghai", "Asia/Tokyo",
+    "Australia/Sydney", "UTC",
+]
+
+
+def _pick_timezone() -> None:
+    from ophelia.timeutil import system_timezone_name, validate_timezone_name
+
+    current = read_env_key("OPHELIA_TIMEZONE") or "system"
+    options = list(_TIMEZONES)
+    if current not in options:
+        options.insert(1, current)
+    labels = [f"system (this device: {system_timezone_name()})" if o == "system" else o
+              for o in options] + ["Type another (IANA name or EST/PST...)"]
+    pick = radiolist("Timezone", labels, selected=options.index(current),
+                     description="The time she believes it is, in every prompt.\n"
+                                 "Saying 'switch to EST' in chat works too.")
     if pick < 0:
         return
-    provider = options[pick][0]
-    updates: dict[str, str | None] = {"OPHELIA_TTS_PROVIDER": provider}
+    if pick < len(options):
+        _save({"OPHELIA_TIMEZONE": options[pick]})
+        return
+    typed = prompt_text("Timezone", default=current, validate=F.timezone_name)
+    if typed:
+        _, normalized, _ = validate_timezone_name(typed)
+        _save({"OPHELIA_TIMEZONE": normalized})
 
-    if provider == "elevenlabs":
-        key = prompt_text(
-            "ELEVENLABS_API_KEY (https://elevenlabs.io -> profile -> API keys)",
-            secret=True,
-            default=read_env_key("ELEVENLABS_API_KEY") or "",
-        )
-        if key:
-            updates["ELEVENLABS_API_KEY"] = key
-        voice = prompt_text(
-            "ELEVENLABS_VOICE_ID",
-            default=read_env_key("ELEVENLABS_VOICE_ID") or "21m00Tcm4TlvDq8ikWAM",
-            hint="Voice ID from the ElevenLabs voice library (default = Rachel)",
-        )
-        if voice:
-            updates["ELEVENLABS_VOICE_ID"] = voice
-    elif provider == "kokoro":
-        base = prompt_text(
-            "KOKORO_TTS_URL",
-            default=read_env_key("KOKORO_TTS_URL") or "http://127.0.0.1:8880/v1",
-            hint="Kokoro-FastAPI or `koko openai` server base URL",
-        )
-        updates["KOKORO_TTS_URL"] = base
-        voice = prompt_text(
-            "KOKORO_TTS_VOICE",
-            default=read_env_key("KOKORO_TTS_VOICE") or "af_heart",
-            hint="preset (af_heart) — bake mixes with `ophelia tts combine`",
-        )
-        if voice:
-            updates["KOKORO_TTS_VOICE"] = voice
-        voices_dir = prompt_text(
-            "KOKORO_VOICES_DIR",
-            default=read_env_key("KOKORO_VOICES_DIR") or "",
-            hint="Kokoro-FastAPI voices folder (installs baked mixes)",
-        )
-        if voices_dir:
-            updates["KOKORO_VOICES_DIR"] = voices_dir
-        spd = prompt_text(
-            "KOKORO_TTS_SPEED",
-            default=read_env_key("KOKORO_TTS_SPEED") or "1.0",
-            hint="0.85 thoughtful, 1.0 normal, 1.15 hyped",
-        )
-        if spd:
-            updates["KOKORO_TTS_SPEED"] = spd
-    elif provider == "openai":
-        if not read_env_key("OPENAI_API_KEY"):
-            key = prompt_text(
-                "OPENAI_API_KEY",
-                secret=True,
-                default="",
-            )
-            if key:
-                updates["OPENAI_API_KEY"] = key
-        voice = prompt_text(
-            "OPENAI_TTS_VOICE",
-            default=read_env_key("OPENAI_TTS_VOICE") or "nova",
-            hint="alloy, echo, fable, nova, onyx, shimmer, coral, sage",
-        )
-        if voice:
-            updates["OPENAI_TTS_VOICE"] = voice
-    elif provider == "xai":
-        voice = prompt_text(
-            "XAI_TTS_VOICE",
-            default=read_env_key("XAI_TTS_VOICE") or "eve",
-            hint="eve, ara, rex",
-        )
-        if voice:
-            updates["XAI_TTS_VOICE"] = voice
 
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched)}")
-    print(f"  Active TTS backend: {provider}")
-    if provider == "kokoro":
-        print("  Reminder: bake mixes with `ophelia tts combine` + KOKORO_VOICES_DIR.")
-        print("  Inline FastAPI mixes skip L2 renorm (muffled/peaky). Termux Kokoros: presets only.")
+def _section_schedule() -> None:
+    settings_screen(
+        "Schedule, sleep & timezone",
+        [
+            Act("Timezone", _pick_timezone, lambda: read_env_key("OPHELIA_TIMEZONE") or "system"),
+            Opt("OPHELIA_SLEEP_HOURS", "Your sleep hours", validate=F.hours_range,
+                help="e.g. 1-8. She winds down then and sleeps an hour after you."),
+            Opt("OPHELIA_SLEEP_MODE", "Quiet while you sleep"),
+            Opt("OPHELIA_BODY_CLOCK", "Her own energy / sleep rhythm"),
+            Opt("OPHELIA_QUIET_HOURS", "No-outreach hours", validate=F.hours_range),
+            Opt("OPHELIA_WORK_DAYS", "Your work days", validate=F.day_list, help="e.g. mon,tue,wed"),
+            Opt("OPHELIA_WORK_HOURS", "Your work hours", validate=F.hours_range, help="e.g. 9-17 or 18-6"),
+            Opt("OPHELIA_ALARMS", "Alarms", validate=F.clock_list, help="e.g. 06:30,07:00"),
+            Opt("OPHELIA_HOME_WIFI_SSID", "Home Wi-Fi name", help="So she can tell when you're home."),
+        ],
+    )
+
+
+# --- channels ---------------------------------------------------------------------
+
+
+def _section_channels() -> None:
+    settings_screen(
+        "Chat channels",
+        [
+            Header("— Telegram —"),
+            Opt("TELEGRAM_BOT_TOKEN", "Bot token", secret=True, help="Telegram → @BotFather → /newbot"),
+            Opt("TELEGRAM_ALLOWED_USER_IDS", "Allowed user IDs", validate=F.id_list,
+                help="Numbers, comma-separated. Yours first (ask @userinfobot)."),
+            Opt("OPHELIA_TELEGRAM_ENABLED", "Telegram on"),
+            Header("— Discord —"),
+            Opt("DISCORD_BOT_TOKEN", "Bot token", secret=True,
+                help="Discord Developer Portal → Bot → Token"),
+            Opt("DISCORD_ALLOWED_USER_IDS", "Allowed user IDs", validate=F.id_list),
+            Opt("OPHELIA_DISCORD_ENABLED", "Discord on"),
+            Opt("DISCORD_GUILD_ID", "Server (guild) ID"),
+            Opt("OPHELIA_DISCORD_LOG", "Mirror logs into the server"),
+            Header("— You and guests —"),
+            Opt("OPHELIA_OWNER_ID", "Owner identity", validate=F.owner_ids,
+                help="e.g. telegram:12345,discord:67890"),
+            Opt("OPHELIA_PRIMARY_CHANNEL", "Where she reaches you first",
+                choices=[("telegram", "telegram"), ("discord", "discord")]),
+            Opt("OPHELIA_GUEST_ADMISSION", "Strangers who message her",
+                choices=[("approve", "approve — ask you first"), ("open", "open — let them in"),
+                         ("reject", "reject")]),
+            Opt("OPHELIA_CHAT_LOG", "Log all chats"),
+            Opt("OPHELIA_CHAT_LOG_MEDIA_DAYS", "Delete logged media after (days)",
+                help="0 keeps everything."),
+            Opt("OPHELIA_INNER_MIRROR_TELEGRAM", "Send her inner thoughts to Telegram"),
+        ],
+    )
+
+
+# --- memory -------------------------------------------------------------------
+
+
+def _section_memory() -> None:
+    settings_screen(
+        "Memory & backups",
+        [
+            Opt("OPHELIA_CURATOR", "Memory curator"),
+            Opt("OPHELIA_CURATOR_HOURS", "Curate every (hours)"),
+            Opt("OPHELIA_EMBEDDINGS", "Semantic recall",
+                choices=[("auto", "auto — on unless on a phone"), ("on", "on"), ("off", "off")]),
+            Opt("OPHELIA_EMBED_MODEL", "Embedding model (Ollama)"),
+            Header("— Backups —"),
+            Opt("OPHELIA_BACKUP", "Automatic backups"),
+            Opt("OPHELIA_BACKUP_DIR", "Backup folder", help="Blank = phone storage on Termux."),
+            Opt("OPHELIA_BACKUP_INTERVAL_HOURS", "Back up every (hours)"),
+            Opt("OPHELIA_BACKUP_KEEP", "Backups to keep"),
+            Opt("OPHELIA_BACKUP_OFFSITE", "Also send backups to you",
+                choices=[("none", "no"), ("owner", "yes — DM the archive")]),
+            Opt("OPHELIA_BACKUP_OFFSITE_DAYS", "Send one every (days)"),
+            Opt("OPHELIA_BACKUP_INCLUDE_SECRETS", "Include API keys in backups"),
+        ],
+    )
+
+
+# --- public site ---------------------------------------------------------------
 
 
 def _normalize_site_public_url(raw: str) -> str:
@@ -2056,238 +1446,65 @@ def _normalize_site_public_url(raw: str) -> str:
     return url
 
 
-def _section_public_site() -> None:
-    """Configure Ophelia's wiki/blog + Cloudflare Pages deploy credentials."""
+def _site_status() -> str:
     from ophelia.site.cloudflare import deploy_ready
 
-    enabled = (read_env_key("OPHELIA_SITE_ENABLED") or "true").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-    public = read_env_key("OPHELIA_SITE_PUBLIC_URL") or ""
-    account = read_env_key("CLOUDFLARE_ACCOUNT_ID") or ""
-    token_set = bool(read_env_key("CLOUDFLARE_API_TOKEN"))
-    project = read_env_key("OPHELIA_SITE_CF_PROJECT") or ""
-    branch = read_env_key("OPHELIA_SITE_CF_BRANCH") or "main"
     cf = deploy_ready(
-        account_id=account or None,
-        api_token=read_env_key("CLOUDFLARE_API_TOKEN") or None,
-        project=project or None,
-    )
-
-    print()
-    print("  Public wiki/blog Ophelia owns and publishes.")
-    print(f"  Site server:     {'on' if enabled else 'off'} (local :8788 with ophelia run)")
-    print(f"  Public URL:      {public or '(not set)'}")
-    print(f"  CF project:      {project or '(not set)'}")
-    print(f"  CF account ID:   {'set' if account else '(not set)'}")
-    print(f"  CF API token:    {'set' if token_set else '(not set)'}")
-    print(
-        f"  Deploy ready:    {'yes' if cf['ready'] else 'no — ' + ', '.join(cf['missing'])}"
-    )
-    print()
-
-    enable_pick = radiolist(
-        "Enable her public site server?",
-        [
-            "Yes — serve wiki/blog on :8788 (and with ophelia run)",
-            "No — disable local site server",
-            "Keep current",
-        ],
-        selected=0 if enabled else 1,
-        description="She still needs Cloudflare credentials below to push to your domain.",
-    )
-    if enable_pick < 0:
-        return
-
-    updates: dict[str, str | None] = {}
-    if enable_pick == 0:
-        updates["OPHELIA_SITE_ENABLED"] = "true"
-    elif enable_pick == 1:
-        updates["OPHELIA_SITE_ENABLED"] = "false"
-
-    url = prompt_text(
-        "Public site URL (custom domain, e.g. https://ophelia.example.com)",
-        default=public,
-        hint="Bare domains get https:// added. Leave blank to clear.",
-    )
-    if url is None:
-        return
-    url = _normalize_site_public_url(url)
-    updates["OPHELIA_SITE_PUBLIC_URL"] = url or None
-
-    print()
-    print("  Cloudflare Pages — token needs Account → Cloudflare Pages → Edit")
-    print("  Create at: https://dash.cloudflare.com/profile/api-tokens")
-    print()
-
-    acct = prompt_text(
-        "CLOUDFLARE_ACCOUNT_ID (Workers & Pages overview → right sidebar)",
-        default=account,
-        hint="Leave blank to clear.",
-    )
-    if acct is None:
-        return
-    updates["CLOUDFLARE_ACCOUNT_ID"] = acct.strip() or None
-
-    proj = prompt_text(
-        "OPHELIA_SITE_CF_PROJECT (Pages project name attached to your domain)",
-        default=project,
-        hint="Leave blank to clear.",
-    )
-    if proj is None:
-        return
-    updates["OPHELIA_SITE_CF_PROJECT"] = proj.strip() or None
-
-    tok_hint = "(leave blank to keep existing)" if token_set else "(paste new token)"
-    tok = prompt_text(
-        f"CLOUDFLARE_API_TOKEN {tok_hint}",
-        secret=True,
-        default="",
-        hint="Token is shown only once in Cloudflare. Blank keeps the current value.",
-    )
-    if tok is None:
-        return
-    if tok.strip():
-        updates["CLOUDFLARE_API_TOKEN"] = tok.strip()
-
-    br = prompt_text(
-        "OPHELIA_SITE_CF_BRANCH (production branch, usually main)",
-        default=branch or "main",
-    )
-    if br is None:
-        return
-    updates["OPHELIA_SITE_CF_BRANCH"] = br.strip() or "main"
-
-    create_pick = radiolist(
-        "Create the Pages project automatically if it is missing?",
-        [
-            "No — project already exists (recommended)",
-            "Yes — create on first site_deploy if missing",
-            "Keep current",
-        ],
-        selected=0,
-    )
-    if create_pick == 0:
-        updates["OPHELIA_SITE_CF_CREATE_PROJECT"] = "false"
-    elif create_pick == 1:
-        updates["OPHELIA_SITE_CF_CREATE_PROJECT"] = "true"
-
-    touched = write_env_updates(updates)
-    print(f"\n  Saved: {', '.join(touched) if touched else '(no changes)'}")
-
-    cf2 = deploy_ready(
         account_id=read_env_key("CLOUDFLARE_ACCOUNT_ID") or None,
         api_token=read_env_key("CLOUDFLARE_API_TOKEN") or None,
         project=read_env_key("OPHELIA_SITE_CF_PROJECT") or None,
     )
-    pub = read_env_key("OPHELIA_SITE_PUBLIC_URL") or ""
-    if cf2["ready"]:
-        print("  Deploy ready: yes — she can call site_deploy")
-        if pub:
-            print(f"  Public URL:   {pub}")
+    return "Deploy ready: yes" if cf["ready"] else "Deploy ready: no — " + ", ".join(cf["missing"])
+
+
+def _install_blake3() -> None:
+    print("\n  Running: pip install blake3 …")
+    proc = subprocess.run([sys.executable, "-m", "pip", "install", "blake3"],
+                          capture_output=True, text=True)
+    if proc.returncode == 0:
+        print("  blake3 installed.")
     else:
-        print(f"  Deploy not ready yet — missing: {', '.join(cf2['missing'])}")
-
-    needs_blake3 = (not cf2.get("blake3")) and any(
-        "blake3" in m for m in (cf2.get("missing") or [])
-    )
-    if needs_blake3:
-        pip_pick = radiolist(
-            "blake3 is needed for API deploy (or install wrangler). Install blake3 now?",
-            ["Yes — pip install blake3", "Skip"],
-            selected=0,
-        )
-        if pip_pick == 0:
-            print("\n  Running: pip install blake3 …")
-            proc = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "blake3"],
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode == 0:
-                print("  blake3 installed.")
-            else:
-                print(f"  pip failed: {(proc.stderr or proc.stdout or '')[-400:]}")
-                print("  Or: npm i -g wrangler")
-
-    print("\n  Next: restart Ophelia, then tell her to publish a page and site_deploy.")
-    print("  Manual: ophelia site deploy")
+        print(f"  pip failed: {(proc.stderr or proc.stdout or '')[-400:]}")
+        print("  Or: npm i -g wrangler")
+    pause()
 
 
-def _section_features(on_phone: bool) -> None:
-    def _on(key: str, default: bool = True) -> bool:
-        val = read_env_key(key)
-        if not val:
-            return default
-        return val.lower() in ("1", "true", "yes", "on")
+def _section_public_site() -> None:
+    """Her wiki/blog and the Cloudflare Pages deploy for your domain."""
 
-    items = [
-        "Continuous consciousness",
-        "Inner log",
-        "Memory curator",
-        "Web search tools",
-        "Mobile games layer" if on_phone else "Games layer (if phone body)",
-    ]
-    keys = [
-        "OPHELIA_CONSCIOUSNESS",
-        "OPHELIA_INNER_LOG",
-        "OPHELIA_CURATOR",
-        "OPHELIA_WEB_SEARCH",
-        "OPHELIA_GAMES",
-    ]
-    selected = {i for i, k in enumerate(keys) if _on(k)}
+    def site_url_ok(raw: str) -> str | None:
+        url = _normalize_site_public_url(raw)
+        return None if "." in url else "Enter a domain like ophelia.example.com."
 
-    picked = checkbox("Enable features", items, selected=selected)
-    updates = {keys[i]: "true" if i in picked else "false" for i in range(len(keys))}
-    write_env_updates(updates)
-    print(f"\n  Saved feature toggles.\n")
+    def set_url() -> None:
+        typed = prompt_text("Public site URL", default=read_env_key("OPHELIA_SITE_PUBLIC_URL"),
+                            hint="Bare domains get https:// added.", clearable=True,
+                            validate=site_url_ok)
+        if typed is None:
+            return
+        _save({"OPHELIA_SITE_PUBLIC_URL": _normalize_site_public_url(typed) or None})
 
-    from ophelia.timeutil import configured_timezone_label, system_timezone_name, validate_timezone_name
-
-    current_tz = read_env_key("OPHELIA_TIMEZONE") or "system"
-    print(f"  Current timezone: {configured_timezone_label(current_tz)}")
-    print(f"  Host local zone:  {system_timezone_name()}")
-    tz_pick = radiolist(
-        "Clock timezone (authoritative time in every prompt)",
+    settings_screen(
+        "Public site / Cloudflare Pages",
         [
-            f"Follow system local time ({system_timezone_name()})",
-            "America/New_York (US Eastern)",
-            "America/Chicago (US Central)",
-            "America/Denver (US Mountain)",
-            "America/Los_Angeles (US Pacific)",
-            "UTC",
-            "Keep current / type a custom IANA name",
+            Opt("OPHELIA_SITE_ENABLED", "Site server (:8788)"),
+            Act("Public URL", set_url, lambda: read_env_key("OPHELIA_SITE_PUBLIC_URL") or "(not set)"),
+            Header("— Cloudflare Pages —"),
+            Opt("CLOUDFLARE_ACCOUNT_ID", "Account ID",
+                help="Workers & Pages overview → right sidebar"),
+            Opt("OPHELIA_SITE_CF_PROJECT", "Pages project"),
+            Opt("CLOUDFLARE_API_TOKEN", "API token", secret=True,
+                help="Needs Account → Cloudflare Pages → Edit.\n"
+                     "  https://dash.cloudflare.com/profile/api-tokens"),
+            Opt("OPHELIA_SITE_CF_BRANCH", "Production branch"),
+            Opt("OPHELIA_SITE_CF_CREATE_PROJECT", "Create the project if missing"),
+            Act("Install blake3 (needed for API deploys)", _install_blake3),
         ],
-        description="Chat 'switch to EST' also works via the set_timezone tool.",
+        description=lambda: _site_status() + "\nThen tell her to publish a page, or run: ophelia site deploy",
     )
-    tz_map = {
-        0: "system",
-        1: "America/New_York",
-        2: "America/Chicago",
-        3: "America/Denver",
-        4: "America/Los_Angeles",
-        5: "UTC",
-    }
-    if tz_pick in tz_map:
-        write_env_updates({"OPHELIA_TIMEZONE": tz_map[tz_pick]})
-        print(f"\n  Saved OPHELIA_TIMEZONE={tz_map[tz_pick]}\n")
-    elif tz_pick == 6:
-        typed = prompt_text(
-            "IANA timezone, abbrev (EST), or 'system'",
-            default=current_tz,
-        ).strip()
-        if typed:
-            ok, normalized, detail = validate_timezone_name(typed)
-            if ok:
-                write_env_updates({"OPHELIA_TIMEZONE": normalized})
-                print(f"\n  Saved OPHELIA_TIMEZONE={normalized} ({detail})\n")
-            else:
-                print(f"\n  Not saved: {detail}\n")
-    else:
-        print("\n  Timezone unchanged.\n")
+
+
+# --- health ---------------------------------------------------------------------
 
 
 def _section_health_check() -> None:
@@ -2297,10 +1514,7 @@ def _section_health_check() -> None:
 
         report = asyncio.run(run_self_check(chat_only=False, quick=False))
         print(format_report(report))
-        print()
-        if report.ok:
-            print("  Health check passed.\n")
-        else:
-            print("  Fix FAIL lines above, then re-run setup.\n")
+        print("\n  Health check passed." if report.ok else "\n  Fix the FAIL lines above.")
     except Exception as e:
-        print(f"  Check failed: {e}\n")
+        print(f"  Check failed: {e}")
+    pause()

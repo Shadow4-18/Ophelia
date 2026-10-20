@@ -932,7 +932,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         return await search_web(query, max_results=max_results, settings=self.settings)
 
     async def _fetch_url(self, url: str, max_chars: int = 8000) -> str:
-        return await fetch_url(url, max_chars=max_chars)
+        return await fetch_url(url, max_chars=max_chars, settings=self.settings)
 
     async def _look_at_web_page(
         self, url: str, width: str = "phone", question: str = "", full_page: bool = False

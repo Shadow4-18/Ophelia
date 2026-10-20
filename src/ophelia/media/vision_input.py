@@ -60,7 +60,7 @@ async def describe_image_file(
     extra_body: dict | None = None
     if isinstance(backend, OllamaBackend):
         extra_body = {"keep_alive": settings.ollama_keep_alive}
-    elif backend.provider_name == "deepseek" and not settings.deepseek_thinking:
+    elif backend.provider_name() == "deepseek" and not settings.deepseek_thinking:
         # Vision descriptions don't need DeepSeek's thinking mode — the long
         # reasoning_content just slows the response and adds no value for a
         # straight image description.

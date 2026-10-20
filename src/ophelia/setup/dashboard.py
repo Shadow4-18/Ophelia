@@ -7,24 +7,14 @@ Hotkeys: r=refresh now, p=pause, s=resume, i=inner log, q=back.
 
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
 
 from ophelia.config import OPHELIA_HOME
-from ophelia.setup import tui
-
-HEARTBEAT_PATH = OPHELIA_HOME / "data" / "heartbeat.json"
-PAUSE_FLAG = OPHELIA_HOME / "data" / "pause.flag"
+from ophelia.setup import launcher, tui
 
 
 def _read_heartbeat() -> dict:
-    if not HEARTBEAT_PATH.is_file():
-        return {}
-    try:
-        return json.loads(HEARTBEAT_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return launcher._read_heartbeat()
 
 
 def _format_dashboard(hb: dict) -> list[str]:
@@ -37,12 +27,14 @@ def _format_dashboard(hb: dict) -> list[str]:
             "",
         ]
     age = int(time.time() - float(hb.get("ts", 0)))
-    running = age < 120
+    running = launcher._is_running()
     paused = hb.get("paused", False)
     state = "paused" if paused else ("running" if running else "stale")
 
     drives = hb.get("drives", {}) or {}
-    drives_str = "  ".join(f"{k}={v:.2f}" for k, v in drives.items()) if drives else "n/a"
+    drives_str = "  ".join(
+        f"{k}={v:.2f}" if isinstance(v, (int, float)) else f"{k}={v}" for k, v in drives.items()
+    ) or "n/a"
 
     channels = hb.get("channels", []) or []
     chan_str = ", ".join(channels) if channels else "none"
@@ -121,11 +113,13 @@ def run_dashboard() -> None:
                 if row >= max_y - 1:
                     break
                 attr = curses.A_NORMAL
-                stripped = line.strip()
-                if stripped.startswith("*"):
-                    attr = curses.color_pair(1)
-                elif stripped.startswith("o") and "stale" in line:
-                    attr = curses.color_pair(2)
+                if line.strip().startswith("State:"):
+                    if " running" in line:
+                        attr = curses.color_pair(1) | curses.A_BOLD
+                    elif " paused" in line:
+                        attr = curses.color_pair(4)
+                    else:
+                        attr = curses.color_pair(2)
                 try:
                     stdscr.addnstr(row, 0, line, max_x - 1, attr)
                 except curses.error:
@@ -142,11 +136,11 @@ def run_dashboard() -> None:
             if key == ord("r"):
                 continue
             if key == ord("p"):
-                PAUSE_FLAG.parent.mkdir(parents=True, exist_ok=True)
-                PAUSE_FLAG.write_text("1", encoding="utf-8")
+                launcher.PAUSE_FLAG.parent.mkdir(parents=True, exist_ok=True)
+                launcher.PAUSE_FLAG.write_text("1", encoding="utf-8")
                 continue
             if key == ord("s"):
-                PAUSE_FLAG.unlink(missing_ok=True)
+                launcher.PAUSE_FLAG.unlink(missing_ok=True)
                 continue
             if key == ord("i"):
                 _show_inner_popup(stdscr)

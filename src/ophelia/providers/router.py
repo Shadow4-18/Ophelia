@@ -29,7 +29,7 @@ ROLE_ENV: dict[ProviderRole, str] = {
     "video": "OPHELIA_PROVIDER_VIDEO",
 }
 
-VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "compat", "ollama"})
+VISION_CAPABLE = frozenset({"xai-oauth", "xai", "openai", "deepseek", "compat", "ollama"})
 
 # Image-only media providers (no chat/vision). Several are NSFW-capable.
 # See Settings.NSFW_CAPABLE_PROVIDERS for the uncensored subset.
@@ -319,6 +319,8 @@ def _provider_configured_for_role(
             return bool(settings.xai_api_key or _xai_oauth_available(settings))
         if provider == "openai":
             return bool(settings.openai_api_key)
+        if provider == "deepseek":
+            return _deepseek_available(settings) and bool(settings.deepseek_vision_resolved())
         if provider == "compat":
             return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
         return True
@@ -341,8 +343,8 @@ def _provider_configured_for_role(
             return bool(settings.openai_api_key)
         return bool(settings.openai_api_key)
     if provider == "deepseek":
-        if role in ("image", "video", "vision"):
-            return False  # DeepSeek has no image/video/vision capability
+        if role in ("image", "video"):
+            return False  # DeepSeek makes no images or video
         return _deepseek_available(settings)
     if provider == "compat":
         return bool(settings.compat_api_key and settings.compat_base_url and settings.compat_model)
@@ -378,7 +380,7 @@ def _provider_default_model_for_role(
         return settings.openai_model
     if provider == "deepseek":
         if role == "vision":
-            return settings.deepseek_vision_model or settings.deepseek_model
+            return settings.deepseek_vision_resolved()
         return settings.deepseek_model
     if provider == "compat":
         if role == "vision":
@@ -414,6 +416,10 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
     """Local-first: prefer Ollama when reachable, cloud as fallback."""
 
     if role == "vision":
+        # DeepSeek Flash sees fast and cheaply in the cloud; local Ollama
+        # vision takes tens of seconds per look on a phone CPU.
+        if _deepseek_available(settings) and settings.deepseek_vision_resolved():
+            return "deepseek"
         if _ollama_reachable(settings) and settings.ollama_vision_model:
             return "ollama"
         if _xai_oauth_available(settings):
@@ -425,7 +431,7 @@ def _auto_pick_provider(settings: Settings, role: ProviderRole) -> str:
         if settings.compat_api_key and settings.compat_base_url:
             return "compat"
         # No vision-capable provider configured. Prefer Grok OAuth (can do
-        # vision) as a last resort; never fall back to deepseek for vision.
+        # vision) as a last resort.
         if _xai_oauth_available(settings):
             return "xai-oauth"
         return "ollama"
@@ -545,7 +551,7 @@ def build_backend_for_name(settings: Settings, name: str, *, role: ProviderRole 
             consciousness_model=settings.deepseek_consciousness_model,
             reaction_model=settings.deepseek_reaction_model,
             curator_model=settings.deepseek_curator_model,
-            vision_model=settings.deepseek_vision_model,
+            vision_model=settings.deepseek_vision_resolved(),
             label=f"DeepSeek @ {settings.deepseek_base_url}",
             provider_name="deepseek",
         )
@@ -617,7 +623,7 @@ class ProviderStack:
         if name == "openai" and role == "vision":
             return self.settings.openai_vision_model or self.settings.openai_model
         if name == "deepseek" and role == "vision":
-            return self.settings.deepseek_vision_model or self.settings.deepseek_model
+            return self.settings.deepseek_vision_resolved() or "deepseek-flash"
         if name == "compat" and role == "vision" and self.settings.compat_vision_model:
             return self.settings.compat_vision_model
         backend = self.backend(role)
@@ -660,6 +666,8 @@ class ProviderStack:
             return False
         if name == "ollama":
             return bool(self.settings.ollama_vision_model)
+        if name == "deepseek":
+            return bool(self.settings.deepseek_vision_resolved())
         return True
 
     def fallback_chain(self, role: ProviderRole = "chat") -> list[tuple[str, str]]:

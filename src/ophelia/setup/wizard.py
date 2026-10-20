@@ -38,17 +38,9 @@ def _example_env() -> Path | None:
 
 
 def _read_env_key(key: str) -> str:
-    env_path = OPHELIA_HOME / ".env"
-    if not env_path.is_file():
-        return ""
-    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        if k.strip() == key:
-            return v.strip().strip('"').strip("'")
-    return ""
+    from ophelia.setup.env_io import read_env_key
+
+    return read_env_key(key)
 
 
 def _check_ophelia_installed() -> tuple[bool, str]:
@@ -232,10 +224,10 @@ def _steps_phone() -> list[SetupStep]:
         SetupStep(
             4,
             "Choose AI brain (provider)",
-            "Local-first: Ollama on PC later; on phone xAI OAuth or Ollama if you run it.",
+            "On the phone: DeepSeek (cheap, can also see), Grok, or Ollama if you run it.",
             [
                 "ophelia setup    # interactive menus — no manual .env editing",
-                "# or: ophelia auth import-grok / import-hermes for SuperGrok",
+                "# SuperGrok: ophelia auth import-grok (or import-hermes)",
                 "ophelia models   # hardware tips if using Ollama",
             ],
             _check_chat_provider,
@@ -243,11 +235,10 @@ def _steps_phone() -> list[SetupStep]:
         SetupStep(
             5,
             "Persona (SOUL.md)",
-            "Who Ophelia is — import from Hermes or write your own.",
+            "Who Ophelia is — write your own, or bring hers over from Hermes.",
             [
-                "ophelia migrate hermes --dry-run",
-                "ophelia migrate hermes",
-                f'# or create: nano "{OPHELIA_HOME}/SOUL.md"',
+                f'nano "{OPHELIA_HOME}/SOUL.md"',
+                "# from Hermes: ophelia migrate hermes --dry-run, then ophelia migrate hermes",
             ],
             _check_soul,
             optional=True,
@@ -384,11 +375,11 @@ def _steps_pc() -> list[SetupStep]:
         SetupStep(
             5,
             "Persona (SOUL.md)",
-            "Personality file — or import Hermes history.",
+            "Personality file — write it, copy it from the phone, or import from Hermes.",
             [
-                "ophelia migrate hermes",
+                f'# edit: "{OPHELIA_HOME}/SOUL.md"',
                 "ophelia transfer cloud-download \"URL\"",
-                f'# or: "{OPHELIA_HOME}/SOUL.md"',
+                "ophelia migrate hermes",
             ],
             _check_soul,
             optional=True,
@@ -402,7 +393,7 @@ def _steps_pc() -> list[SetupStep]:
                 'ophelia chat "hello, who are you?"',
                 "ophelia ui",
             ],
-            lambda: (False, "run ophelia check --chat-only until chat provider is OK"),
+            _check_chat_provider,
             manual_note="UI opens browser workstation at http://127.0.0.1:8765",
         ),
         SetupStep(

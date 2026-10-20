@@ -74,8 +74,8 @@ def write_env_updates(updates: dict[str, str | None]) -> list[str]:
         new_lines.append(line)
 
     for key, val in remaining.items():
-        touched.append(key)
         if val is not None and val != "":
+            touched.append(key)
             new_lines.append(f"{key}={_quote(val)}")
 
     path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
@@ -84,7 +84,12 @@ def write_env_updates(updates: dict[str, str | None]) -> list[str]:
 
 def _unquote(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
+        inner = value[1:-1]
+        if value[0] == '"':
+            # Undo _quote's escaping (python-dotenv reads it the same way);
+            # without this every re-save doubled the backslashes.
+            inner = re.sub(r'\\([\\"])', r"\1", inner)
+        return inner
     return value
 
 
