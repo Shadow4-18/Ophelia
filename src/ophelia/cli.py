@@ -710,6 +710,52 @@ def cmd_persona(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Back up / list / restore her identity, memories and databases."""
+    from ophelia import backup
+
+    settings = Settings()
+    where = backup.backup_dir(settings)
+    if args.action == "list":
+        items = backup.list_backups(where)
+        if not items:
+            print(f"No backups in {where} yet. Run `ophelia backup` to make one.")
+        for p in items:
+            print(f"{p.name}  {p.stat().st_size / 1_048_576:.1f} MB")
+        return 0
+    if args.action == "restore":
+        if not args.file:
+            print("Usage: ophelia backup restore <archive> (see `ophelia backup list`)")
+            return 1
+        import os
+
+        from ophelia.core.single_instance import acquire_run_lock
+
+        token = acquire_run_lock()
+        if token is None:
+            print("Ophelia is running — stop her first (`ophelia stop` or Ctrl+C), then restore.")
+            return 1
+        try:
+            path = Path(args.file)
+            if not path.is_file():
+                path = where / args.file
+            print(backup.restore_backup(path))
+        finally:
+            if isinstance(token, int) and token >= 0:
+                os.close(token)
+        return 0
+    path = backup.create_backup(
+        where,
+        include_secrets=args.secrets or settings.backup_include_secrets,
+        keep=settings.backup_keep,
+    )
+    print(f"Backup written: {path} ({path.stat().st_size / 1_048_576:.1f} MB)")
+    if settings.backup_offsite != "owner":
+        print("Tip: copy it off the phone, or set OPHELIA_BACKUP_OFFSITE=owner so "
+              "she DMs you a copy weekly.")
+    return 0
+
+
 def cmd_models(_: argparse.Namespace) -> int:
     from ophelia.providers.cookbook import detect_system, format_cookbook, list_ollama_models
 
@@ -1400,6 +1446,16 @@ def main(argv: list[str] | None = None) -> int:
     p_eval.add_argument("--list", action="store_true", help="List scenarios and exit")
     p_eval.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_backup = sub.add_parser(
+        "backup", help="Back up / list / restore her identity, memories and databases"
+    )
+    p_backup.add_argument("action", nargs="?", default="now", choices=["now", "list", "restore"])
+    p_backup.add_argument("file", nargs="?", help="restore: archive path or name")
+    p_backup.add_argument(
+        "--secrets", action="store_true", help="Include .env and OAuth tokens in this backup"
+    )
+    p_backup.set_defaults(func=cmd_backup)
 
     p_persona = sub.add_parser(
         "persona",

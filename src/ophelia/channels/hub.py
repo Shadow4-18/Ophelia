@@ -198,6 +198,20 @@ class ChannelHub:
                 except Exception as e:
                     log.warning("hub.proactive_media_failed", platform=gw.platform, error=str(e))
 
+    async def send_owner_document(self, path, caption: str = "") -> bool:
+        """DM a file to the owner on every configured platform. True if any
+        delivery succeeded (used for off-phone backups)."""
+        sent = False
+        for gw in self._gateways:
+            sender = getattr(gw, "send_owner_document", None)
+            if not gw.is_configured() or not callable(sender):
+                continue
+            try:
+                sent = bool(await sender(path, caption)) or sent
+            except Exception as e:
+                log.warning("hub.owner_document_failed", platform=gw.platform, error=str(e))
+        return sent
+
     async def broadcast_proactive_voice(self, text: str, *, owners_only: bool = True) -> None:
         """Synthesize and send a spontaneous voice note to the owner.
 

@@ -620,12 +620,23 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
 | `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
+| `ophelia backup` | Back up her identity, memories and databases now; `list`; `restore <archive>` (stop her first). Runs daily on its own — see `OPHELIA_BACKUP_*` |
 | `ophelia persona` | Personality drift report: SOUL self-rewrites (with her reasons), wiped PROMPTER backups, generic lessons. `restore soul\|prompter <file>`, `forget --generic` |
 | `ophelia eval` | Behavioural evals: scripted situations vs her real model, tools stubbed (`--runs 3`, `--judge`, `--list`) |
 
 **Tests:** `pip install pytest pytest-asyncio && pytest tests/ -q` — guards the
 life-loop regressions (humor scoring, life-context inference, wake availability,
 mood→behavior knobs, director parsing, curator reconciliation, autonomous resume).
+
+**Backups:** she backs herself up daily (SOUL, growth, prompter, memories,
+persona history, site, databases — not generated media or secrets), keeping
+7. On Termux they land in phone storage (`termux-setup-storage` once) so they
+survive clearing Termux. To survive losing the phone, set
+`OPHELIA_BACKUP_OFFSITE=owner` and she DMs you the archive weekly. Restore with
+`ophelia backup restore <archive>` — your current state is saved first.
+
+**CI:** every PR and push to `main` runs the test suite on Python 3.11 and 3.13
+plus a job pinned to the Termux dependency versions (`.github/workflows/tests.yml`).
 
 **Evals:** `ophelia eval` checks how she actually *behaves* with your real
 model + SOUL — tick JSON leaking into chat, invented "stillness" reports,

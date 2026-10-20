@@ -663,6 +663,26 @@ class DiscordGateway:
             )
             return False
 
+    async def send_owner_document(self, path, caption: str = "") -> bool:
+        """DM a file (e.g. a backup archive) to the owner. Discord DMs cap
+        uploads at ~10 MB, so larger files are skipped (Telegram allows 50)."""
+        if not self._bot:
+            return False
+        import discord
+
+        p = Path(path).expanduser()
+        if not p.is_file() or p.stat().st_size > 10 * 1024 * 1024:
+            return False
+        sent = False
+        for uid in self._proactive_recipients(owners_only=True):
+            try:
+                user = await self._bot.fetch_user(uid)
+                await user.send(content=(caption or "")[:2000] or None, file=discord.File(str(p)))
+                sent = True
+            except Exception as e:
+                log.warning("discord.owner_document_failed", user=uid, error=str(e))
+        return sent
+
     async def send_proactive_media(
         self, path, *, caption: str = "", owners_only: bool = True
     ) -> None:
