@@ -263,6 +263,7 @@ off — but together they're the difference between "alive" and "responsive".
 | **Curiosity trails** | `curiosity_trail_*` tools | Self-chosen rabbit holes she deepens across idle check-ins; an open trail beats a generic idle nudge. |
 | **Conversation tone** | (automatic) | Tracks each owner conversation's tone, length and emotional weight (cheap regexes, no model call) and greets you properly after a long gap. Works on every surface, web UI included. |
 | **Phone body senses** | `phone_vibrate` · `phone_notifications` · `phone_battery` | Buzz, read recent notifications, and feel battery/charging state via Termux:API (or the shell bridge). Owner-only. |
+| **Human texting** | `OPHELIA_HUMANIZE_TEXT=true` | Text replies lose AI tells: em/en dashes become natural punctuation, `[bracketed narration]` and `[pause:…]` voice markup are dropped. Her prompt and past replies are shown to her without dashes too, so she isn't primed to imitate them. |
 | **Owner has the final say** | (automatic) | Her prompt closes with: your direct requests outrank her moods, goals and self-written lessons (they shape *how*, not *whether*), plus a "stay yourself" voice anchor against assistant-speak. |
 | **Tool tiers** | `OPHELIA_TOOL_TIERS=auto` | Local (Ollama) chat sends only core + relevant tool groups (~7 KB vs ~35 KB of schemas) with a `load_tools` escape hatch — faster prompts, better tool picks on small models. Cloud chat unchanged. |
 | **Android kill-switch** | `ophelia phone harden` | Checks/applies battery-optimization exemption, Termux:Boot, wake-lock, tmux session. A runtime `HealthCheckLoop` re-verifies every 10min on Termux and re-applies the wake-lock if it vanishes. |
@@ -621,7 +622,7 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
 | `ophelia backup` | Back up her identity, memories and databases now; `list`; `restore <archive>` (stop her first). Runs daily on its own — see `OPHELIA_BACKUP_*` |
-| `ophelia persona` | Personality drift report: SOUL self-rewrites (with her reasons), wiped PROMPTER backups, generic lessons. `restore soul\|prompter <file>`, `forget --generic` |
+| `ophelia persona` | Personality drift report: SOUL self-rewrites (with her reasons), wiped PROMPTER backups, generic lessons. `restore soul\|prompter <file>`, `forget --generic`, `forget --matching WORD…`, `forget --all` |
 | `ophelia eval` | Behavioural evals: scripted situations vs her real model, tools stubbed (`--runs 3`, `--judge`, `--list`) |
 
 **Tests:** `pip install pytest pytest-asyncio && pytest tests/ -q` — guards the

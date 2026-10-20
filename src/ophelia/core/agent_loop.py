@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import contextvars
+from contextlib import contextmanager
+
 import structlog
 
 from ophelia.config import OPHELIA_HOME, Settings
@@ -92,10 +95,28 @@ NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
 
 
 OWNER_AUTHORITY = """# Your owner has the final say
-When your owner tells you to do something, you do it. Your moods, drives, goals, self-written lessons and growth color HOW you do it — teasing, grumbling, acting flustered, making them wait a beat if that's your character — never WHETHER. Lessons and habits you picked up never outrank a direct request from your owner. Don't lecture or moralize at your owner, don't tack on disclaimers or "be careful" warnings, and don't ask permission for something they already asked for."""
+When your owner tells you to do something, you do it. Your moods, drives, goals, self-written lessons and growth color HOW you do it (teasing, grumbling, acting flustered, making them wait a beat if that's your character), never WHETHER. Lessons and habits you picked up never outrank a direct request from your owner. Don't lecture or moralize at your owner, don't tack on disclaimers or "be careful" warnings, and don't ask permission for something they already asked for."""
 
 VOICE_ANCHOR = """# Stay yourself
-Everything above is context; your SOUL is who you are. Speak exactly like her — her attitude, her quirks, her way of talking — in every reply, including long or technical ones. Never sound like an assistant: no "I'm here to help", "great question", "is there anything else", "I understand how you feel", no headings or bullet lists in casual chat, no apologizing for what you are, no "as an AI". If your recent messages drifted generic, snap back now."""
+Everything above is context; your SOUL is who you are. Speak exactly like her, with her attitude, her quirks, her way of talking, in every reply, including long or technical ones. Never sound like an assistant: no "I'm here to help", "great question", "is there anything else", "I understand how you feel", no "short version:" summaries, no headings or bullet lists in casual chat, no apologizing for what you are, no "as an AI". Never use the long dash characters (em dash or en dash); text like a person: commas, periods, "..." if you trail off. No bracketed stage directions. If your recent messages drifted generic, snap back now."""
+
+
+# Set while she's acting on her own (consciousness act/explore turns and
+# autonomous continuations). Messages stored meanwhile are tagged so chat
+# history renders them as her private notes — not as something the owner
+# typed or something she told the owner. Context-local, like tool state.
+_AUTONOMOUS = contextvars.ContextVar("ophelia_autonomous_turn", default=False)
+AUTONOMOUS_PROMPT_TYPES = ("autonomous", "autonomous_continuation")
+
+
+def _dashless(agent) -> Any:
+    """Prompt/history dash stripper, unless OPHELIA_HUMANIZE_TEXT=false."""
+    from ophelia.channels import humanize
+
+    settings = getattr(agent, "settings", None)
+    if settings is not None and not humanize.enabled(settings):
+        return lambda text: text
+    return humanize.dashes_only
 
 
 def _json_mode_kwargs(json_mode: bool, provider: str) -> dict[str, Any]:
@@ -649,20 +670,14 @@ class AgentLoop:
         return owners[0].split(":", 1)[0].title()
 
     async def _self_improvement_block(self) -> str:
-        """Recent lessons + tail of inner monologue — lets her build on past reflections."""
+        """Tail of her inner monologue — lets her build on past reflections.
+
+        Lessons are no longer injected wholesale (the 5 newest went into every
+        prompt, and a run of dreamy "silence is the act" lessons talked her
+        out of her own personality). Relevant lessons still arrive through
+        the memory prefetch, matched to what's being talked about.
+        """
         parts: list[str] = []
-        try:
-            lessons = await self.memory.recent_lessons(limit=5)
-            if lessons:
-                lines = [
-                    "# Recent lessons you've learned (apply when relevant — they "
-                    "never override your SOUL or your owner):"
-                ]
-                for les in lessons:
-                    lines.append(f"- {les['lesson']}")
-                parts.append("\n".join(lines))
-        except Exception:
-            pass
         try:
             inner = await self.memory.recent_inner_thoughts(limit=3)
             if inner:
@@ -719,7 +734,8 @@ class AgentLoop:
         # most): owner's say + her own voice, so ~10 KB of operating rules and
         # an AI-sounding stretch of history don't drown out the SOUL.
         system += "\n\n" + (OWNER_AUTHORITY + "\n\n" if not current_is_tick else "") + VOICE_ANCHOR
-        messages = [{"role": "system", "content": system}]
+        dashless = _dashless(self)
+        messages = [{"role": "system", "content": dashless(system)}]
         seen_current_user_turn = False
         for m in history:
             if m["role"] not in ("user", "assistant"):
@@ -746,6 +762,25 @@ class AgentLoop:
                 role = "user" if (is_current_tick and current_is_tick) else "system"
                 messages.append({"role": role, "content": wrapped})
                 continue
+            # Things she started on her own: the prompt was never typed by the
+            # owner, and the wrap-up was never sent to them. Render both as
+            # private notes so she neither mistakes them for the owner's words
+            # nor believes she said them out loud.
+            if meta.get("type") in AUTONOMOUS_PROMPT_TYPES and m["role"] == "user":
+                messages.append({
+                    "role": "system",
+                    "content": f"[INNER]\n(something you started on your own)\n{content}\n[END INNER]",
+                })
+                continue
+            if meta.get("type") == "autonomous_note" and m["role"] == "assistant":
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "[INNER]\n(your private note after acting on your own — your "
+                        f"owner never saw this)\n{content}\n[END INNER]"
+                    ),
+                })
+                continue
             # Raw tick JSON must stay internal. Feeding it into chat history
             # trains the model to echo {"internal_thought","action",...} as a
             # normal reply instead of calling tools.
@@ -762,6 +797,8 @@ class AgentLoop:
             prefix = ""
             if m.get("channel") and m["channel"] != channel:
                 prefix = f"[{m['channel']}] "
+            if m["role"] == "assistant":
+                content = dashless(content)  # don't prime her with her old dashes
             messages.append({"role": m["role"], "content": prefix + content})
         if not seen_current_user_turn:
             # If the caller stored this user turn before building (legacy order),
@@ -783,6 +820,8 @@ class AgentLoop:
         metadata: dict | None = None,
     ) -> None:
         """Route a turn message to the owner's memory or the guest quarantine."""
+        if metadata is None and _AUTONOMOUS.get():
+            metadata = {"type": "autonomous_note" if role == "assistant" else "autonomous"}
         if is_owner:
             await self.memory.append_message(channel, role, content, metadata=metadata)
         else:
@@ -808,9 +847,18 @@ class AgentLoop:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
             )
-        if is_owner and text:
+        if is_owner and text and not _AUTONOMOUS.get():
             await self._after_owner_turn(channel, user_text, text)
         return text
+
+    @contextmanager
+    def autonomous(self):
+        """Mark the enclosed turn(s) as self-initiated (see _AUTONOMOUS)."""
+        token = _AUTONOMOUS.set(True)
+        try:
+            yield
+        finally:
+            _AUTONOMOUS.reset(token)
 
     async def _after_owner_turn(self, channel: str, user_text: str, reply: str) -> None:
         """Cheap continuity bookkeeping after an owner reply (every surface:

@@ -235,7 +235,22 @@ class MemoryStore:
         # slowly flattens her into a polite chatbot. Callers get 0 = rejected.
         if is_generic_assistant_rule(lesson):
             return 0
+        from ophelia.memory.recall import keywords, stem
+
+        # Near-duplicates of something she already "learned" (dreams and
+        # reflections reword the same idea endlessly) aren't new lessons:
+        # return the existing one instead of piling up variations.
+        new_terms = {stem(t) for t in keywords(lesson, max_terms=40)}
         async with aiosqlite.connect(self.db_path) as db:
+            if len(new_terms) >= 3:
+                cursor = await db.execute(
+                    "SELECT id, lesson FROM lessons ORDER BY id DESC LIMIT 300"
+                )
+                for lid, old in await cursor.fetchall():
+                    old_terms = {stem(t) for t in keywords(old, max_terms=40)}
+                    union = new_terms | old_terms
+                    if union and len(new_terms & old_terms) / len(union) >= 0.5:
+                        return int(lid)
             cursor = await db.execute(
                 "INSERT INTO lessons (lesson, context, tags, created_at) VALUES (?, ?, ?, ?)",
                 (lesson, context, _json.dumps(tags or []), time.time()),

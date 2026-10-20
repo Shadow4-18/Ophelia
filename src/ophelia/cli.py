@@ -517,7 +517,7 @@ def cmd_status(_: argparse.Namespace) -> int:
         f"  mood:    {data.get('mood', '?')} (v={data.get('valence', '?')}, a={data.get('arousal', '?')})",
         f"  drives:  {data.get('drives', '?')}",
         f"  pressure: {data.get('pressure', '?')}",
-        f"  last_user_msg: {data.get('last_user_msg_ago', '?')}s ago",
+        f"  last_user_msg: {_ago_label(data.get('last_user_msg_ago'))}",
         f"  channels: {data.get('channels', [])}",
         f"  consciousness: {data.get('consciousness', False)}  dream: {data.get('dream', False)}",
     ]
@@ -704,10 +704,34 @@ def cmd_persona(args: argparse.Namespace) -> int:
         except ValueError:
             print("Usage: ophelia persona forget [--generic] [lesson ids…]")
             return 1
-        print(persona_report.forget(settings.memory_db, ids, generic=args.generic))
+        if not (ids or args.generic or args.all or args.matching):
+            print("Usage: ophelia persona forget [ids…] [--generic] [--all] [--matching WORD …]")
+            return 1
+        print(persona_report.forget(
+            settings.memory_db, ids, generic=args.generic, everything=args.all,
+            matching=args.matching,
+        ))
         return 0
     print(persona_report.report(settings.memory_db))
     return 0
+
+
+def _ago_label(seconds) -> str:
+    """'3m ago' style; 'never (since start)' when no message was seen (the
+    heartbeat reports now - 0, i.e. ~56 years)."""
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 0 or s > 10 * 365 * 86400:
+        return "never (since start)"
+    if s < 90:
+        return f"{int(s)}s ago"
+    if s < 5400:
+        return f"{int(s / 60)}m ago"
+    if s < 172800:
+        return f"{s / 3600:.1f}h ago"
+    return f"{s / 86400:.1f}d ago"
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
@@ -1467,6 +1491,11 @@ def main(argv: list[str] | None = None) -> int:
     p_persona.add_argument("args", nargs="*", help="restore: soul|prompter <file>; forget: ids")
     p_persona.add_argument(
         "--generic", action="store_true", help="forget: remove all assistant-policy lessons"
+    )
+    p_persona.add_argument("--all", action="store_true", help="forget: remove every lesson")
+    p_persona.add_argument(
+        "--matching", nargs="+", metavar="WORD",
+        help="forget: remove lessons containing any of these words",
     )
     p_persona.set_defaults(func=cmd_persona)
 

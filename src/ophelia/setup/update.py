@@ -139,7 +139,9 @@ def _current_branch(repo: Path) -> str | None:
 
 
 def _working_tree_dirty(repo: Path) -> bool:
-    rc, out = _git(repo, "status", "--porcelain")
+    # Only edits to tracked files block an update. New untracked files (her
+    # own creations, tool caches like .wrangler/) don't stop `git pull`.
+    rc, out = _git(repo, "status", "--porcelain", "--untracked-files=no")
     return rc == 0 and bool(out.strip())
 
 

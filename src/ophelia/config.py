@@ -520,6 +520,11 @@ class Settings(BaseSettings):
         alias="OPHELIA_BACKUP_INCLUDE_SECRETS",
         description="Include .env / OAuth tokens in backups (off: they're API keys)",
     )
+    humanize_text: bool = Field(
+        default=True,
+        alias="OPHELIA_HUMANIZE_TEXT",
+        description="Strip AI tells (em dashes, bracket narration) from text replies",
+    )
     persona_lock: str = Field(
         default="owner",
         alias="OPHELIA_PERSONA_LOCK",

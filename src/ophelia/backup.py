@@ -77,6 +77,12 @@ SKIP_SUFFIXES = (".log", ".lock", "-wal", "-shm", "-journal", ".mp3", ".wav", ".
 MAX_FILE_BYTES = 20 * 1024 * 1024  # non-database files
 DB_SUFFIXES = (".db", ".sqlite", ".sqlite3")
 TELEGRAM_MAX_BYTES = 49 * 1024 * 1024
+# Off-phone copies use a "core" archive — who she is, not everything she's
+# made — so they fit a Telegram DM (her site images, skills folders and the
+# chat-log database easily push a full backup past 100 MB).
+CORE_FILES = IDENTITY_FILES
+CORE_DIRS = ("memories", "versions")
+CORE_DATA = ("memory.db", "inner_monologue.md", "pending_guests.json")
 STATE_FILE = "backup_state.json"
 
 
@@ -92,6 +98,18 @@ def default_backup_dir() -> Path:
 def backup_dir(settings: Any) -> Path:
     raw = (getattr(settings, "backup_dir", "") or "").strip()
     return Path(raw).expanduser() if raw else default_backup_dir()
+
+
+def _iter_core(home: Path, *, include_secrets: bool) -> list[Path]:
+    out = [home / n for n in CORE_FILES if (home / n).is_file()]
+    if include_secrets:
+        out += [home / n for n in SECRET_FILES if (home / n).is_file()]
+    for d in CORE_DIRS:
+        root = home / d
+        if root.is_dir():
+            out += [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
+    out += [home / "data" / n for n in CORE_DATA if (home / "data" / n).is_file()]
+    return out
 
 
 def _iter_sources(home: Path, *, include_secrets: bool) -> list[Path]:
@@ -135,15 +153,19 @@ def create_backup(
     home: Path = OPHELIA_HOME,
     include_secrets: bool = False,
     keep: int = 7,
+    core: bool = False,
 ) -> Path:
-    """Write a dated archive into dest_dir and prune older ones. Sync."""
+    """Write a dated archive into dest_dir and prune older ones. Sync.
+    ``core`` = identity + memory database only (for off-phone copies)."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = dest_dir / f"{ARCHIVE_PREFIX}{stamp}.tar.gz"
+    kind = "core-" if core else ""
+    out = dest_dir / f"{ARCHIVE_PREFIX}{kind}{stamp}.tar.gz"
     files: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="ophelia-backup-") as tmp:
         staging = Path(tmp)
-        for src in _iter_sources(home, include_secrets=include_secrets):
+        pick = _iter_core if core else _iter_sources
+        for src in pick(home, include_secrets=include_secrets):
             rel = src.relative_to(home)
             dst = staging / rel
             try:
@@ -163,6 +185,7 @@ def create_backup(
             "created_at": time.time(),
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
             "includes_secrets": include_secrets,
+            "profile": "core" if core else "full",
             "files": files,
         }
         (staging / MANIFEST).write_text(json.dumps(manifest, indent=1), encoding="utf-8")
@@ -305,16 +328,28 @@ class BackupLoop:
             and self.offsite_sender is not None
             and now - state.get("last_offsite", 0) >= offsite_every
         ):
-            if path.stat().st_size > TELEGRAM_MAX_BYTES:
+            send = path
+            if send.stat().st_size > TELEGRAM_MAX_BYTES:
+                # Full backup too big to DM: send her core self instead.
+                send = await asyncio.to_thread(
+                    create_backup,
+                    backup_dir(s) / "core",
+                    home=self.home,
+                    include_secrets=bool(getattr(s, "backup_include_secrets", False)),
+                    keep=3,
+                    core=True,
+                )
+            if send.stat().st_size > TELEGRAM_MAX_BYTES:
                 log.warning(
                     "backup.offsite_too_large",
-                    bytes=path.stat().st_size,
-                    hint="Too big to DM; copy it off the phone manually.",
+                    bytes=send.stat().st_size,
+                    hint="Even the core backup is too big to DM; copy it off the phone manually.",
                 )
             else:
-                caption = f"Ophelia backup {time.strftime('%Y-%m-%d')} — keep this safe."
+                label = "core backup" if send is not path else "backup"
+                caption = f"Ophelia {label} {time.strftime('%Y-%m-%d')}. Keep this safe."
                 try:
-                    if await self.offsite_sender(path, caption):
+                    if await self.offsite_sender(send, caption):
                         state["last_offsite"] = now
                 except Exception as e:
                     log.warning("backup.offsite_failed", error=str(e))

@@ -105,7 +105,7 @@ def report(db_path: Path, home: Path = OPHELIA_HOME) -> str:
 
     all_lessons = lessons(db_path)
     generic = [le for le in all_lessons if is_generic_assistant_rule(le["lesson"])]
-    out.append(f"Lessons: {len(all_lessons)} total; the 5 newest are in every prompt.")
+    out.append(f"Lessons: {len(all_lessons)} total (only ones relevant to a conversation are shown to her). Newest:")
     for le in all_lessons[:5]:
         flag = "  ⚠ generic" if le in generic else ""
         out.append(f"   #{le['id']}: {le['lesson'][:110]}{flag}")
@@ -141,14 +141,32 @@ def restore(target: str, name: str, home: Path = OPHELIA_HOME) -> str:
     return f"Restored {dest.name} from {src.name}{note}. Restart Ophelia to apply."
 
 
-def forget(db_path: Path, ids: list[int], *, generic: bool = False) -> str:
+def forget(
+    db_path: Path,
+    ids: list[int],
+    *,
+    generic: bool = False,
+    everything: bool = False,
+    matching: list[str] | None = None,
+) -> str:
+    """Delete lessons by id, all generic-policy ones, all lessons containing
+    any of `matching` words, or every lesson."""
+    current = lessons(db_path)
     targets = set(ids)
+    if everything:
+        targets |= {le["id"] for le in current}
     if generic:
-        targets |= {le["id"] for le in lessons(db_path) if is_generic_assistant_rule(le["lesson"])}
+        targets |= {le["id"] for le in current if is_generic_assistant_rule(le["lesson"])}
+    words = [w.lower() for w in (matching or []) if w.strip()]
+    if words:
+        targets |= {
+            le["id"] for le in current if any(w in le["lesson"].lower() for w in words)
+        }
     if not targets:
         return "Nothing to remove."
     with sqlite3.connect(db_path) as db:
         db.executemany("DELETE FROM lessons WHERE id = ?", [(i,) for i in sorted(targets)])
         db.commit()
-    return f"Removed {len(targets)} lesson(s): {', '.join(f'#{i}' for i in sorted(targets))}"
-
+    shown = ", ".join(f"#{i}" for i in sorted(targets)[:20])
+    more = f" (+{len(targets) - 20} more)" if len(targets) > 20 else ""
+    return f"Removed {len(targets)} lesson(s): {shown}{more}"

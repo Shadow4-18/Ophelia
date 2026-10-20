@@ -4,6 +4,7 @@ the daily/off-phone loop."""
 from __future__ import annotations
 
 import io
+import os
 import sqlite3
 import tarfile
 import time
@@ -200,3 +201,63 @@ async def test_hub_owner_document_reports_any_success(tmp_path):
     assert await hub.send_owner_document(f) is False
     hub._gateways = [_GW(None), _GW(True)]
     assert await hub.send_owner_document(f, "keep safe") is True
+
+
+def test_core_backup_is_just_her_self(tmp_path):
+    home = _home(tmp_path)
+    (home / "site").mkdir()
+    (home / "site" / "hero.png").write_bytes(b"x" * 1000)
+    with sqlite3.connect(home / "data" / "logs.db") as db:
+        db.execute("CREATE TABLE t (x)")
+    names = _names(backup.create_backup(tmp_path / "core", home=home, core=True))
+    assert {"SOUL.md", "GROWTH.md", "memories/MEMORY.md", "versions/SOUL-1.md",
+            "data/memory.db"} <= names
+    assert not any(n.startswith("site/") or n == "data/logs.db" for n in names)
+
+
+@pytest.mark.asyncio
+async def test_offsite_falls_back_to_core_when_full_is_too_big(tmp_path, monkeypatch):
+    home = _home(tmp_path)
+    (home / "site").mkdir()
+    (home / "site" / "hero.png").write_bytes(os.urandom(200_000))  # incompressible
+    full_size = backup.create_backup(tmp_path / "probe", home=home).stat().st_size
+    core_size = backup.create_backup(tmp_path / "probe2", home=home, core=True).stat().st_size
+    assert core_size < full_size
+    monkeypatch.setattr(backup, "TELEGRAM_MAX_BYTES", (core_size + full_size) // 2)
+    sender = AsyncMock(return_value=True)
+    loop = backup.BackupLoop(
+        _settings(tmp_path, backup_offsite="owner"), home=home, offsite_sender=sender
+    )
+    await loop.run_once()
+    sent = sender.await_args.args[0]
+    assert sent.name.startswith(backup.ARCHIVE_PREFIX + "core-")
+    assert "core backup" in sender.await_args.args[1]
+
+
+def test_status_last_message_label():
+    from ophelia.cli import _ago_label
+
+    assert _ago_label(1792463698.0) == "never (since start)"
+    assert _ago_label(42) == "42s ago"
+    assert _ago_label(600) == "10m ago"
+    assert _ago_label(None) == "?"
+
+
+def test_update_ignores_untracked_files(tmp_path):
+    import subprocess
+
+    from ophelia.setup.update import _working_tree_dirty
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    run("init", "-q")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (repo / "a.py").write_text("x = 1\n")
+    run("add", "a.py")
+    run("commit", "-qm", "init")
+    (repo / "budget.py").write_text("# her own file\n")
+    assert _working_tree_dirty(repo) is False  # new files don't block updates
+    (repo / "a.py").write_text("x = 2\n")
+    assert _working_tree_dirty(repo) is True  # edits to tracked code still do

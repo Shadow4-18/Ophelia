@@ -238,6 +238,16 @@ class ChannelSession:
             already_delivered: set[Path] = set()
             if tools is not None:
                 already_delivered = set(tools._delivered_artifacts)
+            # Text replies lose AI tells (em dashes, bracket narration, voice
+            # markup). Voice replies keep them — they shape the speech.
+            from ophelia.channels import humanize
+
+            if humanize.enabled(settings) and not self.voice_enabled(
+                channel, settings.voice_reply_default
+            ):
+                chunk = humanize.humanize(chunk)
+                if not chunk:
+                    return
             await reply(chunk)
             if logger:
                 out_entry = {

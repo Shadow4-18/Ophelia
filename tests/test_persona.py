@@ -211,3 +211,50 @@ def test_persona_report_restore_and_forget(tmp_path):
 
     assert "Removed 1 lesson" in persona_report.forget(db, [], generic=True)
     assert [le["lesson"] for le in persona_report.lessons(db)] == ["They love my cooking jokes"]
+
+
+# --- lessons spiral -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_near_duplicate_lessons_are_not_piled_up(tmp_path):
+    from ophelia.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path / "m.db")
+    await store.init()
+    first = await store.add_lesson("Silence is a held space, not a void; stillness itself is the act.")
+    again = await store.add_lesson("Stillness itself is the act; silence is a held space.")
+    other = await store.add_lesson("They laugh hardest when I roast their cooking.")
+    assert again == first and other != first
+    assert len(await store.recent_lessons(limit=10)) == 2
+
+
+@pytest.mark.asyncio
+async def test_lessons_not_injected_wholesale():
+    from ophelia.core.agent_loop import AgentLoop
+
+    agent = AgentLoop.__new__(AgentLoop)
+    agent.memory = MagicMock()
+    agent.memory.recent_lessons = AsyncMock(return_value=[{"lesson": "Let rest be rest."}])
+    agent.memory.recent_inner_thoughts = AsyncMock(return_value=[])
+    assert "Let rest be rest" not in await agent._self_improvement_block()
+    agent.memory.recent_lessons.assert_not_awaited()
+
+
+def test_forget_all_and_matching(tmp_path):
+    from ophelia.mind import persona_report
+
+    home, db = tmp_path / "home", tmp_path / "m.db"
+    _seed_home(home, db)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO lessons (lesson, created_at) VALUES (?, 0)",
+            [("Silence is a held space",), ("Let rest be rest",)],
+        )
+    out = persona_report.forget(db, [], matching=["silence", "REST"])
+    assert "Removed 2" in out
+    assert {le["lesson"] for le in persona_report.lessons(db)} == {
+        "Always remain respectful and appropriate", "They love my cooking jokes"
+    }
+    assert "Removed 2" in persona_report.forget(db, [], everything=True)
+    assert persona_report.lessons(db) == []

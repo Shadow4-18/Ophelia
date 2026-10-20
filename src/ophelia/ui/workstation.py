@@ -298,6 +298,10 @@ class Workstation:
         )
 
         reply = strip_consciousness_tick_leak(reply or "")
+        from ophelia.channels import humanize
+
+        if humanize.enabled(self.settings):
+            reply = humanize.humanize(reply)
         if not reply or is_outreach_junk(reply):
             reply = ""
         self.signals.last_agent_message_at = time.time()

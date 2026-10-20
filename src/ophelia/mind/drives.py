@@ -84,24 +84,37 @@ class DriveState:
                     pass
         self.updated_at = time.time()
 
+    # Ceiling each drive approaches while she's alone: (right after contact,
+    # after many hours, half-life in hours). Time alone raises the ceiling,
+    # so drives say something real ("I've been alone for hours") instead of
+    # pinning at 1.0 within minutes.
+    _CEILINGS = {
+        "boredom": (0.30, 0.97, 0.75),
+        "social": (0.25, 0.95, 1.0),
+        "curiosity": (0.35, 0.85, 1.5),
+        "expressiveness": (0.30, 0.90, 1.0),
+        "agency": (0.30, 0.85, 2.0),
+    }
+    _RISE_PER_MIN = 0.2   # how fast a drive closes the gap to its ceiling
+    _SETTLE_PER_MIN = 0.03  # drift back down when above it
+
     def tick_idle(self, seconds_since_user: float, *, interval: float) -> None:
-        """Grow drives when alone; boredom scales with idle time."""
-        scale = min(1.0, interval / 45.0)
-        # Aggressive growth so will builds while she's alone (Neuro-leaning).
-        self.boredom = min(1.0, self.boredom + 0.07 * scale)
-        self.social = min(1.0, self.social + 0.04 * scale)
-        self.curiosity = min(1.0, self.curiosity + 0.045 * scale)
-        self.expressiveness = min(1.0, self.expressiveness + 0.035 * scale)
-        if seconds_since_user > 120:
-            self.boredom = min(1.0, self.boredom + 0.06)
-            self.social = min(1.0, self.social + 0.05)
-            self.expressiveness = min(1.0, self.expressiveness + 0.04)
-        if seconds_since_user > 300:
-            self.boredom = min(1.0, self.boredom + 0.05)
-            self.social = min(1.0, self.social + 0.04)
-            self.agency = min(1.0, self.agency + 0.04)
-        if seconds_since_user > 900:
-            self.agency = min(1.0, self.agency + 0.08)
+        """Grow drives while alone, by real elapsed time (``interval`` seconds).
+
+        Each drive closes part of the gap to an idle-time-dependent ceiling.
+        Previously fixed per-tick bonuses (not scaled by elapsed time) pushed
+        every drive to 1.0 within minutes of the owner going quiet, and more
+        frequent event-driven wakes made it faster — pressure stopped meaning
+        anything.
+        """
+        minutes = max(0.0, float(interval)) / 60.0
+        hours_alone = max(0.0, float(seconds_since_user)) / 3600.0
+        for name, (lo, hi, half_h) in self._CEILINGS.items():
+            ceiling = hi - (hi - lo) * 0.5 ** (hours_alone / half_h)
+            value = getattr(self, name)
+            rate = self._RISE_PER_MIN if value < ceiling else self._SETTLE_PER_MIN
+            value += (ceiling - value) * min(1.0, rate * minutes)
+            setattr(self, name, max(0.0, min(1.0, value)))
         self.updated_at = time.time()
 
     def satisfy(self, action: str) -> None:
@@ -113,8 +126,9 @@ class DriveState:
             self.agency = max(0.0, self.agency - 0.3)
             self.curiosity = max(0.0, self.curiosity - 0.15)
             self.boredom = max(0.0, self.boredom - 0.2)
-        if action == "silent":
-            pass
+        if action == "explore":
+            self.curiosity = max(0.0, self.curiosity - 0.25)
+            self.boredom = max(0.0, self.boredom - 0.15)
         self.boredom = max(0.0, self.boredom - 0.02)
 
     def on_user_message(self) -> None:
