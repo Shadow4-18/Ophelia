@@ -66,12 +66,39 @@ def test_governor_quiet_hours_still_hard(monkeypatch):
     assert reason == "quiet_hours"
 
 
-def test_drives_grow_faster_when_alone():
-    d = DriveState(social=0.2, boredom=0.1, expressiveness=0.2)
-    d.tick_idle(200, interval=45)
-    assert d.social > 0.25
-    assert d.boredom > 0.15
-    assert d.expressiveness > 0.22
+def test_drives_grow_when_alone_and_faster_the_longer_she_is():
+    short = DriveState(social=0.2, boredom=0.1, expressiveness=0.2)
+    short.tick_idle(200, interval=45)
+    assert short.social > 0.2 and short.boredom > 0.1 and short.expressiveness > 0.2
+    long = DriveState(social=0.2, boredom=0.1, expressiveness=0.2)
+    long.tick_idle(3 * 3600, interval=45)
+    assert long.social > short.social and long.boredom > short.boredom
+
+
+def test_drives_do_not_pin_at_max_and_follow_real_time():
+    """Per-tick bonuses used to saturate every drive within minutes; growth
+    is now by elapsed time toward an idle-time ceiling."""
+    d = DriveState(social=0.05, boredom=0.0)
+    t = 0
+    while t < 60 * 60:  # one hour alone, 45s ticks
+        t += 45
+        d.tick_idle(t, interval=45)
+    assert 0.4 < d.initiative_pressure() < 0.8
+    assert max(d.social, d.boredom, d.curiosity, d.agency, d.expressiveness) < 0.9
+
+    # Same hour with 4x more frequent wakes ends up in the same place.
+    fast = DriveState(social=0.05, boredom=0.0)
+    t = 0
+    while t < 60 * 60:
+        t += 11.25
+        fast.tick_idle(t, interval=11.25)
+    assert abs(fast.initiative_pressure() - d.initiative_pressure()) < 0.03
+
+
+def test_explore_satisfies_curiosity():
+    d = DriveState(curiosity=0.9, boredom=0.9)
+    d.satisfy("explore")
+    assert d.curiosity < 0.7 and d.boredom < 0.8
 
 
 @pytest.mark.asyncio

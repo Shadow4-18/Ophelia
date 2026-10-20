@@ -387,7 +387,6 @@ class ConsciousnessLoop:
                     )
                     # Fall through into the normal consciousness LLM path.
                 else:
-                    self.drives.tick_idle(idle_seconds, interval=60)
                     self.psyche.relax(60)
                     await self.memory.save_drives(self.drives)
                     await self.memory.save_psyche(self.psyche)
@@ -409,7 +408,6 @@ class ConsciousnessLoop:
             and pressure < 0.15
             and not wake_reason
         ):
-            self.drives.tick_idle(idle_seconds, interval=60)
             self.psyche.relax(60)
             await self.memory.save_drives(self.drives)
             await self.memory.save_psyche(self.psyche)
@@ -722,7 +720,8 @@ class ConsciousnessLoop:
                     note="picking up unfinished tool chain",
                 )
                 try:
-                    await self.agent.run_autonomous_continuation(cont_channel)
+                    with _autonomous(self.agent):
+                        await self.agent.run_autonomous_continuation(cont_channel)
                 except Exception as e:
                     log.warning("consciousness.autonomous_resume_failed", error=str(e))
                 # After a continuation, don't also fire a fresh act this tick.
@@ -750,35 +749,29 @@ class ConsciousnessLoop:
                     "use expressive Kokoro text: [pause:0.8s] beats, speed 0.85–1.15, "
                     "write for the ear. The result will be delivered automatically."
                 )
-            result = await self.agent.run_turn(
-                channel,
-                f"{prefix}[Autonomous {action}] {intent}",
-                system_extra=(
-                    "You initiated this. Use phone_game_look during active game sessions; "
-                    "else phone_see_screen. Then phone_tap / phone_swipe / phone_key. "
-                    "You may also create media (images/video/voice) proactively when inspired — "
-                    "use generate_image / generate_video / text_to_speech and it will be sent."
-                    + creative_hint
-                    + " Do NOT output consciousness-tick JSON. Call tools to act. "
-                    "Brief prose to the owner only if worth disturbing them."
-                ),
-            )
-            outreach_tools = getattr(self.agent, "tools", None)
-            already_sent = bool(
-                outreach_tools and outreach_tools.proactive_delivered_this_turn()
-            )
-            from ophelia.channels.proactive_filter import (
-                is_consciousness_tick_payload,
-                strip_consciousness_tick_leak,
-            )
-
-            # Never forward a leaked tick JSON blob as outreach — that's the
-            # classic "she posted her consciousness tick instead of acting" bug.
-            cleaned_result = strip_consciousness_tick_leak(result or "")
-            if is_consciousness_tick_payload(result or "") or not cleaned_result:
-                cleaned_result = ""
-            outward = outward or ("" if already_sent else cleaned_result[:2000])
-            tools = outreach_tools
+            with _autonomous(self.agent):
+                result = await self.agent.run_turn(
+                    channel,
+                    f"{prefix}[Autonomous {action}] {intent}",
+                    system_extra=(
+                        "You initiated this. Use phone_game_look during active game sessions; "
+                        "else phone_see_screen. Then phone_tap / phone_swipe / phone_key. "
+                        "You may also create media (images/video/voice) proactively when inspired — "
+                        "use generate_image / generate_video / text_to_speech and it will be sent."
+                        + creative_hint
+                        + " Do NOT output consciousness-tick JSON. Call tools to act. "
+                        "Your final text here is a PRIVATE note to yourself — it is not sent. "
+                        "If something is genuinely worth telling your owner, call send_message "
+                        "with it, in your own voice, as a real message (never a status report "
+                        "like 'done' or 'files went through')."
+                    ),
+                )
+            # The act turn's wrap-up (`result`) is her private note, stored as
+            # such. Only the tick's own outward_message, or a send_message she
+            # chose to make, reaches the owner — auto-forwarding the wrap-up
+            # produced out-of-context status pings ("files went through").
+            log.debug("consciousness.act_note", preview=(result or "")[:120])
+            tools = getattr(self.agent, "tools", None)
             consume = getattr(tools, "consume_pending_artifacts", None)
             if callable(consume) and self.notify_media:
                 media_paths = consume()
@@ -1023,6 +1016,16 @@ def _promote_declared_action(tick: dict) -> dict:
         )
         return {**tick, "action": "act"}
     return tick
+
+
+def _autonomous(agent):
+    """agent.autonomous() when available (tests pass simple fakes)."""
+    ctx = getattr(agent, "autonomous", None)
+    if callable(ctx):
+        return ctx()
+    from contextlib import nullcontext
+
+    return nullcontext()
 
 
 def _parse_tick_json(raw: str) -> dict | None:

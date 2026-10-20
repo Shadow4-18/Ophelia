@@ -35,6 +35,20 @@ _META_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Short status pings from autonomous turns ("Files went through. Nothing to
+# fuss about.", "Nothing there worth a word.") — reports, not messages.
+_STATUS_REPORT = re.compile(
+    r"\b(?:"
+    r"nothing\s+(?:there\s+|here\s+|much\s+)?(?:worth|to\s+fuss|to\s+report)|"
+    r"(?:files?|it|that|upload)\s+went\s+through|"
+    r"all\s+(?:done|set)|task\s+(?:complete|done)|"
+    r"upload(?:ed)?\s+(?:fine|ok|succeeded)|delivered\s+(?:fine|ok)|"
+    r"no\s+issues?\s+(?:to\s+report|found)"
+    r")\b",
+    re.IGNORECASE,
+)
+STATUS_REPORT_MAX_CHARS = 90
+
 # Silent-tick status fluff: models invent these when the pulse feels like a summons.
 _TICK_STATUS_NOISE = re.compile(
     r"\b(?:"
@@ -243,6 +257,8 @@ def is_outreach_junk(text: str) -> bool:
     if is_consciousness_tick_payload(t):
         return True
     if _META_KEYWORDS.search(t):
+        return True
+    if len(t) <= STATUS_REPORT_MAX_CHARS and _STATUS_REPORT.search(t):
         return True
     # Bare channel status: "[consciousness] (no response)" etc.
     if re.match(

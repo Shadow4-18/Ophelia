@@ -130,6 +130,10 @@ class ChannelHub:
         if is_outreach_junk(text):
             log.debug("hub.proactive_suppressed", reason="junk", preview=(text or "")[:80])
             return 0
+        from ophelia.channels import humanize
+
+        if humanize.enabled(self.settings):
+            text = humanize.humanize(text)
         chunks = proactive_chunks(text)
         if not chunks:
             return 0

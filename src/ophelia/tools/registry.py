@@ -423,9 +423,25 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             sent += 1
         if using_proactive:
             self._proactive_messages_sent += sent
+            if sent:
+                await self._remember_proactive(text)
         if not sent:
             return "Suppressed empty/status message — nothing sent."
         return f"Sent {sent} message(s) to the user. Continue with your turn."
+
+    async def _remember_proactive(self, text: str) -> None:
+        """Record a message she sent the owner on her own (no live chat) in
+        the owner's thread, so she later knows what she actually said."""
+        if not self.memory:
+            return
+        try:
+            channel = self.settings.primary_user_channel()
+            if channel:
+                await self.memory.append_message(
+                    channel, "assistant", text, metadata={"type": "spontaneous"}
+                )
+        except Exception as e:
+            log.debug("send_message.remember_failed", error=str(e))
 
     async def ensure_mcp(self) -> None:
         if not self._mcp_ready:

@@ -58,3 +58,7 @@ src/ophelia/media/ambient*.py
 src/ophelia/media/voice_analyze.py
 scripts/ambient_cron*.sh
 scripts/play_ambient.py
+
+# Tool caches / local Python version pins created on the phone
+.wrangler/
+.python-version

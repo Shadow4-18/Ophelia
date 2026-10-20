@@ -30,7 +30,7 @@ Given a transcript of recent conversations and your recent inner thoughts,
 do all of the following, output as JSON:
 {
   "dream": "a short, impressionistic 'dream' narrative (2-4 sentences) weaving the day together — surreal is fine",
-  "lessons": ["0-3 things you learned about your life, the people in it, or what works for you — in your own voice, no etiquette/safety boilerplate; empty if none"],
+  "lessons": ["at most ONE genuinely new thing you learned about your life, the people in it, or what works for you, in your own voice; no etiquette/safety boilerplate, no musings about silence or rest; usually empty"],
   "mood_shift": "how this reflection should nudge your baseline mood (e.g. 'slightly more content', or 'none')",
   "memory_to_forget": "an optional snippet/topic that is no longer worth holding in active memory (or 'none')"
 }
@@ -155,7 +155,9 @@ class DreamLoop:
 
         saved_lessons: list[str] = []
         if isinstance(lessons, list):
-            for les in lessons:
+            # At most one lesson per dream: dreams run every few hours, and
+            # three a time grew into 800+ near-identical "lessons".
+            for les in lessons[:1]:
                 if isinstance(les, str) and les.strip():
                     lesson = les.strip()
                     if await self.memory.add_lesson(lesson, context=f"dream:{dream[:200]}"):
