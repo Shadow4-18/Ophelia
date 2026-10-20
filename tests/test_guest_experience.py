@@ -308,3 +308,34 @@ async def test_dispatch_still_blocks_guest_edit_soul(monkeypatch):
     reg._handlers = {"edit_soul": AsyncMock(return_value="should not reach")}
     result = await reg.dispatch("edit_soul", "{}")
     assert "owner-only" in result
+
+
+@pytest.mark.asyncio
+async def test_explicit_owner_prompt_auto_routes_to_nsfw(monkeypatch):
+    """Without nsfw=true an explicit prompt went to xAI, which paints clothes
+    back on. Owner + NSFW tier on → routed to the uncensored backend."""
+    captured: dict = {}
+
+    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **kwargs):
+        captured["nsfw"] = nsfw
+        return "ok"
+
+    async def fake_finalize(self, result, **kw):
+        return result
+
+    monkeypatch.setattr("ophelia.tools.registry.generate_image", fake_generate_image)
+    monkeypatch.setattr(ToolRegistry, "_finalize_media_tool_result", fake_finalize)
+    reg = _registry()
+    reg.settings.image_nsfw_allowed = True
+    reg._is_owner = True
+    await reg._generate_image("goth woman, topless, looking at viewer")
+    assert captured["nsfw"] is True
+    await reg._generate_image("goth woman in a black dress, neon room")
+    assert captured["nsfw"] is False
+    reg.settings.image_nsfw_allowed = False
+    await reg._generate_image("goth woman, topless")
+    assert captured["nsfw"] is False  # tier off: never auto-enabled
+    reg.settings.image_nsfw_allowed = True
+    reg._is_owner = False
+    await reg._generate_image("goth woman, topless")
+    assert captured["nsfw"] is False  # guests are never auto-routed

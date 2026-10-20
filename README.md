@@ -124,7 +124,8 @@ All generated images are downloaded and saved under `~/.ophelia/data/artifacts`
 
 - The `generate_image` tool exposes an `nsfw` flag the model **only** sets when
   you explicitly ask for explicit content (it's `false` for everything else).
-- Explicit requests are **auto-routed to an uncensored backend** — never xAI or
+- Explicit requests are **auto-routed to an uncensored backend** (for the owner, an
+  obviously explicit prompt is routed there even if the model forgot the flag) — never xAI or
   OpenAI, which would refuse them and risk flagging your account.
 - When off, explicit image requests are refused with a clear message.
 
