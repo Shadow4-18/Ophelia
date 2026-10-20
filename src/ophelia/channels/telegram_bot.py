@@ -1248,34 +1248,76 @@ class TelegramGateway:
         app = self.build_app()
         await app.initialize()
         await app.start()
-        # Overwrite BotFather's command menu. Whatever Hermes (or a previous
-        # bot on this token) registered still shows in the "/" picker until we
-        # replace it, so set Ophelia's own commands explicitly.
-        try:
-            from telegram import BotCommand
+        await self._register_commands(app.bot)
+        log.info("telegram.ready")
 
-            await app.bot.set_my_commands(
-                [
-                    BotCommand("status", "what's on / running / pending"),
-                    BotCommand("pause", "pause autonomous outreach"),
-                    BotCommand("resume", "resume autonomous outreach"),
-                    BotCommand("continue", "resume an unfinished task"),
-                    BotCommand("voice", "voice replies on/off"),
-                    BotCommand("listen", "local mic listening on/off"),
-                    BotCommand("inner", "inner-monologue mirror on/off/tail"),
-                    BotCommand("game", "game list / play / stop / look"),
-                    BotCommand("models", "per-role provider/model routing"),
-                    BotCommand("tell", "relay an exact message to a guest"),
-                    BotCommand("suggest", "nudge her to reach out to a guest"),
-                    BotCommand("revoke", "instantly block a guest"),
-                    BotCommand("update", "pull latest code + reinstall (+ restart)"),
-                    BotCommand("help", "list commands"),
-                ]
+    # The "/" menu shown in Telegram (each one has a CommandHandler below).
+    MENU_COMMANDS: tuple[tuple[str, str], ...] = (
+        ("status", "what's on / running / pending"),
+        ("pause", "pause autonomous outreach"),
+        ("resume", "resume autonomous outreach"),
+        ("continue", "resume an unfinished task"),
+        ("voice", "voice replies on/off"),
+        ("listen", "local mic listening on/off"),
+        ("inner", "inner-monologue mirror on/off/tail"),
+        ("game", "game list / play / stop / look"),
+        ("models", "per-role provider/model routing"),
+        ("tell", "relay an exact message to a guest"),
+        ("suggest", "nudge her to reach out to a guest"),
+        ("revoke", "instantly block a guest"),
+        ("update", "pull latest code + reinstall (+ restart)"),
+        ("help", "list commands"),
+    )
+
+    async def _register_commands(self, bot) -> None:
+        """Replace whatever command menu is on this bot token.
+
+        Telegram keeps a separate menu per scope (default, all private chats,
+        groups, admins, one specific chat) and per language, and shows the
+        most specific one. Hermes registered its menu in a narrower scope, so
+        overwriting only the default left Hermes's commands showing. Clear
+        every scope we can name, then set Ophelia's menu on default and on
+        private chats."""
+        try:
+            from telegram import (
+                BotCommand,
+                BotCommandScopeAllChatAdministrators,
+                BotCommandScopeAllGroupChats,
+                BotCommandScopeAllPrivateChats,
+                BotCommandScopeChat,
+                BotCommandScopeDefault,
             )
-            log.info("telegram.commands_registered")
         except Exception as e:
             log.warning("telegram.set_commands_failed", error=str(e))
-        log.info("telegram.ready")
+            return
+        scopes = [
+            BotCommandScopeDefault(),
+            BotCommandScopeAllPrivateChats(),
+            BotCommandScopeAllGroupChats(),
+            BotCommandScopeAllChatAdministrators(),
+        ]
+        try:
+            users = self.settings.allowed_telegram_users() or set()
+        except Exception:
+            users = set()
+        scopes += [BotCommandScopeChat(chat_id=uid) for uid in sorted(users)]
+        cleared = 0
+        for scope in scopes:
+            for lang in (None, "en"):
+                try:
+                    if await bot.delete_my_commands(scope=scope, language_code=lang):
+                        cleared += 1
+                except Exception as e:  # e.g. "chat not found" for a stale id
+                    log.debug("telegram.delete_commands_skip", scope=type(scope).__name__,
+                              error=str(e))
+        commands = [BotCommand(name, desc) for name, desc in self.MENU_COMMANDS]
+        try:
+            await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+            await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+            log.info("telegram.commands_registered", cleared_scopes=cleared,
+                     commands=len(commands))
+        except Exception as e:
+            log.warning("telegram.set_commands_failed", error=str(e))
 
     async def run(self) -> None:
         await self.prepare()

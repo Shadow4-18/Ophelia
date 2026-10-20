@@ -256,3 +256,31 @@ async def test_blank_vision_answer_is_retried():
     v._vision_client = AsyncMock(return_value=(_Client, "grok"))
     assert await v._ask(b"png", "which cell?") == "G7"
     assert len(calls) == 2 and calls[0]["max_tokens"] >= 300
+
+
+@pytest.mark.asyncio
+async def test_telegram_menu_replaces_every_scope():
+    """Hermes's menu lived in a narrower scope than the default one Ophelia
+    overwrote, so it kept showing. Every scope is cleared, then hers is set."""
+    from ophelia.channels.telegram_bot import TelegramGateway
+
+    gw = TelegramGateway.__new__(TelegramGateway)
+    gw.settings = SimpleNamespace(allowed_telegram_users=lambda: {111})
+    deleted, setted = [], []
+
+    class _Bot:
+        async def delete_my_commands(self, scope=None, language_code=None):
+            deleted.append((type(scope).__name__, getattr(scope, "chat_id", None), language_code))
+            return True
+
+        async def set_my_commands(self, commands, scope=None, language_code=None):
+            setted.append((type(scope).__name__, [c.command for c in commands]))
+            return True
+
+    await gw._register_commands(_Bot())
+    kinds = {d[0] for d in deleted}
+    assert {"BotCommandScopeDefault", "BotCommandScopeAllPrivateChats",
+            "BotCommandScopeAllGroupChats", "BotCommandScopeChat"} <= kinds
+    assert ("BotCommandScopeChat", 111, "en") in deleted
+    assert [s[0] for s in setted] == ["BotCommandScopeDefault", "BotCommandScopeAllPrivateChats"]
+    assert "sessions" not in setted[0][1] and "status" in setted[0][1]
