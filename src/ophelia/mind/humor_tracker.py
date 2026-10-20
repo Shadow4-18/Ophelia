@@ -39,7 +39,7 @@ _NEGATIVE = re.compile(
 # Heuristics for "this outbound line is probably a joke/quip" — used to decide
 # whether to track a chat reply as a humor event at all, vs. just an answer.
 _JOKE_HINTS = re.compile(
-    r"(?:^|[\s])(lol|lmao|haha|heh|💀|🤣|😂|\.\.\.|…|—|btw,|okay so|imagine|"
+    r"(?:^|[\s])(lol|lmao|haha|heh|💀|🤣|😂|btw,|okay so|imagine|"
     r"plot twist|twist:|spoiler|fun fact|pro tip|hot take|unpopular opinion)",
     re.I,
 )

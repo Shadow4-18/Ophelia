@@ -5,6 +5,9 @@ android, senders, …). Split out of tools/registry.py."""
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import structlog
 
 
@@ -117,19 +120,103 @@ class PhoneToolsMixin:
             )
         return None
 
-    async def _phone_ui_dump(self) -> str:
-        reason = self._phone_unavailable_reason()
-        if reason:
-            return reason
-        return await self.android.ui_dump()
+    async def _phone_elements(self, *, fresh: bool = False) -> list:
+        """Current numbered screen elements (re-read if stale or asked)."""
+        vision = getattr(self, "vision", None)
+        if vision is None:
+            return []
+        if fresh or not vision.last_elements or time.time() - vision.last_elements_at > 120:
+            await vision.read_elements()
+        return vision.last_elements
 
-    async def _phone_tap(self, x: int | float, y: int | float) -> str:
+    async def _after_action(self) -> str:
+        """Close the loop: what's on screen now that she touched it."""
+        from ophelia.android.screen_elements import describe
+
+        await asyncio.sleep(0.8)
+        elements = await self._phone_elements(fresh=True)
+        text = describe(elements, max_lines=14)
+        return "\nNow " + text[0].lower() + text[1:]
+
+    async def _phone_ui_dump(self, raw: bool = False) -> str:
         reason = self._phone_unavailable_reason()
         if reason:
             return reason
+        if raw:
+            return await self.android.ui_dump()
+        from ophelia.android.screen_elements import describe
+
+        return describe(await self._phone_elements(fresh=True))
+
+    async def _phone_tap(
+        self,
+        x: int | float | None = None,
+        y: int | float | None = None,
+        element: int | None = None,
+        text: str | None = None,
+        target: str | None = None,
+        long_press: bool = False,
+    ) -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        from ophelia.android.screen_elements import find
+
+        how = ""
+        if element is not None or text:
+            elements = await self._phone_elements(fresh=element is None)
+            hit = None
+            if element is not None:
+                hit = next((e for e in elements if e.n == int(element)), None)
+                if hit is None:
+                    return (f"No element {element} on the current listing. Read the screen "
+                            "again (phone_ui_dump or phone_see_screen) and use its numbers.")
+            else:
+                hit = find(elements, text or "")
+                if hit is None:
+                    return (f"Nothing on screen matches {text!r}. Try phone_ui_dump to see "
+                            "what's there, or target=\"...\" to aim by sight.")
+            x, y = hit.center
+            how = f" on [{hit.n}] {hit.kind} \"{hit.label}\""
+        elif target:
+            vision = getattr(self, "vision", None)
+            if vision is None:
+                return "Aiming by sight needs the vision provider."
+            try:
+                x, y, how_note = await vision.aim(target)
+            except Exception as e:
+                return f"Couldn't aim at {target!r}: {e}"
+            how = f" ({how_note})"
+        elif x is None or y is None:
+            return "Say what to tap: element=N (from the screen listing), text=\"...\", or target=\"...\"."
         x, y, note = await _resolve_tap_coords(self.android, x, y)
-        result = await self.android.tap(x, y)
-        return f"{result}{note}"
+        if long_press:
+            result = await self.android.swipe(x, y, x, y, 700)
+        else:
+            result = await self.android.tap(x, y)
+        ok = "error" not in (result or "").lower() and "fail" not in (result or "").lower()
+        msg = f"{'Long-pressed' if long_press else 'Tapped'} ({x},{y}){how}.{note}"
+        if not ok:
+            return f"{msg} Device said: {result}"
+        return msg + await self._after_action()
+
+    async def _phone_type(self, text: str, element: int | None = None,
+                          enter: bool = False) -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        pre = ""
+        if element is not None:
+            pre = (await self._phone_tap(element=element)).split("\n")[0] + " "
+            await asyncio.sleep(0.4)
+        result = await self.android.type_text(text)
+        if enter:
+            await self.android.shell("input keyevent 66")
+        tail = " and pressed enter" if enter else ""
+        if "error" in (result or "").lower():
+            return f"{pre}Typing failed: {result}"
+        skipped = "" if text.isascii() else " (non-ASCII characters/emoji can't be typed this way and were skipped)"
+        return f"{pre}Typed {text!r}{tail}.{skipped}" + await self._after_action()
 
     async def _phone_open_app(self, package: str) -> str:
         reason = self._phone_unavailable_reason()
@@ -151,19 +238,55 @@ class PhoneToolsMixin:
 
     async def _phone_swipe(
         self,
-        x1: int | float,
-        y1: int | float,
-        x2: int | float,
-        y2: int | float,
+        x1: int | float | None = None,
+        y1: int | float | None = None,
+        x2: int | float | None = None,
+        y2: int | float | None = None,
         duration_ms: int = 300,
+        scroll: str | None = None,
+        element: int | None = None,
+        amount: float = 0.6,
     ) -> str:
         reason = self._phone_unavailable_reason()
         if reason:
             return reason
+        if scroll:
+            # Scroll the view (or one scrollable element) instead of guessing
+            # coordinates: "down" shows what's below (finger moves up).
+            box = None
+            if element is not None:
+                hit = next((e for e in await self._phone_elements() if e.n == int(element)), None)
+                if hit is None:
+                    return f"No element {element} on the current listing."
+                box = (hit.x1, hit.y1, hit.x2, hit.y2)
+            else:
+                size = await self.android.display_size()
+                if not size:
+                    return "Unknown screen size; can't scroll."
+                w, h = size
+                box = (0, int(h * 0.12), w, int(h * 0.88))
+            bx1, by1, bx2, by2 = box
+            cx, cy = (bx1 + bx2) // 2, (by1 + by2) // 2
+            dx = int((bx2 - bx1) * amount / 2)
+            dy = int((by2 - by1) * amount / 2)
+            vectors = {
+                "down": (cx, cy + dy, cx, cy - dy), "up": (cx, cy - dy, cx, cy + dy),
+                "right": (cx + dx, cy, cx - dx, cy), "left": (cx - dx, cy, cx + dx, cy),
+            }
+            key = scroll.strip().lower()
+            if key not in vectors:
+                return "scroll must be up, down, left or right."
+            x1, y1, x2, y2 = vectors[key]
+            duration_ms = max(duration_ms, 350)
+        if None in (x1, y1, x2, y2):
+            return "Give scroll=up|down|left|right (optionally element=N), or x1,y1,x2,y2."
         x1, y1, n1 = await _resolve_tap_coords(self.android, x1, y1)
         x2, y2, n2 = await _resolve_tap_coords(self.android, x2, y2)
         result = await self.android.swipe(x1, y1, x2, y2, duration_ms)
-        return f"{result}{n1}{n2}"
+        if "error" in (result or "").lower() or "fail" in (result or "").lower():
+            return f"Swipe failed: {result}{n1}{n2}"
+        what = f"Scrolled {scroll}" if scroll else f"Swiped ({x1},{y1})→({x2},{y2})"
+        return f"{what}.{n1}{n2}" + await self._after_action()
 
     async def _phone_key(self, key: str) -> str:
         reason = self._phone_unavailable_reason()

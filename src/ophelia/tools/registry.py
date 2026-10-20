@@ -220,6 +220,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "run_code": self._run_code,
             "web_search": self._web_search,
             "fetch_url": self._fetch_url,
+            "look_at_web_page": self._look_at_web_page,
             "save_skill": self._save_skill,
             "goal_create": self._goal_create,
             "goal_update": self._goal_update,
@@ -253,6 +254,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "site_delete_file": self._site_delete_file,
             "phone_see_screen": self._phone_see_screen,
             "phone_ui_dump": self._phone_ui_dump,
+            "phone_type": self._phone_type,
             "phone_tap": self._phone_tap,
             "phone_open_app": self._phone_open_app,
             "phone_shell": self._phone_shell,
@@ -493,7 +495,23 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         handler = self._handlers.get(name)
         if not handler:
             return f"Unknown tool: {name}"
-        return await handler(**args)
+        result = await handler(**args)
+        self._remember_doing(name, args, result)
+        return result
+
+    def _remember_doing(self, name: str, args: dict, result: Any) -> None:
+        """Her own day: notable things she did go into the day log, and the
+        effort comes off her energy. Never affects the tool result."""
+        try:
+            from ophelia.core.agent_loop import _AUTONOMOUS
+            from ophelia.mind import body_clock, day_log
+
+            text = result if isinstance(result, str) else str(result)
+            day_log.note_tool(self.settings, name, args, text,
+                              autonomous=_AUTONOMOUS.get(), owner=self._is_owner)
+            body_clock.spend_for_tool(self.settings, name)
+        except Exception as e:
+            log.debug("day_log.tool_hook_failed", tool=name, error=str(e))
 
     def _xai(self) -> XAIBackend:
         xai = self.stack.xai_backend()
@@ -915,6 +933,32 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 
     async def _fetch_url(self, url: str, max_chars: int = 8000) -> str:
         return await fetch_url(url, max_chars=max_chars)
+
+    async def _look_at_web_page(
+        self, url: str, width: str = "phone", question: str = "", full_page: bool = False
+    ) -> str:
+        from ophelia.media.vision_input import describe_image_file
+        from ophelia.tools.web_view import resolve_width, screenshot
+
+        px = resolve_width(width)
+        try:
+            shot = await screenshot(
+                url, self.artifacts_dir / "page_views", width=px, full_page=bool(full_page)
+            )
+        except Exception as e:
+            return (
+                f"Couldn't render {url}: {e}. If the phone body is on, you can open it in "
+                "Chrome with phone_open_app and use phone_see_screen instead."
+            )
+        ask = (
+            f"This is a screenshot of the web page {url} rendered {px}px wide "
+            f"({'a phone' if px < 600 else 'a phone at 50% zoom' if px < 900 else 'a larger screen'}). "
+            "Describe what a visitor sees: layout, spacing and side padding, what's "
+            "aligned or cut off, text size and readability, colours, anything broken."
+            + (f" Specifically: {question}" if question else "")
+        )
+        seen = await describe_image_file(self.settings, shot, question=ask, stack=self.stack)
+        return f"{seen}\n\n(screenshot file: {shot} — send_file it if the owner should see it)"
 
     async def _save_skill(self, name: str, description: str, content: str) -> str:
         path = save_skill(name, description, content)

@@ -48,23 +48,27 @@ class ThreadTone:
         if self.turn_count < 1:
             return ""
         quiet = now - self.last_at
-        if quiet > STALE_S:
+        if quiet > NEW_SESSION_GAP_S:
+            when = "since yesterday" if quiet > STALE_S else "for hours"
             return (
                 "# This conversation\n"
-                f"- You two last talked {quiet / 3600:.0f}h ago (tone was {self.tone}). "
+                f"- You two haven't talked {when} (last time it felt {self.tone}). "
                 "Greet the reunion; don't act like the last moment never paused."
             )
-        hours = max(0.0, (now - self.started_at) / 3600.0)
-        duration = f"{hours:.1f}h" if hours >= 1 else f"{max(1, int(hours * 60))}m"
+        minutes = max(0.0, (now - self.started_at) / 60.0)
+        length = (
+            "just started talking" if minutes < 10
+            else "been talking a little while" if minutes < 60
+            else "been talking for a good while"
+        )
         weight = (
-            "heavy" if self.emotional_weight >= 0.7
-            else "settled" if self.emotional_weight >= 0.4
-            else "light"
+            "it's gotten heavy" if self.emotional_weight >= 0.7
+            else "it's settled in" if self.emotional_weight >= 0.4
+            else "it's light"
         )
         return (
             "# This conversation (feel it, don't recite it)\n"
-            f"- Going ~{duration} across {self.turn_count} turns; tone: {self.tone}; "
-            f"emotional weight: {weight}."
+            f"- You've {length}; the tone is {self.tone} and {weight}."
         )
 
 
@@ -109,12 +113,10 @@ class ThreadTones:
         state.last_at = now
         state.turn_count += 1
         state.tone = infer_tone(user_text, assistant_text, state.tone)
-        hours = (now - state.started_at) / 3600.0
-        intensity = 0.15 if state.tone in ("warm", "tense") else 0.05
+        # Weight comes from what's said, not from how long the chat has run.
+        intensity = 0.15 if state.tone in ("warm", "tense") else 0.03
         if _WARM.search(user_text or "") or _TENSE.search(user_text or ""):
             intensity += 0.1
-        state.emotional_weight = min(
-            1.0, state.emotional_weight * 0.92 + intensity + min(0.2, hours * 0.04)
-        )
+        state.emotional_weight = min(1.0, state.emotional_weight * 0.9 + intensity)
         await self.memory.set_fact(_FACT_PREFIX + channel, json.dumps(asdict(state)))
         return state

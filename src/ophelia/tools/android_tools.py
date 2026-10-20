@@ -10,9 +10,9 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "phone_see_screen",
             "description": (
-                "Capture screenshot + vision + UI tree. Primary way to SEE the phone. "
-                "Use before tap or when exploring. The screenshot has a yellow "
-                "coordinate grid with native-pixel labels for accurate taps."
+                "Look at the phone: screenshot + your vision, with every element "
+                "you can act on boxed and numbered (same numbers as phone_ui_dump), "
+                "so you can phone_tap(element=N). Games/canvases get a coordinate grid."
             ),
             "parameters": {
                 "type": "object",
@@ -29,8 +29,16 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "phone_ui_dump",
-            "description": "Read current screen UI tree (requires Shizuku). Use before tap.",
-            "parameters": {"type": "object", "properties": {}},
+            "description": (
+                "List what's on the phone screen as numbered elements (buttons, "
+                "fields, toggles, lists, text) with their exact centers. Fast and "
+                "exact; use it before tapping. phone_see_screen shows the same "
+                "numbers drawn on a screenshot when you need to *see*."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"raw": {"type": "boolean", "description": "Raw XML (debug only)."}},
+            },
         },
     },
     {
@@ -38,20 +46,41 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "phone_tap",
             "description": (
-                "Tap screen coordinates in NATIVE pixels. Best source: the bounds "
-                "center of the target element from phone_ui_dump (already native). "
-                "For canvas/games with no UI tree, read x,y off the grid labels on "
-                "the phone_see_screen screenshot. You may also pass normalized "
-                "fractions (0.0..1.0) which are auto-scaled to native. Never use "
-                "percentage 0..100."
+                "Tap the phone screen. Best: element=N from the latest screen listing "
+                "(lands on the exact center). Or text=\"Send\" to tap the element with "
+                "that label. For games/drawings with no elements: target=\"the blue "
+                "gem in the top row\" and you'll aim by sight in two zoom steps. x,y "
+                "pixels only as a last resort. Returns what's on screen afterwards."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "number", "description": "native px (int) or fraction 0..1"},
-                    "y": {"type": "number", "description": "native px (int) or fraction 0..1"},
+                    "element": {"type": "integer", "description": "Element number from the listing"},
+                    "text": {"type": "string", "description": "Visible label to tap"},
+                    "target": {"type": "string", "description": "Describe what to tap (aim by sight)"},
+                    "long_press": {"type": "boolean"},
+                    "x": {"type": "number", "description": "last resort: pixel x"},
+                    "y": {"type": "number", "description": "last resort: pixel y"},
                 },
-                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_type",
+            "description": (
+                "Type text into a field: element=N taps the field first; enter=true "
+                "presses enter/send after. Plain ASCII only (no emoji)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "element": {"type": "integer"},
+                    "enter": {"type": "boolean"},
+                },
+                "required": ["text"],
             },
         },
     },
@@ -73,17 +102,23 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "phone_swipe",
-            "description": "Swipe between two points in NATIVE pixels (scroll, drag pieces, puzzles). Same coordinate rules as phone_tap (ui-dump bounds or grid labels; fractions 0..1 allowed).",
+            "description": (
+                "Scroll or swipe. Easiest: scroll=down|up|left|right (down shows what's "
+                "below), optionally element=N to scroll just that list, amount 0.2-0.9 "
+                "of its height. For drags in games: x1,y1,x2,y2 pixels."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "scroll": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                    "element": {"type": "integer"},
+                    "amount": {"type": "number"},
                     "x1": {"type": "integer"},
                     "y1": {"type": "integer"},
                     "x2": {"type": "integer"},
                     "y2": {"type": "integer"},
                     "duration_ms": {"type": "integer"},
                 },
-                "required": ["x1", "y1", "x2", "y2"],
             },
         },
     },

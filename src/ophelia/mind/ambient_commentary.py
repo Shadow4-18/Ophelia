@@ -64,18 +64,19 @@ class AmbientCommentaryLoop:
             return
         channel = self.settings.primary_user_channel() or "consciousness"
         try:
-            reply = await self.agent.run_turn(
-                channel,
-                f"You just glanced at your phone screen:\n{seen[:2000]}\n\n"
-                "If something catches your eye and you'd actually nudge a friend "
-                "about it, say one short line. Otherwise just let it go — no "
-                "need to narrate or acknowledge boring UI. Silence is fine.",
-                system_extra=(
-                    self.life.to_context_block()
-                    + "\n\nDon't describe what's on screen. Only speak if it's "
-                    "the kind of thing you'd actually text someone about."
-                ),
-            )
+            with self.agent.autonomous():
+                reply = await self.agent.run_turn(
+                    channel,
+                    f"You just glanced at your phone screen:\n{seen[:2000]}\n\n"
+                    "If something catches your eye and you'd actually nudge a friend "
+                    "about it, say one short line. Otherwise just let it go — no "
+                    "need to narrate or acknowledge boring UI. Silence is fine.",
+                    system_extra=(
+                        self.life.to_context_block()
+                        + "\n\nDon't describe what's on screen. Only speak if it's "
+                        "the kind of thing you'd actually text someone about."
+                    ),
+                )
         except Exception as e:
             log.debug("ambient_commentary.turn_skip", error=str(e))
             return
@@ -90,6 +91,7 @@ class AmbientCommentaryLoop:
             return
         try:
             await self.notify(text)
+            await self.agent.record_spoken(channel, text, kind="glance")
             self.governor.record_outreach("ambient_commentary", 0.5, text)
             self._last_at = time.time()
             log.info("ambient_commentary.sent", preview=text[:80])

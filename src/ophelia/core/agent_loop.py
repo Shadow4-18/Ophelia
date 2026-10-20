@@ -350,7 +350,7 @@ class AgentLoop:
         # loosen the social filter so she can tease and mess around freely.
         from ophelia.mind.mood_behavior import play_hint
 
-        play_block = play_hint(self.drives)
+        play_block = play_hint(self.drives, self.psyche)
         # Background memory prefetch: pull relevant past messages/lessons for
         # the current user text so she can reference them without an explicit
         # blocking recall_memory tool call. Neuro-style parallel memory access.
@@ -448,6 +448,14 @@ class AgentLoop:
             narrative = getattr(self, "narrative", None)
             if narrative is not None:
                 parts.append(await narrative.recent_block())
+            from ophelia.mind import body_clock, day_log
+
+            settings = getattr(self, "settings", None)
+            if settings is not None:
+                parts.append(day_log.context_block(settings))
+            clock = body_clock.get(settings)
+            if clock is not None:
+                parts.append(clock.felt_line(in_chat=bool(channel) and channel != "consciousness"))
         except Exception as e:
             log.debug("agent.continuity_block_failed", error=str(e))
         return "\n\n".join(p for p in parts if p)
@@ -717,6 +725,22 @@ class AgentLoop:
             messages.append({"role": "user", "content": user_text})
             return messages
 
+        if (
+            not current_is_tick
+            and channel != "consciousness"
+            and not _AUTONOMOUS.get()
+        ):
+            # The owner is talking to her: that wakes her if she was asleep.
+            from ophelia.mind import body_clock
+
+            clock = body_clock.get(getattr(self, "settings", None))
+            if clock is not None:
+                clock.update()
+                if clock.on_owner_message():
+                    from ophelia.mind import day_log
+
+                    day_log.record(self.settings, "sleep", "got woken up by your owner")
+
         channels = [channel]
         if extra_channels:
             channels.extend(extra_channels)
@@ -851,6 +875,19 @@ class AgentLoop:
             await self._after_owner_turn(channel, user_text, text)
         return text
 
+    async def record_spoken(self, channel: str, text: str, *, kind: str) -> None:
+        """She said ``text`` to the owner on her own (alarm, glance, greeting).
+        The prompt that produced it was private; this is what he actually got,
+        so it belongs in their conversation history."""
+        if not (self.memory and channel and text):
+            return
+        try:
+            await self.memory.append_message(
+                channel, "assistant", text, metadata={"type": "spontaneous", "source": kind}
+            )
+        except Exception as e:
+            log.debug("agent.record_spoken_failed", error=str(e))
+
     @contextmanager
     def autonomous(self):
         """Mark the enclosed turn(s) as self-initiated (see _AUTONOMOUS)."""
@@ -866,6 +903,12 @@ class AgentLoop:
         and the conversation's tone/weight is updated. Never fails the turn."""
         if not self.memory or not channel:
             return
+        try:
+            from ophelia.mind import day_log
+
+            day_log.record_chat(getattr(self, "settings", None), "your owner", user_text)
+        except Exception as e:
+            log.debug("day_log.chat_hook_failed", error=str(e))
         try:
             from ophelia.mind.open_loops import OpenLoops
 

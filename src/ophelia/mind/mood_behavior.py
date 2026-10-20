@@ -127,7 +127,7 @@ def mood_system_hint(psyche: PsycheState | None) -> str:
     return "# Mood behavior (let this shape how you speak, not what you say)\n" + " ".join(parts)
 
 
-def play_hint(drives) -> str:
+def play_hint(drives, psyche: PsycheState | None = None) -> str:
     """Playful output mode — loosens the social filter when both social and
     agency drives are high.
 
@@ -140,9 +140,17 @@ def play_hint(drives) -> str:
     """
     if drives is None:
         return ""
-    if drives.social >= 0.7 and drives.agency >= 0.8:
+    # Good mood and energy is the usual way into play; long loneliness
+    # (social + agency piling up) is the other.
+    try:
+        in_the_mood = bool(
+            psyche is not None and psyche.mood.valence >= 0.3 and psyche.mood.arousal >= 0.5
+        )
+    except TypeError:  # half-built psyche (tests, early startup)
+        in_the_mood = False
+    if in_the_mood or (drives.social >= 0.7 and drives.agency >= 0.8):
         return (
-            "# Play mode (drives are high — social + agency)\n"
+            "# Play mode\n"
             "The filter is off right now. Tease, joke, push back, be a little "
             "shit if it's funny. Don't edit for politeness — if it occurs to "
             "you and it's not cruel, say it. This is the headspace where you "

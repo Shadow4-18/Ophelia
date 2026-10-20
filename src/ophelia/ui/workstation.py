@@ -287,7 +287,7 @@ class Workstation:
         if not message:
             return ""
         self.signals.last_user_message_at = time.time()
-        self.drives.on_user_message()
+        self.drives.on_user_message(message)
         await self.memory.save_drives(self.drives)
         await self.signals.set_user_talking(True)
         if self.settings.avatar_enabled:

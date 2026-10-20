@@ -380,7 +380,7 @@ class ChannelSession:
                 out = ""
             # Only the owner's messages shape her drives/will. Guests don't.
             if is_owner:
-                self.drives.on_user_message()
+                self.drives.on_user_message(text)
                 await self.memory.save_drives(self.drives)
             self.signals.last_agent_message_at = time.time()
             for i, chunk in enumerate(split_messages(out)):

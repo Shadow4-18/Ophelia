@@ -23,7 +23,7 @@ log = structlog.get_logger()
 
 VISION_PROMPT = """You are Ophelia's eyes on the Android phone screen.
 Describe what is visible: apps, notifications, text, buttons, mood of the scene.
-Then suggest ONE concrete next action if useful (tap target with approximate x,y from ui-dump if known, or open-app package, or 'none').
+Then suggest ONE concrete next action if useful (tap element N, type into a field, scroll, open-app package, or 'none').
 Be concise. This is your body — not a user request."""
 
 # Appended to VISION_PROMPT when a coordinate grid is drawn on the image and/or
@@ -41,6 +41,15 @@ _COORD_GUIDE = (
     "back to grid-read coordinates for canvas/games with no accessibility nodes.\n"
     "Never return normalized (0..1) or percentage (0..100) coordinates — always "
     "native pixels."
+)
+
+
+_MARKS_GUIDE = (
+    "\n\n--- Acting on the screen ---\n"
+    "Every element you can act on has a numbered colored box, and the element "
+    "list gives the same numbers. To tap something, name its number "
+    "(phone_tap element=N). Don't estimate pixel coordinates. If what you want "
+    "has no box, describe it instead (phone_tap target=\"the red play button\")."
 )
 
 
@@ -105,6 +114,93 @@ def _annotate_grid(png_bytes: bytes, native: tuple[int, int] | None) -> bytes:
     return buf.getvalue()
 
 
+def _font(size: int):
+    try:
+        from PIL import ImageFont
+    except Exception:
+        return None
+    for path in ("/system/fonts/Roboto-Bold.ttf", "/system/fonts/Roboto-Regular.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _annotate_marks(png_bytes: bytes, elements, space: tuple[int, int] | None) -> bytes:
+    """Set-of-marks: a numbered box on every element she can act on, so she
+    answers "tap 7" instead of estimating pixels. Original bytes if Pillow
+    is missing."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return png_bytes
+    try:
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    except Exception:
+        return png_bytes
+    iw, ih = img.size
+    sw, sh = space or (iw, ih)
+    sx, sy = iw / sw, ih / sh
+    draw = ImageDraw.Draw(img)
+    font = _font(max(18, iw // 40))
+    palette = [(255, 60, 60), (40, 200, 255), (255, 200, 0), (120, 255, 120), (255, 120, 255)]
+    for e in elements:
+        if not (e.clickable or e.editable or e.scrollable or e.kind == "toggle"):
+            continue
+        color = palette[e.n % len(palette)]
+        box = (e.x1 * sx, e.y1 * sy, e.x2 * sx, e.y2 * sy)
+        draw.rectangle(box, outline=color, width=3)
+        tag = str(e.n)
+        tx, ty = box[0] + 2, box[1] + 2
+        if font:
+            tb = draw.textbbox((tx, ty), tag, font=font)
+            draw.rectangle((tb[0] - 3, tb[1] - 2, tb[2] + 3, tb[3] + 2), fill=color)
+            draw.text((tx, ty), tag, fill=(0, 0, 0), font=font)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _annotate_cells(png_bytes: bytes, cols: int, rows: int, *, labels: str = "grid") -> bytes:
+    """Lettered/numbered cells for two-step aiming. labels='grid' → A1..;
+    'numbers' → 1..cols*rows."""
+    from PIL import Image, ImageDraw
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    iw, ih = img.size
+    draw = ImageDraw.Draw(img)
+    font = _font(max(16, min(iw // cols, ih // rows) // 3))
+    for c in range(cols):
+        for r in range(rows):
+            x1, y1 = iw * c / cols, ih * r / rows
+            x2, y2 = iw * (c + 1) / cols, ih * (r + 1) / rows
+            draw.rectangle((x1, y1, x2, y2), outline=(255, 230, 0), width=2)
+            tag = f"{chr(65 + c)}{r + 1}" if labels == "grid" else str(r * cols + c + 1)
+            if font:
+                tb = draw.textbbox((x1 + 4, y1 + 4), tag, font=font)
+                draw.rectangle((tb[0] - 2, tb[1] - 1, tb[2] + 2, tb[3] + 1), fill=(0, 0, 0))
+                draw.text((x1 + 4, y1 + 4), tag, fill=(255, 230, 0), font=font)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _crop(png_bytes: bytes, box: tuple[int, int, int, int], *, upscale: float = 2.0) -> bytes:
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    part = img.crop(box)
+    if upscale != 1:
+        part = part.resize((int(part.width * upscale), int(part.height * upscale)))
+    buf = io.BytesIO()
+    part.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def annotate_screenshot_file(
     src: Path, dst: Path, native: tuple[int, int] | None
 ) -> Path | None:
@@ -145,6 +241,8 @@ class ScreenVision:
         self.android = android
         self.stack = stack or build_provider_stack(settings)
         self.shots_dir = settings.data_dir / "screenshots"
+        self.last_elements: list = []
+        self.last_elements_at = 0.0
 
     async def capture(self) -> Path | None:
         if not self.android or self.android.mode == "termux_only":
@@ -185,8 +283,12 @@ class ScreenVision:
 
         path = await self.capture()
         ui_text = ""
+        elements = []
         if include_ui_dump:
-            ui_text = (await self.android.ui_dump())[:6000]
+            elements = await self.read_elements()
+            from ophelia.android.screen_elements import describe
+
+            ui_text = describe(elements)
 
         if not path:
             if ui_text and "No Shizuku" not in ui_text:
@@ -207,10 +309,20 @@ class ScreenVision:
                 native = await self.android.display_size()
             except Exception:
                 native = None
+        if shot_px and shot_px != native and hasattr(self.android, "learn_display_size"):
+            # screencap is in the same coordinate space as `input tap`.
+            self.android.learn_display_size(shot_px)
+            native = shot_px
 
         annotated_path: Path | None = None
         coord_guide = ""
-        if self.settings.vision_grid_overlay:
+        marked = any(e.clickable or e.editable or e.scrollable for e in elements)
+        if marked:
+            annotated = _annotate_marks(b64_bytes, elements, native or shot_px)
+            if annotated is not b64_bytes:
+                b64_bytes = annotated
+                coord_guide = _MARKS_GUIDE
+        elif self.settings.vision_grid_overlay:
             annotated = _annotate_grid(b64_bytes, native or shot_px)
             if annotated is not b64_bytes:
                 b64_bytes = annotated
@@ -247,7 +359,7 @@ class ScreenVision:
                 1,
                 {
                     "type": "text",
-                    "text": f"Accessibility tree (for tap coordinates):\n{ui_text[:5000]}",
+                    "text": f"Elements on screen (numbers match the boxes):\n{ui_text[:5000]}",
                 },
             )
 
@@ -271,6 +383,101 @@ class ScreenVision:
             if ui_text:
                 fallback += f"\n\nUI dump:\n{ui_text[:3000]}"
             return fallback
+
+    async def read_elements(self):
+        """Parse the full accessibility tree into numbered elements."""
+        from ophelia.android.screen_elements import parse
+
+        if not self.android or self.android.mode == "termux_only":
+            return []
+        try:
+            getter = getattr(self.android, "ui_dump_xml", None)
+            xml = await getter() if getter else await self.android.ui_dump()
+        except Exception as e:
+            log.debug("vision.ui_dump_failed", error=str(e))
+            return []
+        size = None
+        try:
+            size = await self.android.display_size()
+        except Exception:
+            size = None
+        self.last_elements = parse(xml, screen=size)
+        self.last_elements_at = time.time()
+        return self.last_elements
+
+    async def _ask(self, png: bytes, prompt: str) -> str:
+        client, model = await self._vision_client()
+        b64 = base64.standard_b64encode(png).decode("ascii")
+        from ophelia.providers.fallback import extra_body_for
+
+        async with get_model_gate().session("vision", model, self.stack.name("vision")):
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+                ]}],
+                max_tokens=30,
+                extra_body=extra_body_for(self.settings, self.stack.name("vision")),
+            )
+        return (resp.choices[0].message.content or "").strip()
+
+    async def aim(self, target: str, *, cols: int = 6, rows: int = 12, sub: int = 4):
+        """Find ``target`` on screen by sight in two steps (coarse cell, then a
+        zoomed sub-square), for games/canvases with no accessibility boxes.
+        Vision models are poor at raw pixel guesses; picking a labeled square
+        twice is far more accurate. Returns (x, y, note) or raises."""
+        import re as _re
+
+        path = await self.capture()
+        if not path:
+            raise RuntimeError("couldn't take a screenshot")
+        png = path.read_bytes()
+        size = png_size(png)
+        if not size:
+            raise RuntimeError("unreadable screenshot")
+        if hasattr(self.android, "learn_display_size"):
+            self.android.learn_display_size(size)
+        w, h = size
+        try:
+            coarse = _annotate_cells(png, cols, rows)
+        except Exception as e:
+            raise RuntimeError(f"Pillow is needed to aim (pkg install python-pillow): {e}")
+        a1 = await self._ask(coarse, (
+            f"The phone screen is divided into lettered cells (columns A-{chr(64 + cols)}, "
+            f"rows 1-{rows}). Which ONE cell contains the center of: {target}? "
+            "Reply with only the cell label like C7, or NONE if it isn't visible."
+        ))
+        m = _re.search(r"\b([A-Z])\s*(\d{1,2})\b", a1.upper())
+        if not m or "NONE" in a1.upper()[:8]:
+            raise RuntimeError(f"couldn't find {target!r} on screen (vision said: {a1[:60]})")
+        col, row = ord(m.group(1)) - 65, int(m.group(2)) - 1
+        if not (0 <= col < cols and 0 <= row < rows):
+            raise RuntimeError(f"vision named a cell off the grid: {a1[:20]}")
+        cw, ch = w / cols, h / rows
+        # Zoom: the cell plus half a cell around it, so a target on a border
+        # is still fully in view.
+        bx1 = max(0, int((col - 0.5) * cw))
+        by1 = max(0, int((row - 0.5) * ch))
+        bx2 = min(w, int((col + 1.5) * cw))
+        by2 = min(h, int((row + 1.5) * ch))
+        zoom = _annotate_cells(_crop(png, (bx1, by1, bx2, by2)), sub, sub, labels="numbers")
+        a2 = await self._ask(zoom, (
+            f"This is a zoomed-in part of the screen, split into numbered squares "
+            f"1-{sub * sub}. Which square contains the center of: {target}? "
+            "Reply with only the number."
+        ))
+        m2 = _re.search(r"\d{1,2}", a2)
+        if not m2 or not (1 <= int(m2.group()) <= sub * sub):
+            # Fall back to the coarse cell's center.
+            x, y = int((col + 0.5) * cw), int((row + 0.5) * ch)
+            return x, y, f"aimed at cell {m.group(1)}{m.group(2)} (zoom step unclear)"
+        k = int(m2.group()) - 1
+        sc, sr = k % sub, k // sub
+        x = int(bx1 + (sc + 0.5) * (bx2 - bx1) / sub)
+        y = int(by1 + (sr + 0.5) * (by2 - by1) / sub)
+        return x, y, f"aimed by sight: cell {m.group(1)}{m.group(2)}, square {k + 1}"
 
     async def see_for_game(
         self, profile: GameProfile, intent: str = ""

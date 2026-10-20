@@ -62,11 +62,23 @@ class DreamLoop:
     async def run(self) -> None:
         self._running = True
         log.info("dream.started", interval_hours=self.interval / 3600)
+        from ophelia.mind import body_clock
+
+        last_dream = 0.0
         while self._running and not self.signals.terminate:
-            interval = self.interval
-            if self.agent.life and self.agent.life.is_sleep_mode():
-                interval = min(interval, 3600.0)
-            await asyncio.sleep(interval)
+            clock = body_clock.get(getattr(self.agent, "settings", None))
+            if clock is not None:
+                # She dreams when she's actually asleep, about every 90 minutes.
+                await asyncio.sleep(600)
+                clock.update()
+                if not clock.asleep or time.time() - last_dream < 5400:
+                    continue
+                last_dream = time.time()
+            else:
+                interval = self.interval
+                if self.agent.life and self.agent.life.is_sleep_mode():
+                    interval = min(interval, 3600.0)
+                await asyncio.sleep(interval)
             if self.signals.terminate or self.signals.autonomy_paused:
                 continue
             if self.signals.user_talking or self.signals.agent_thinking:
@@ -189,24 +201,32 @@ class DreamLoop:
             except Exception as e:
                 log.debug("dream.morning_record_failed", error=str(e))
 
-        # Apply mood shift nudge to baseline if present.
+        # Apply mood shift nudge to baseline if present. Both directions, and
+        # always pulled back toward her persona's resting temperament, so
+        # weeks of "content" dreams don't turn a goth into a ray of sunshine.
         if mood_shift and mood_shift.lower() not in ("none", "n/a", ""):
             try:
                 from ophelia.mind.psyche import PsycheState
 
-                if isinstance(self.agent.psyche, PsycheState) and "content" in mood_shift.lower():
-                    self.agent.psyche.mood.baseline_valence = min(
-                        1.0, self.agent.psyche.mood.baseline_valence + 0.05
-                    )
-                elif "anxious" in mood_shift.lower() or "tense" in mood_shift.lower():
-                    self.agent.psyche.mood.baseline_arousal = min(
-                        1.0, self.agent.psyche.mood.baseline_arousal + 0.05
-                    )
-                elif "calm" in mood_shift.lower():
-                    self.agent.psyche.mood.baseline_arousal = max(
-                        0.0, self.agent.psyche.mood.baseline_arousal - 0.05
-                    )
-                await self.memory.save_psyche(self.agent.psyche)
+                psyche = self.agent.psyche
+                if isinstance(psyche, PsycheState):
+                    low = mood_shift.lower()
+                    m = psyche.mood
+                    if any(w in low for w in ("content", "warm", "happy", "soft", "safe")):
+                        m.baseline_valence += 0.04
+                    if any(w in low for w in ("lonely", "irritat", "hurt", "sad", "bitter",
+                                              "jealous", "resent", "low")):
+                        m.baseline_valence -= 0.04
+                    if any(w in low for w in ("anxious", "tense", "restless", "wired")):
+                        m.baseline_arousal += 0.04
+                    if any(w in low for w in ("calm", "tired", "heavy", "still")):
+                        m.baseline_arousal -= 0.04
+                    # Homeostasis toward the persona setpoint, then clamp.
+                    m.baseline_valence += (0.15 - m.baseline_valence) * 0.1
+                    m.baseline_arousal += (0.3 - m.baseline_arousal) * 0.1
+                    m.baseline_valence = max(-0.2, min(0.45, m.baseline_valence))
+                    m.baseline_arousal = max(0.15, min(0.55, m.baseline_arousal))
+                    await self.memory.save_psyche(psyche)
             except Exception:
                 pass
 

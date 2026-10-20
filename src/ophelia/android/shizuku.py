@@ -178,6 +178,39 @@ class AndroidBody:
             "Phone: Shizuku + phone_control.sh"
         )
 
+    async def ui_dump_xml(self) -> str:
+        """The full accessibility tree, untruncated (ui_dump() caps it at
+        12k chars, which cuts most of a busy screen)."""
+        remote = "/sdcard/ophelia_ui.xml"
+        out = await self.shell(
+            f"uiautomator dump {remote} >/dev/null 2>&1; cat {remote}"
+        )
+        start = out.find("<?xml")
+        if start < 0:
+            start = out.find("<hierarchy")
+        return out[start:] if start >= 0 else out
+
+    def learn_display_size(self, size: tuple[int, int]) -> None:
+        """A fresh screenshot is ground truth for the coordinate space."""
+        if size and size != self._display_size:
+            log.info("display_size.from_screenshot", old=self._display_size, new=size)
+            self._display_size = size
+
+    async def type_text(self, text: str) -> str:
+        """Type into the focused field (`input text`; spaces/specials escaped)."""
+        safe = []
+        for ch in text:
+            if ch == " ":
+                safe.append("%s")
+            elif ch.isalnum() or ch in ".,-_@:/":
+                safe.append(ch)
+            elif ord(ch) < 128:
+                safe.append("\\" + ch)
+            # non-ASCII can't go through `input text`; skipped
+        if not safe:
+            return "nothing typeable (input text only supports plain ASCII)"
+        return await self.shell("input text " + "".join(safe))
+
     async def tap(self, x: int, y: int) -> str:
         if self._use_adb():
             return await self._adb_shell(f"input tap {x} {y}")
@@ -332,8 +365,14 @@ class AndroidBody:
             if not out or out == "(ok)":
                 continue
             last_out = out
+            # "Override size" wins: Samsung (and others) run the panel below
+            # its physical resolution by default (S21 Ultra: 1440x3200
+            # physical, 1080x2400 in use). `input tap`, screencap and
+            # uiautomator bounds all use the size *in use*; reading the
+            # physical size scaled every tap ~33% off.
             m = (
-                re.search(r"physical size:\s*(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
+                re.search(r"override size:\s*(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
+                or re.search(r"physical size:\s*(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
                 or re.search(r"real size\s+(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
                 or re.search(r"init\s+(\d{3,5})\s*[xX]\s*(\d{3,5})", out, re.I)
             )
