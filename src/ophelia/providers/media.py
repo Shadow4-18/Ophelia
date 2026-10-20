@@ -377,6 +377,18 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
+    # img2img only exists on Civitai here; every other backend would quietly
+    # ignore the source image and draw from scratch. Route it, or say why not.
+    if image and provider != "civitai":
+        if settings.civitai_api_key:
+            log.info("image.reroute_img2img_to_civitai", from_provider=provider)
+            provider = "civitai"
+        else:
+            return (
+                f"img2img needs Civitai (set CIVITAI_API_KEY); {provider} can't take a "
+                "source image. Call again without image= for a fresh text-to-image."
+            )
+
     agent_model = (model or "").strip()
     # Civitai AIR URNs must never hit xAI/OpenAI (404). If she passes an AIR,
     # route to Civitai when a key is configured; otherwise strip and use default.
@@ -406,7 +418,9 @@ async def generate_image(
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
-    attempts = [provider] + _fallback_image_providers(settings, provider, nsfw=nsfw)
+    attempts = [provider]
+    if not image:  # an img2img failure must not turn into a txt2img elsewhere
+        attempts += _fallback_image_providers(settings, provider, nsfw=nsfw)
     errors: list[str] = []
     result = ""
     used_provider = provider
@@ -999,6 +1013,34 @@ async def _replicate_image(
     return f"Image saved to {saved}"
 
 
+def _image_ledger(settings: Settings, record: dict) -> None:
+    """Append one line per Civitai generation (success or failure) to
+    data/logs/image_generations.jsonl — the on-disk record of what was
+    actually sent and what came back."""
+    try:
+        path = Path(settings.data_dir) / "logs" / "image_generations.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": round(time.time(), 3), **record}) + "\n")
+    except Exception as e:  # never let bookkeeping break a generation
+        log.debug("image.ledger_failed", error=str(e))
+
+
+def _deep_find_seed(node: object) -> int | None:
+    stack: list[object] = [node]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if isinstance(k, str) and k.lower() == "seed" and isinstance(v, int) \
+                        and not isinstance(v, bool):
+                    return v
+                stack.append(v)
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
 async def _civitai_image(
     settings: Settings,
     prompt: str,
@@ -1017,7 +1059,9 @@ async def _civitai_image(
 
     By default auto_pick selects a curated general checkpoint (no LoRAs, no
     trigger injection). Pass model=<AIR> to pin a checkpoint; pass loras= to
-    add compatible LoRAs. CIVITAI_IMAGE_MODEL is a last-resort fallback only.
+    add LoRAs. With LoRAs and no pin, the checkpoint family follows the LoRAs.
+    A verified LoRA/checkpoint family mismatch is refused, not generated.
+    CIVITAI_IMAGE_MODEL is a last-resort fallback only.
     """
     from ophelia.providers import civitai as civ
 
@@ -1040,96 +1084,91 @@ async def _civitai_image(
     else:
         explicit_pin = bool(model_air)
 
-    agent_loras = bool(loras)
     lora_map = civ.parse_loras(loras)
-    # Sanitize LoRA AIR keys early.
     lora_map = {civ.sanitize_air(k): v for k, v in lora_map.items() if civ.sanitize_air(k)}
-    lora_triggers: list[str] = []
     pick_note = ""
     checkpoint_base = ""
-    style = civ.detect_style(prompt)
+    style, style_reason = civ.detect_style_with_reason(prompt)
 
-    # Common mistake: pass a LoRA AIR as model=. Move it to loras= and pick a
-    # matching checkpoint — orchestration needs checkpoint + LoRA together.
+    # Common mistake: pass a LoRA AIR as model=. A LoRA is never sent as the
+    # checkpoint — move it to loras= and pick a checkpoint to carry it.
     if model_air and civ.air_kind(model_air) == "lora":
         lora_map.setdefault(model_air, 0.8)
-        agent_loras = True
         pick_note = "model_was_lora→loras; "
-        # Prefer checkpoint family matching the LoRA once we know baseModel.
-        try:
-            vid_s = model_air.rsplit("@", 1)[-1].split("+")[0]
-            if vid_s.isdigit():
-                ver = await civ.get_version(settings, int(vid_s))
-                if ver and ver.base_model:
-                    fam = civ.base_family(ver.base_model, model_air)
-                    if fam == "pony":
-                        style = "pony"
-                    elif fam == "illustrious":
-                        style = "illustrious"
-                    lora_triggers.extend(ver.trained_words[:3])
-        except Exception as e:
-            log.debug("civitai.lora_as_model_meta_failed", error=str(e))
         model_air = ""
         explicit_pin = False
     elif model_air and not model_air.startswith("urn:air:"):
         # Short aliases: model=pony / model=illustrious
         alias = civ.resolve_checkpoint_alias(model_air)
         if alias:
+            key = model_air.lower()
             model_air = alias
             explicit_pin = True
+            checkpoint_base = civ.curated_base_model(
+                "pony" if "pony" in key else "illustrious" if alias == civ._FALLBACK_ILLUSTRIOUS_AIR
+                else "sdxl"
+            )
             pick_note = f"alias→{alias}; "
+
+    # LoRA baseModels from the site API (also reported back as trigger hints;
+    # triggers are never written into the prompt for her).
+    lora_meta: dict[str, str] = {}
+    lora_triggers: list[str] = []
+    for air in list(lora_map)[:5]:
+        if "@" not in air:
+            continue
+        try:
+            vid_s = air.rsplit("@", 1)[-1].split("+")[0]
+            if vid_s.isdigit():
+                ver = await civ.get_version(settings, int(vid_s))
+                if ver:
+                    lora_meta[air] = ver.base_model or ""
+                    lora_triggers.extend(t for t in ver.trained_words[:3] if t)
+        except Exception as e:
+            log.debug("civitai.lora_meta_fetch_failed", error=str(e))
 
     ecosystem = civ.ecosystem_from_air_or_base(model_air)
 
-    # Dynamic selection is the default. Only skip when she pinned a model URN/flux.
     should_pick = bool(auto_pick) and not explicit_pin
     if should_pick:
-        try:
-            # Prefer style already inferred (e.g. from a LoRA demoted out of model=).
-            if style in civ._CURATED_CHECKPOINTS:
-                air, name = civ._CURATED_CHECKPOINTS[style]
-                model_air = civ.sanitize_air(air)
-                ecosystem = "sdxl"
-                checkpoint_base = (
-                    "Pony"
-                    if style == "pony"
-                    else "Illustrious"
-                    if style in ("illustrious", "anime")
-                    else "SDXL 1.0"
-                )
-                pick_note = (
-                    pick_note
-                    + f"checkpoint={name} ({model_air}, style={style}); "
-                    "loras=none-or-agent"
-                )
-            else:
-                ck, _picked_loras, rationale = await civ.pick_best_resources(
-                    settings, prompt, nsfw=nsfw, want_lora=False
-                )
-                if ck:
-                    model_air = civ.sanitize_air(ck.air)
-                    ecosystem = ck.ecosystem
-                    checkpoint_base = ck.base_model or ""
-                    pick_note = pick_note + rationale
-        except Exception as e:
-            log.warning("civitai.auto_pick_failed", error=str(e))
-            pick_note = pick_note + f"auto_pick_failed: {e}"
+        # With LoRAs, the checkpoint family follows them (a Pony LoRA gets the
+        # Pony checkpoint) instead of guessing from prompt words.
+        lora_fams = {civ.base_family(b) for b in lora_meta.values() if b}
+        if len(lora_fams) == 1 and next(iter(lora_fams)) in ("pony", "illustrious", "sdxl"):
+            style, style_reason = next(iter(lora_fams)), "lora family"
+        air, name = civ._CURATED_CHECKPOINTS.get(style, civ._CURATED_CHECKPOINTS["sdxl"])
+        model_air = civ.sanitize_air(air)
+        ecosystem = "sdxl"
+        checkpoint_base = civ.curated_base_model(style)
+        pick_note += (
+            f"checkpoint={name} ({model_air}, style={style}"
+            f"{', matched ' + repr(style_reason) if style_reason else ', default'}); "
+            "loras=" + ("agent" if lora_map else "none")
+        )
+        log.info(
+            "civitai.auto_pick",
+            style=style,
+            matched=style_reason or None,
+            checkpoint=model_air,
+            loras=list(lora_map) or None,
+        )
 
-    # Fallback chain if pick found nothing: env default → known SDXL URN.
-    # Never bare engine:flux (400 workflowTemplate required).
+    # Fallback chain if nothing chosen: env default → known SDXL URN. The env
+    # model is skipped if it's a LoRA (never sent as a checkpoint).
     if not model_air:
         env_model = civ.sanitize_air((settings.civitai_image_model or "").strip())
-        if env_model and env_model.lower() not in ("auto", "dynamic", "pick", "flux"):
+        if (
+            env_model
+            and env_model.lower() not in ("auto", "dynamic", "pick", "flux")
+            and civ.air_kind(env_model) != "lora"
+        ):
             model_air = env_model
             ecosystem = civ.ecosystem_from_air_or_base(model_air)
             pick_note = (pick_note + "; " if pick_note else "") + f"fallback_env={env_model}"
         else:
-            if style == "pony":
-                model_air = civ._FALLBACK_PONY_AIR
-            elif style in ("illustrious", "anime"):
-                model_air = civ._FALLBACK_ILLUSTRIOUS_AIR
-            else:
-                model_air = civ._FALLBACK_SDXL_AIR
+            air, _name = civ._CURATED_CHECKPOINTS.get(style, civ._CURATED_CHECKPOINTS["sdxl"])
+            model_air = air
+            checkpoint_base = civ.curated_base_model(style)
             ecosystem = "sdxl"
             pick_note = (pick_note + "; " if pick_note else "") + f"fallback_urn={model_air}"
 
@@ -1147,37 +1186,39 @@ async def _civitai_image(
         except Exception as e:
             log.debug("civitai.version_enrich_failed", error=str(e))
 
-    # Enrich LoRA baseModel from site API, then drop incompatible ones
-    # (e.g. Pony LoRA on generic SDXL — AIR alone is always :sdxl:).
-    lora_meta: dict[str, str] = {}
-    if lora_map:
-        for air in list(lora_map)[:5]:
-            if "@" not in air:
-                continue
-            try:
-                vid_s = air.rsplit("@", 1)[-1].split("+")[0]
-                if vid_s.isdigit():
-                    ver = await civ.get_version(settings, int(vid_s))
-                    if ver:
-                        lora_meta[air] = ver.base_model or ""
-                        if agent_loras:
-                            lora_triggers.extend(ver.trained_words[:3])
-            except Exception as e:
-                log.debug("civitai.lora_meta_fetch_failed", error=str(e))
-        lora_map = civ.filter_loras_for_checkpoint(
-            lora_map,
-            checkpoint_air=model_air,
-            checkpoint_base=checkpoint_base,
-            lora_meta=lora_meta,
-        )
+    record: dict = {
+        "provider": "civitai",
+        "operation": "createVariant" if image else "createImage",
+        "checkpoint": model_air,
+        "checkpoint_base": checkpoint_base or None,
+        "loras": dict(lora_map),
+        "prompt": prompt,
+        "pick": pick_note or None,
+    }
 
-    # Prompt: keep user intent. Soft quality tags for danbooru families only.
-    # Short LoRA triggers appended only when the agent explicitly passed loras=.
-    final_prompt = civ.maybe_quality_prefix(prompt, style)
-    if agent_loras and lora_map:
-        final_prompt = civ.ensure_triggers_in_prompt(
-            final_prompt, lora_triggers, mode="append"
+    # Hard stop on verified cross-family pairs (Pony LoRA on Illustrious, an
+    # SD1.5 LoRA on SDXL, ...): those make garbage, so say so instead.
+    mismatches = [
+        err
+        for air in lora_map
+        if (err := civ.lora_family_error(model_air, checkpoint_base, air, lora_meta.get(air, "")))
+    ]
+    if mismatches:
+        msg = (
+            "Refused: LoRA/checkpoint family mismatch: " + "; ".join(mismatches)
+            + ". Use LoRAs of the checkpoint's family, or pin a matching checkpoint "
+            "(model='pony' or model='illustrious'), or leave model empty so the "
+            "checkpoint follows the LoRA."
         )
+        log.warning("civitai.family_mismatch", checkpoint=model_air, errors=mismatches)
+        _image_ledger(settings, {**record, "error": msg})
+        return msg
+
+    # Prompt: her words, plus soft quality tags only on danbooru-style
+    # checkpoints. No trigger words are injected.
+    fam = civ.base_family(checkpoint_base, model_air)
+    final_prompt = civ.maybe_quality_prefix(prompt, fam)
+    record["prompt"] = final_prompt
 
     neg = (negative_prompt or "").strip()
     if not neg and ecosystem in ("sd1", "sdxl"):
@@ -1186,9 +1227,17 @@ async def _civitai_image(
     image_url = None
     if image:
         try:
+            strength = min(1.0, max(0.05, float(strength)))
+        except (TypeError, ValueError):
+            strength = 0.7
+        record["strength"] = strength
+        record["source_image"] = image
+        try:
             image_url = await civ.resolve_image_url(settings, image)
         except Exception as e:
-            return f"Civitai img2img source failed: {e}"
+            msg = f"Civitai img2img source failed: {e}"
+            _image_ledger(settings, {**record, "error": msg})
+            return msg
 
     step_input = civ.build_step_input(
         prompt=final_prompt,
@@ -1201,6 +1250,9 @@ async def _civitai_image(
         image_url=image_url,
         strength=strength,
     )
+    record["checkpoint"] = step_input.get("model") or step_input.get("diffuserModel")
+    record["operation"] = step_input.get("operation")
+    record["negative_prompt"] = step_input.get("negativePrompt")
     # NSFW requests must always allow mature content on orchestration.
     allow_mature = bool(nsfw or settings.image_nsfw_allowed)
     mature = "true" if allow_mature else "false"
@@ -1212,15 +1264,20 @@ async def _civitai_image(
         "civitai.submit",
         operation=step_input.get("operation"),
         ecosystem=step_input.get("ecosystem"),
-        engine=step_input.get("engine"),
-        model=step_input.get("model") or step_input.get("engine"),
-        loras=len(lora_map),
+        checkpoint=record["checkpoint"],
+        loras=dict(lora_map) or None,
         img2img=bool(image_url),
+        strength=strength if image_url else None,
         pick=pick_note or None,
         auto_pick=should_pick,
         allow_mature=allow_mature,
-        prompt_len=len(final_prompt),
+        prompt=final_prompt[:300],
     )
+
+    def _fail(msg: str) -> str:
+        log.warning("civitai.failed", error=msg[:300])
+        _image_ledger(settings, {**record, "error": msg})
+        return msg
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
         r = await http.post(
@@ -1230,15 +1287,16 @@ async def _civitai_image(
             json=body,
         )
         if r.status_code >= 400:
-            return f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}"
+            return _fail(f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}")
         wf = r.json()
         wf_id = wf.get("id") or wf.get("workflowId")
+        record["workflow_id"] = wf_id
         status = str(wf.get("status") or wf.get("state") or "").lower()
 
         deadline = time.monotonic() + 180.0
         while status not in ("done", "completed", "succeeded", "success") and time.monotonic() < deadline:
-            if status in ("failed", "error", "expired"):
-                return f"Civitai workflow {status}: {wf}"
+            if status in ("failed", "error", "expired", "canceled", "cancelled"):
+                return _fail(f"Civitai workflow {status}: {str(wf)[:400]}")
             await asyncio.sleep(5.0)
             p = await http.get(f"{base}/v2/consumer/workflows/{wf_id}", headers=headers)
             if p.status_code >= 400:
@@ -1246,39 +1304,56 @@ async def _civitai_image(
             wf = p.json()
             status = str(wf.get("status") or wf.get("state") or "").lower()
         if status not in ("done", "completed", "succeeded", "success"):
-            return f"Civitai workflow not done in 180s (id={wf_id}, status={status})."
+            return _fail(f"Civitai workflow not done in 180s (id={wf_id}, status={status}).")
 
+        seed = _deep_find_seed(wf)
+        record["seed"] = seed
         url = _deep_find_first_str(
             wf, ("url", "signed_url", "download_url", "result_url", "blob_url")
         )
         if not url:
-            return f"Civitai completed but no image URL found: {str(wf)[:400]}"
+            return _fail(f"Civitai completed but no image URL found: {str(wf)[:400]}")
         # Blob hosts often 301 to orchestration-new; follow_redirects is on.
         # Never raise — return a soft error so the chat turn doesn't crash.
         dl = await http.get(url, headers={"Authorization": f"Bearer {settings.civitai_api_key}"})
         if dl.status_code >= 400:
             dl = await http.get(url)
         if dl.status_code >= 400:
-            return (
+            return _fail(
                 f"Civitai image download failed HTTP {dl.status_code} "
                 f"(url={url[:120]}). Workflow succeeded but blob fetch failed."
             )
         if not dl.content or len(dl.content) < 100:
-            return f"Civitai image download returned empty/tiny body ({len(dl.content)} bytes)."
+            return _fail(
+                f"Civitai image download returned empty/tiny body ({len(dl.content)} bytes)."
+            )
         saved = await _save_image_bytes(dl.content, artifacts_dir, "civitai", prompt)
 
-    used = step_input.get("model") or step_input.get("engine") or model_air or "flux"
-    meta = f"Image saved to {saved}"
+    record.update(path=str(saved), bytes=len(dl.content))
+    _image_ledger(settings, record)
+    log.info(
+        "image.saved",
+        provider="civitai",
+        checkpoint=record["checkpoint"],
+        loras=dict(lora_map) or None,
+        seed=seed,
+        path=str(saved),
+        bytes=len(dl.content),
+    )
     extras = [f"civitai {step_input.get('operation', 'createImage')}"]
-    extras.append(f"model={used}")
+    extras.append(f"model={record['checkpoint']}")
     if lora_map:
-        extras.append(f"loras={len(lora_map)}")
+        extras.append("loras=" + ", ".join(f"{k}:{v}" for k, v in lora_map.items()))
+    if image_url:
+        extras.append(f"strength={strength}")
+    if seed is not None:
+        extras.append(f"seed={seed}")
     if pick_note:
         extras.append(f"picked: {pick_note}")
-    if lora_triggers:
-        extras.append("triggers_injected=" + ", ".join(lora_triggers[:6]))
-    log.info("image.saved", provider="civitai", model=str(used), path=str(saved))
-    return meta + " [" + "; ".join(extras) + "]"
+    missing = [t for t in lora_triggers if t.lower() not in final_prompt.lower()]
+    if missing:
+        extras.append("LoRA trigger words not in your prompt: " + ", ".join(missing[:6]))
+    return f"Image saved to {saved} [" + "; ".join(extras) + "]"
 
 
 async def _modelslab_image(
