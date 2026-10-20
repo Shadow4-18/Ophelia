@@ -754,6 +754,70 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_civitai_test(args: argparse.Namespace) -> int:
+    """Three real Civitai generations (Illustrious auto-pick, pinned Pony,
+    img2img at --strength), printing what was sent and what came back."""
+    import asyncio
+    import json
+
+    from ophelia.providers import civitai as civ
+    from ophelia.providers.media import _civitai_image
+
+    settings = Settings()
+    if not settings.civitai_api_key:
+        print("CIVITAI_API_KEY is not set in ~/.ophelia/.env")
+        return 1
+    out_dir = settings.data_dir / "artifacts"
+    ledger = settings.data_dir / "logs" / "image_generations.jsonl"
+    print("Runs 3 generations on your Civitai key (uses Buzz).")
+
+    async def run() -> int:
+        runs = [
+            ("txt2img, Illustrious auto-pick", dict(
+                prompt="1girl, solo, goth vtuber, purple hair, neon city at night",
+                model="", auto_pick=True)),
+            ("txt2img, pinned Pony checkpoint", dict(
+                prompt="score_9, score_8_up, 1girl, solo, goth, purple hair, city at night",
+                model=civ._FALLBACK_PONY_AIR, auto_pick=False)),
+        ]
+        failed = 0
+        first_path = args.image
+        for i, (label, kw) in enumerate(runs + [("img2img", None)]):
+            if kw is None:
+                if not first_path:
+                    print(f"\n[{label}] skipped: no source image (first run failed?)")
+                    failed += 1
+                    break
+                kw = dict(prompt="1girl, solo, same character, rainy night, glowing signs", model="",
+                          auto_pick=True, image=str(first_path), strength=args.strength)
+                label = f"img2img, strength {args.strength}"
+            before = len(ledger.read_text(encoding="utf-8").splitlines()) if ledger.is_file() else 0
+            try:
+                result = await _civitai_image(
+                    settings, kw.pop("prompt"), "1:1", kw.pop("model"), out_dir, **kw
+                )
+            except Exception as e:  # network errors etc.: show, keep going
+                result = f"error: {type(e).__name__}: {e}"
+            entry = {}
+            lines = ledger.read_text(encoding="utf-8").splitlines() if ledger.is_file() else []
+            if len(lines) > before:  # this run wrote its line
+                entry = json.loads(lines[-1])
+            print(f"\n[{label}]\n  result: {result}")
+            for key in ("operation", "checkpoint", "loras", "strength", "seed", "path",
+                        "bytes", "error"):
+                if entry.get(key) not in (None, {}, ""):
+                    print(f"  {key}: {entry[key]}")
+            if result.startswith("Image saved to"):
+                if i == 0 and not first_path:
+                    first_path = entry.get("path")
+            else:
+                failed += 1
+        print(f"\n{3 - failed}/3 succeeded. Full log: {ledger}")
+        return 1 if failed else 0
+
+    return asyncio.run(run())
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     """Back up / list / restore her identity, memories and databases."""
     from ophelia import backup
@@ -1504,6 +1568,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Delete screen captures older than N hours (default: OPHELIA_SCREENSHOT_KEEP_HOURS)",
     )
     p_cleanup.set_defaults(func=cmd_cleanup)
+
+    p_civ = sub.add_parser(
+        "civitai-test", help="Run 3 real Civitai generations and print what was sent/returned"
+    )
+    p_civ.add_argument("--image", help="Source image for the img2img run (default: run 1's output)")
+    p_civ.add_argument("--strength", type=float, default=0.7, help="img2img strength (default 0.7)")
+    p_civ.set_defaults(func=cmd_civitai_test)
 
     p_backup = sub.add_parser(
         "backup", help="Back up / list / restore her identity, memories and databases"

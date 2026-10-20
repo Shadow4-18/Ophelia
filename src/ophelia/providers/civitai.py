@@ -266,34 +266,72 @@ def lora_compatible_with_checkpoint(
     return False
 
 
+def lora_family_error(
+    checkpoint_air: str,
+    checkpoint_base: str,
+    lora_air: str,
+    lora_base: str,
+) -> str:
+    """Why this LoRA can't run on this checkpoint, or '' if it can (or we
+    can't tell). Only verified mismatches are errors: differing AIR
+    ecosystems (sd1 vs sdxl vs flux), or both baseModels known from the site
+    API and from incompatible families (Pony LoRA on Illustrious, ...)."""
+    ck_m = _AIR_RE.match(sanitize_air(checkpoint_air))
+    lr_m = _AIR_RE.match(sanitize_air(lora_air))
+    if ck_m and lr_m:
+        ck_eco = ecosystem_from_air_or_base(checkpoint_air)
+        lr_eco = ecosystem_from_air_or_base(lora_air)
+        if ck_eco != lr_eco:
+            return (
+                f"LoRA {lora_air} is {lr_eco} but checkpoint {checkpoint_air} is {ck_eco}"
+            )
+    if checkpoint_base and lora_base and not lora_compatible_with_checkpoint(
+        checkpoint_air, checkpoint_base, lora_air, lora_base
+    ):
+        return (
+            f"LoRA {lora_air} is {lora_base} ({base_family(lora_base)}) but checkpoint "
+            f"{checkpoint_air} is {checkpoint_base} ({base_family(checkpoint_base)})"
+        )
+    return ""
+
+
+# Explicit style → checkpoint rules for auto_pick (first match wins; no match
+# → "sdxl"). Keywords match whole words only, so "anthropic" isn't "anthro".
+STYLE_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("pony", ("pony", "score_9", "score_8_up", "furry", "anthro")),
+    (
+        "illustrious",
+        ("anime", "waifu", "1girl", "1boy", "manga", "illustrious", "danbooru", "2d", "vtuber"),
+    ),
+    (
+        "realistic",
+        ("photo", "photos", "photograph", "photoreal", "photorealistic", "realistic",
+         "raw photo"),
+    ),
+]
+
+
+def detect_style_with_reason(intent: str) -> tuple[str, str]:
+    """(style, keyword that decided it) — style is a _CURATED_CHECKPOINTS key."""
+    low = (intent or "").lower()
+    for style, words in STYLE_RULES:
+        for w in words:
+            if re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", low):
+                return style, w
+    return "sdxl", ""
+
+
 def detect_style(intent: str) -> str:
     """Map a prompt to a curated checkpoint family — not a Civitai search query."""
-    low = (intent or "").lower()
-    if any(w in low for w in ("pony", "score_9", "score_8_up")):
-        return "pony"
-    if any(w in low for w in ("furry", "anthro")):
-        return "pony"
-    if any(
-        w in low
-        for w in (
-            "anime",
-            "waifu",
-            "1girl",
-            "1boy",
-            "manga",
-            "illustrious",
-            "danbooru",
-            "2d",
-            "vtuber",
-        )
-    ):
-        return "illustrious"
-    if any(
-        w in low
-        for w in ("photo", "photograph", "photoreal", "realistic", "raw photo")
-    ):
-        return "realistic"
-    return "sdxl"
+    return detect_style_with_reason(intent)[0]
+
+
+def curated_base_model(style: str) -> str:
+    if style == "pony":
+        return "Pony"
+    if style in ("illustrious", "anime"):
+        return "Illustrious"
+    return "SDXL 1.0"
 
 
 def maybe_quality_prefix(prompt: str, style: str) -> str:
@@ -760,13 +798,7 @@ async def pick_best_resources(
         version_id=0,
         version_name="curated",
         air=air,
-        base_model=(
-            "Pony"
-            if style == "pony"
-            else "Illustrious"
-            if style in ("illustrious", "anime")
-            else "SDXL 1.0"
-        ),
+        base_model=curated_base_model(style),
         trained_words=[],  # never inject curated triggers
         nsfw=False,
     )

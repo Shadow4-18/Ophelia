@@ -53,11 +53,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "- Pass model=<checkpoint AIR or alias 'pony'|'illustrious'> to "
                 "pin. Pass loras= as JSON {\"urn:air:...\": 0.8} for LoRAs — "
                 "never put a LoRA AIR in model= (it will be moved to loras "
-                "automatically).\n"
+                "automatically). With loras= and no model, the checkpoint follows "
+                "the LoRA's family. A Pony LoRA on an Illustrious checkpoint (or "
+                "any other cross-family pair) is refused with the reason.\n"
                 "- Write the prompt yourself (danbooru tags for Illustrious/Pony). "
                 "Include short LoRA triggers in the prompt only when you use that LoRA.\n"
                 "- txt2img: prompt only. img2img: image=<path or URL> from "
-                "list_inbox_images + optional strength (0.6–0.8).\n"
+                "list_inbox_images + optional strength (0.6–0.8). img2img always "
+                "runs on Civitai.\n"
                 "- Never pass a Civitai AIR URN as model when using xAI/OpenAI."
             ),
             "parameters": {
