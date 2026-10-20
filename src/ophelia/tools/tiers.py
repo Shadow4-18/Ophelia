@@ -112,7 +112,7 @@ STICKY_TURNS = 6
 
 
 def group_of(tool_name: str) -> str:
-    if tool_name.startswith("site_"):
+    if tool_name.startswith("site_") or tool_name == "look_at_web_page":
         return "site"
     if tool_name.startswith("phone_"):
         return "phone"

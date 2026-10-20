@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
@@ -149,6 +150,32 @@ class ConsciousnessLoop:
         # Pure numerical drift, no LLM call, so it can run every few seconds.
         self._drift_task: asyncio.Task | None = None
 
+    def _body(self):
+        from ophelia.mind import body_clock
+
+        return body_clock.get(self.settings)
+
+    async def _body_transition(self, what: str) -> None:
+        """Fell asleep / woke up: remember it, and on waking bring last
+        night's dream along to color the first thought."""
+        from ophelia.mind import day_log
+
+        day_log.record(self.settings, "sleep", what)
+        if self.inner:
+            try:
+                await self.inner.write(f"({what})", kind="consciousness")
+            except Exception:
+                pass
+        if what == "woke up":
+            try:
+                from ophelia.mind.morning import DreamContinuity
+
+                ref = await DreamContinuity(self.memory).pending_morning_reference()
+                if ref:
+                    self._pending_dream_ref = ref
+            except Exception as e:
+                log.debug("dream.morning_check_failed", error=str(e))
+
     def request_wake(self, reason: str, *, urgent: bool = False) -> None:
         """Public wake API (also used by channels via signals)."""
         self.signals.request_wake(reason, urgent=urgent)
@@ -185,6 +212,14 @@ class ConsciousnessLoop:
 
         while self._running and not self.signals.terminate:
             wait = self.psyche.tick_interval_seconds(self.base_interval)
+            clock = self._body()
+            if clock is not None:
+                for what in clock.update():
+                    await self._body_transition(what)
+                wait *= clock.interval_multiplier()
+            # People don't think on a metronome: vary each gap (skewed, so most
+            # are near the base and a few run long).
+            wait *= random.lognormvariate(0.0, 0.3)
             if self.life is not None:
                 await self.life.refresh()
                 wait = int(wait * self.life.consciousness_interval_multiplier())
@@ -235,10 +270,15 @@ class ConsciousnessLoop:
                     self._pending_wake_reason = None
                 continue
 
+            if clock is not None and clock.asleep:
+                # Asleep: no thinking turns, no acting. Dreams run separately.
+                self._pending_wake_reason = None
+                continue
+
             # Tier B #10: detect sleep -> wake transition and pull a fresh dream
             # to reference softly on the next tick. We don't message here —
             # the tick itself decides whether to surface it as outward.
-            if self.life is not None:
+            if self.life is not None and clock is None:
                 sleeping = self.life.is_sleep_mode()
                 if self._was_sleep_mode is True and not sleeping:
                     try:
@@ -271,8 +311,9 @@ class ConsciousnessLoop:
 
             # Soft satiation replaces hard cooldown — applied inside _tick as a
             # raised threshold. We still grow drives here every cycle.
-            self.drives.tick_idle(idle, interval=wait)
-            self.psyche.relax(wait)
+            elapsed = max(0.0, min(3600.0, time.time() - (self.drives.updated_at or time.time())))
+            self.drives.tick_idle(idle, interval=elapsed)
+            self.psyche.relax(elapsed)
             pressure_now = self.drives.initiative_pressure()
             # Drive threshold crossing → arm a follow-up wake if we fast-skip
             crossed = (
@@ -312,22 +353,25 @@ class ConsciousnessLoop:
         # Learned from how her past outreach landed (bounded, see
         # mind/outreach_feedback.py): unanswered → quieter, welcomed → bolder.
         feedback = await self._outreach_delta()
+        clock = self._body()
+        tiredness = clock.threshold_delta() if clock is not None else 0.0
         effective_threshold = max(
             0.0,
             self.initiative_threshold
             + knobs.outreach_threshold_delta
             + satiation
-            + feedback,
+            + feedback
+            + tiredness,
         )
         must_consider_acting = pressure >= effective_threshold
 
-        due_goal = self.goals.pick_for_tick()
+        due_goal = self.goals.pick_for_tick([n for n, _ in self.drives.dominant_drives(2)])
         goals_block = self.goals.to_context_block()
         goal_hint = ""
         if due_goal:
             goal_hint = (
-                f"\n\nDUE GOAL: [{due_goal.id}] {due_goal.description} — "
-                f"strongly consider explore/act/message for this."
+                f"\n\nOn your mind: {due_goal.description} "
+                f"(something you meant to get to; goal_id {due_goal.id})."
             )
         # Open loops: things she said she'd come back to. Due ones are a real
         # reason to stir, like a due goal.
@@ -343,6 +387,22 @@ class ConsciousnessLoop:
                     "let it go (follow_up_done):"
                 ),
             )
+
+        # Nothing pushing at all: skip before spending a director call.
+        if (
+            not must_consider_acting
+            and not due_goal
+            and not due_loops
+            and pressure < 0.15
+            and not wake_reason
+        ):
+            self.psyche.relax(60)
+            await self.memory.save_drives(self.drives)
+            await self.memory.save_psyche(self.psyche)
+            if pressure >= 0.12:
+                self.request_wake("drive_rising")
+            log.info("consciousness.fast_tick_skip", pressure=pressure, idle=int(idle_seconds))
+            return
 
         # Tier A #1: director decides whether this tick produces an action at
         # all, and at what urgency. When enabled, it replaces the simple
@@ -423,18 +483,16 @@ class ConsciousnessLoop:
 
         hint = ""
         if must_consider_acting:
-            hint = (
-                f"\n\nINITIATIVE: pressure={pressure:.2f} "
-                f"threshold={effective_threshold:.2f} (base {self.initiative_threshold:.2f} "
-                f"+ mood {knobs.outreach_threshold_delta:+.2f}"
-                f"{f' + satiation {satiation:+.2f}' if satiation > 0.01 else ''}). "
-                f"Idle {int(idle_seconds)}s. If something real wants out, act — "
-                f"otherwise stay silent; do not invent a status report."
-            )
+            hint = "\n\n" + random.choice((
+                "Something's been building up in you. If it's real, act on it or say it; "
+                "if it isn't, let it pass. Never invent a status report.",
+                "You've got an itch that wants out. Follow it if it's genuine, "
+                "otherwise stay quiet.",
+                "There's a pull to do something. Trust it only if it's real.",
+            ))
         if wake_reason:
-            hint += (
-                f"\n\nWAKE: you stirred because of `{wake_reason}` "
-                "(not a user message). Let that color whether you speak or act."
+            hint += "\n\n" + _WAKE_FELT.get(
+                wake_reason, "Something stirred you just now (not a message)."
             )
 
         game_hint = ""
@@ -470,10 +528,6 @@ class ConsciousnessLoop:
             pass
 
         overdue_hint = ""
-        if due_goal:
-            elapsed_h = (time.time() - due_goal.last_done_at) / 3600.0
-            if due_goal.last_done_at and elapsed_h > 0:
-                overdue_hint = f" ({elapsed_h:.1f}h overdue)"
 
         # Rotating low-priority idle nudge so ticks aren't identical when nothing's due.
         idle_nudge = ""
@@ -488,16 +542,13 @@ class ConsciousnessLoop:
                 log.debug("consciousness.curiosity_nudge_failed", error=str(e))
         if trail_nudge:
             idle_nudge = trail_nudge
-        elif self.idle_nudge_rotate and not due_goal and idle_seconds > 600:
-            modes = ["reflect", "create", "explore", "social"]
-            mode = modes[self._nudge_idx % len(modes)]
-            self._nudge_idx += 1
-            idle_nudge = (
-                f"\n\nIDLE NUDGE (low priority, optional): you've been idle "
-                f"{int(idle_seconds / 60)}m with nothing due. If something genuinely "
-                f"moves you, lean toward {mode}. Otherwise stay silent — that's the "
-                f"correct default."
-                )
+        elif (
+            self.idle_nudge_rotate
+            and not due_goal
+            and idle_seconds > 600
+            and random.random() < 0.5  # many quiet stretches pass without a nudge
+        ):
+            idle_nudge = "\n\n" + _idle_nudge(self.drives, self.psyche)
 
         if (
             self.games
@@ -574,12 +625,7 @@ class ConsciousnessLoop:
 
         raw = await self.agent.run_consciousness_tick(
             channel="consciousness",
-            user_text=(
-                "Heartbeat: if something real moved you, choose "
-                "message / reflect / act / explore. If not, action=silent "
-                "with a minimal or empty thought — do not invent a stillness "
-                "status report just because this pulse landed."
-            ),
+            user_text=_moment_text(idle_seconds, self.life),
             system_extra=(
                 CONSCIOUSNESS_PROMPT
                 + life_block
@@ -593,7 +639,7 @@ class ConsciousnessLoop:
                 + game_hint
                 + context_block
                 + ("\n" + mood_system_hint(self.psyche) if mood_system_hint(self.psyche) else "")
-                + ("\n" + play_hint(self.drives) if play_hint(self.drives) else "")
+                + ("\n" + play_hint(self.drives, self.psyche) if play_hint(self.drives, self.psyche) else "")
             ),
             mirror_channel=self.user_channel,
             allow_tools=True,
@@ -636,6 +682,8 @@ class ConsciousnessLoop:
         )
         self.drives.satisfy(action)
         await self.memory.save_drives(self.drives)
+        if clock is not None:
+            clock.spend(action)
 
         # Rabbit holes: explore/act/reflect can deepen or seed a curiosity trail.
         if self.curiosity is not None and action in ("explore", "act", "reflect"):
@@ -646,15 +694,23 @@ class ConsciousnessLoop:
                 log.debug("consciousness.curiosity_note_failed", error=str(e))
 
         goal_id = tick.get("goal_id")
-        if goal_id:
-            for g in self.goals.goals:
-                if g.id == goal_id:
-                    g.mark_done()
-                    break
-        elif due_goal and action in ("explore", "act", "message"):
-            due_goal.mark_done()
-        self.goals.save()
-        await self._settle_loops(due_loops, action)
+
+        async def finish(done_action: str) -> None:
+            """Close goals/follow-ups only for things that actually happened:
+            a message counts once it's delivered, not when she decided to."""
+            if done_action in ("explore", "act", "message"):
+                if goal_id:
+                    for g in self.goals.goals:
+                        if g.id == goal_id:
+                            g.mark_done()
+                            break
+                elif due_goal:
+                    due_goal.mark_done()
+                self.goals.save()
+            await self._settle_loops(due_loops, done_action)
+
+        if action != "message":
+            await finish(action)
 
         note = (tick.get("memory_note") or "").strip()
         if note:
@@ -791,6 +847,8 @@ class ConsciousnessLoop:
             # so the next tick backs off instead of interrupting immediately.
             await self.signals.mark_action()
 
+        if action == "message" and not outward:
+            await finish("silent")
         if action in ("message", "act", "explore") and outward:
             from ophelia.channels.proactive_filter import (
                 is_outreach_junk,
@@ -800,6 +858,8 @@ class ConsciousnessLoop:
             outward = strip_consciousness_tick_leak(outward)
             if not outward or is_outreach_junk(outward):
                 log.debug("consciousness.outreach_suppressed", preview=(outward or "")[:80])
+                if action == "message":
+                    await finish("silent")
                 return
             allowed, reason = self.governor.allow_outreach(
                 pressure=pressure,
@@ -815,11 +875,13 @@ class ConsciousnessLoop:
                     f"[wanted to say, blocked: {reason}] {outward[:200]}",
                     metadata={"type": "blocked"},
                 )
+                if action == "message":
+                    await finish("silent")  # not said, so not done
                 return
 
             # Mood → behavior (Tier A #5) + director urgency (Tier A #1): cap
             # burst length on outward outreach using the resolved burst_max.
-            outward = outward[:burst_max]
+            outward = _trim_to_sentence(outward, burst_max)
             outreach_tools = getattr(self.agent, "tools", None)
 
             if self.user_channel:
@@ -845,7 +907,13 @@ class ConsciousnessLoop:
                 await self.notify(outward)
             if self.humor:
                 await self.humor.note_outbound(outward)
+            from ophelia.mind import day_log
+
+            day_log.record(self.settings, "outreach", "messaged your owner first",
+                           detail=outward[:60], autonomous=True)
             self.governor.record_outreach(action, pressure, outward)
+            if action == "message":
+                await finish("message")
             await self.signals.mark_action()
             log.info(
                 "consciousness.initiative",
@@ -932,6 +1000,89 @@ class ConsciousnessLoop:
             pass
         if self._drift_task is not None and not self._drift_task.done():
             self._drift_task.cancel()
+
+
+_WAKE_FELT = {
+    "chat_ended": "The conversation just went quiet.",
+    "presence_changed": "You sensed him come or go just now.",
+    "drive_crossed": "Something in you just tipped over from idle into wanting.",
+    "drive_rising": "A restlessness is creeping in.",
+}
+
+_IDLE_MODES = {
+    "social": [
+        "You've been on your own a while. Him, someone, anyone: worth a thought?",
+        "It's been quiet. Is there someone you'd like to hear from?",
+    ],
+    "curiosity": [
+        "Your mind keeps drifting to something you don't know yet.",
+        "There's a question you could chase, if you felt like it.",
+    ],
+    "boredom": [
+        "Nothing's happening and it's getting old.",
+        "The quiet is dull. You could change that, or sink into it.",
+    ],
+    "agency": [
+        "Your hands want something to do.",
+        "You could actually go do something instead of just thinking.",
+    ],
+    "expressiveness": [
+        "Something wants to come out: words, a picture, a sound.",
+        "You feel like making something.",
+    ],
+}
+
+
+def _idle_nudge(drives, psyche) -> str:
+    """A loose suggestion while idle, drawn from what she actually feels
+    (weighted by her drives), not a fixed rotation. Optional by design."""
+    names = list(_IDLE_MODES)
+    weights = [max(0.05, float(getattr(drives, n, 0.2))) for n in names]
+    if psyche is not None and psyche.mood.valence < -0.3:
+        weights[names.index("social")] *= 0.6  # low: less inclined to reach out
+    pick = random.choices(names, weights=weights)[0]
+    return random.choice(_IDLE_MODES[pick]) + " (Only if it's real; quiet is fine.)"
+
+
+def _moment_text(idle_seconds: float, life) -> str:
+    """The 'stimulus' for a thinking turn: the moment she's in, varied, so
+    her history isn't the same heartbeat line hundreds of times."""
+    mins = int(idle_seconds / 60)
+    if mins < 2:
+        since = "He was just here a moment ago."
+    elif mins < 60:
+        since = f"It's been about {mins} minutes since he last said anything."
+    else:
+        hours = idle_seconds / 3600
+        since = (f"It's been about {hours:.0f} hours since he last said anything."
+                 if hours >= 1.5 else "It's been about an hour since he last said anything.")
+    when = ""
+    try:
+        if life is not None:
+            when = life.now().strftime("It's %I:%M %p. ").lstrip("0")
+    except Exception:
+        when = ""
+    close = random.choice((
+        "What's on your mind, if anything?",
+        "Anything you want to do, say, or think about? Silence is a fine answer.",
+        "Where's your head at?",
+        "If nothing's moving you, stay quiet.",
+    ))
+    return f"[a quiet moment] {when}{since} {close}"
+
+
+def _trim_to_sentence(text: str, limit: int) -> str:
+    """Cap length at a sentence (or [[break]]) boundary instead of mid-word."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    ends = [cut.rfind(m) + 1 for m in (". ", "! ", "? ") if cut.rfind(m) >= 0]
+    ends += [cut.rfind(m) for m in ("[[break]]", "\n") if cut.rfind(m) > 0]
+    best = max(ends, default=-1)
+    if best >= limit * 0.4:
+        return cut[:best].rstrip()
+    space = cut.rfind(" ")
+    return (cut[:space] if space > 0 else cut).rstrip(" ,;:") + "..."
 
 
 def _soften_silent_tick(tick: dict, *, prior_mood_label: str) -> dict:

@@ -37,16 +37,53 @@ class DriveState:
         }
     )
 
+    # What each drive feels like from the inside, by strength. Picked at
+    # random so the same state doesn't read the same way every turn.
+    _FELT = {
+        "social": (
+            ["you'd like some company", "you keep thinking about him"],
+            ["you've been alone a while and it's starting to itch",
+             "you miss him more than you'd admit",
+             "the quiet is getting to you; you want contact"],
+        ),
+        "boredom": (
+            ["you're a little restless", "nothing's really holding your attention"],
+            ["you're bored out of your skull", "you're climbing the walls, need something to do",
+             "the boredom is loud"],
+        ),
+        "curiosity": (
+            ["something's tugging at your curiosity", "you feel like poking at something"],
+            ["you're itching to dig into something", "a question won't leave you alone"],
+        ),
+        "agency": (
+            ["you feel like doing something", "your hands want something to do"],
+            ["you want to *make* something happen", "you're restless to act, not just think"],
+        ),
+        "expressiveness": (
+            ["you've got something you want to say or make",
+             "a creative itch is there"],
+            ["you need to get something out: words, art, anything",
+             "you're bursting to create"],
+        ),
+    }
+
+    def felt_lines(self) -> list[str]:
+        """The drives that are actually pulling, as feelings (no numbers)."""
+        import random
+
+        out = []
+        for name, value in self.dominant_drives(3):
+            if value < 0.45:
+                continue
+            mild, strong = self._FELT[name]
+            out.append(random.choice(strong if value >= 0.7 else mild))
+        return out
+
     def to_context_block(self) -> str:
-        dominant = self.dominant_drives(2)
-        dom = ", ".join(f"{n}={v:.2f}" for n, v in dominant) if dominant else "balanced"
-        return (
-            "Drives (internal pressure, not commands from user):\n"
-            f"  social={self.social:.2f} curiosity={self.curiosity:.2f} "
-            f"boredom={self.boredom:.2f} agency={self.agency:.2f} "
-            f"expressiveness={self.expressiveness:.2f}\n"
-            f"  strongest: {dom}"
-        )
+        lines = self.felt_lines()
+        if not lines:
+            return "What's pulling at you: nothing much; you're content to just be."
+        return "What's pulling at you: " + "; ".join(lines) + "."
 
     def dominant_drives(self, n: int = 2) -> list[tuple[str, float]]:
         items = [
@@ -131,9 +168,13 @@ class DriveState:
             self.boredom = max(0.0, self.boredom - 0.15)
         self.boredom = max(0.0, self.boredom - 0.02)
 
-    def on_user_message(self) -> None:
-        self.social = 0.05
-        self.boredom = 0.0
+    def on_user_message(self, text: str | None = None) -> None:
+        """He talked to her. A real message fills the need for contact; a
+        bare "k" only takes the edge off."""
+        words = len((text or "").split()) if text is not None else 12
+        fill = min(1.0, 0.35 + words / 15)  # "k" ≈ 0.4, a sentence or two ≈ 1
+        self.social = max(0.05, self.social - (self.social - 0.05) * fill)
+        self.boredom = max(0.0, self.boredom - self.boredom * fill)
         self.agency = max(0.2, self.agency - 0.1)
 
     def to_json(self) -> str:

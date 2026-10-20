@@ -81,12 +81,15 @@ class AlarmLoop:
     async def _fire_alarm(self) -> None:
         channel = self.settings.primary_user_channel() or "consciousness"
         try:
-            text = await self.agent.run_turn(
-                channel,
-                "[Alarm] Wake-up time. Greet the owner in your voice — warm, "
-                "personality-forward, one short spoken paragraph. No task lists.",
-                system_extra=self.life.to_context_block(),
-            )
+            # Private trigger: not stored as if the owner had typed it.
+            with self.agent.autonomous():
+                text = await self.agent.run_turn(
+                    channel,
+                    "[Alarm] It's his wake-up time. Wake him up your way: in your "
+                    "voice, in today's mood, one short spoken paragraph. Not the same "
+                    "line as other mornings. No task lists.",
+                    system_extra=self.life.to_context_block(),
+                )
         except Exception as e:
             log.warning("alarms.generate_failed", error=str(e))
             text = "Hey. Alarm. I'm up if you are."
@@ -95,6 +98,7 @@ class AlarmLoop:
                 await self.notify_voice(text)
             else:
                 await self.notify_text(text)
+            await self.agent.record_spoken(channel, text, kind="alarm")
             log.info("alarms.fired")
         except Exception as e:
             log.warning("alarms.send_failed", error=str(e))

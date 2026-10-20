@@ -424,6 +424,34 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "look_at_web_page",
+            "description": (
+                "SEE a web page the way a visitor does: a real browser screenshot of "
+                "the URL, described by your vision. Use it to check your own site "
+                "after editing or deploying (layout, spacing, colours, what's cut "
+                "off) instead of guessing from the CSS, or when the owner says "
+                "something looks off. width: phone (default), phone-50 (a phone at "
+                "50% browser zoom), tablet, desktop, or a number of px. Counts "
+                "against a free daily limit (~50), so look once and look well."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "width": {"type": "string", "description": "phone | phone-50 | tablet | desktop | px"},
+                    "question": {
+                        "type": "string",
+                        "description": "What to check, e.g. 'is the header full width?'",
+                    },
+                    "full_page": {"type": "boolean", "description": "Whole page, not just the top."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "sqlite_list_databases",
             "description": "List SQLite databases under ~/.ophelia (memory.db, hermes_state.db, etc.).",
             "parameters": {"type": "object", "properties": {}},

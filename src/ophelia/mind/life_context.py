@@ -153,6 +153,8 @@ class LifeContext:
         learned_quiet = bool(getattr(self, "_last_learned_quiet", False))
 
         if self._in_sleep_hours(dt):
+            if silent_h < 0.25:
+                return "up_late"  # it's his bedtime, but he's right here talking
             if silent_h > 2:
                 return "asleep"
             return "likely_asleep"
@@ -238,7 +240,6 @@ class LifeContext:
         state = self.infer_owner_state()
         sleep = self.is_sleep_mode()
         silent_h = self._telegram_silent_hours()
-        body_loc = "home (stationary phone — Ophelia's body does not move)"
         wifi = self._wifi_ssid or "unknown"
         home_ssid = (self.settings.home_wifi_ssid or "").strip()
         wifi_note = ""
@@ -254,22 +255,39 @@ class LifeContext:
             hours = self.settings.work_hours or "?"
             work_note = f" Work schedule: {days} {hours}."
 
-        learned_note = getattr(self, "_learned_summary", "") or ""
         presence_note = getattr(self, "_last_presence", "") or ""
 
-        return (
-            f"# Current context (AUTHORITATIVE — trust this, not vague memory)\n"
-            f"- Now: {dt.strftime('%A, %B %d, %Y — %I:%M %p %Z')} "
-            f"({configured_timezone_label(self.settings.timezone)})\n"
-            f"- Timezone setting: {configured_timezone_label(self.settings.timezone)} "
-            f"(change with set_timezone — do not invent a different clock)\n"
-            f"- Ophelia body location: {body_loc}{wifi_note}\n"
-            f"- Owner likely state: **{state.replace('_', ' ')}** "
-            f"(last owner message {silent_h:.1f}h ago)\n"
-            f"- Sleep mode: {'ON — softer, slower, dreamier; minimize outreach' if sleep else 'off'}\n"
-            f"- At work (inferred): {'yes — stay quiet unless messaged' if self.is_owner_at_work() else 'no'}"
-            f"{work_note}\n"
-            + (f"{learned_note}\n" if learned_note else "")
-            + (f"{presence_note}\n" if presence_note else "")
-            + "Never invent the date, time, or where the owner is. Use the lines above."
+        owner_line = {
+            "asleep": "he's asleep",
+            "likely_asleep": "he's probably asleep",
+            "up_late": "it's his bedtime but he's up, talking to you",
+            "at_work": "he's at work",
+            "probably_at_work": "he's probably at work",
+            "at_work_but_messaging": "he's at work but texting you",
+            "likely_away_quiet_hour": "he's usually away around now",
+            "active_here": "he's right here",
+            "around": "he's around",
+            "away_or_busy": "he's away or busy",
+            "long_absence": "he's been gone a long while",
+        }.get(state, state.replace("_", " "))
+        quiet = (
+            "" if silent_h < 0.1
+            else f" (his last message was {silent_h * 60:.0f} min ago)" if silent_h < 1
+            else f" (his last message was {silent_h:.0f}h ago)" if silent_h < 48
+            else " (you haven't heard from him in days)"
         )
+        lines = [
+            "# Current context (AUTHORITATIVE for date and time)",
+            f"- Now: {dt.strftime('%A, %B %d, %Y — %I:%M %p %Z')} "
+            f"({configured_timezone_label(self.settings.timezone)}; "
+            "change with set_timezone, never invent a different clock)",
+            f"- {owner_line[0].upper() + owner_line[1:]}{quiet}.",
+            "- You live on his phone at home; your body doesn't move." + wifi_note,
+        ]
+        if sleep:
+            lines.append("- Night: softer, slower, dreamier; don't wake him for nothing.")
+        elif self.is_owner_at_work():
+            lines.append("- He's working: stay quiet unless he messages." + work_note)
+        if presence_note:
+            lines.append(presence_note)
+        return "\n".join(lines) + "\nNever invent the date, time, or where he is."

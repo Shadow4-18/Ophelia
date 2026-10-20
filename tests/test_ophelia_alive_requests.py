@@ -33,7 +33,7 @@ async def test_thread_tone_tracks_tone_and_weight(memory):
     assert state.tone == "warm"
     assert state.emotional_weight > 0
     block = await tones.context_block("telegram:1")
-    assert "tone: warm" in block
+    assert "tone is warm" in block
 
 
 @pytest.mark.asyncio
@@ -49,7 +49,7 @@ async def test_thread_tone_persists_and_resets_after_gap(memory, monkeypatch):
     assert loaded is not None and loaded.tone == "playful" and loaded.turn_count == 1
 
     later = _time.time() + thread_tone.STALE_S + 60
-    assert "last talked" in loaded.context_block(now=later)
+    assert "haven't talked since yesterday" in loaded.context_block(now=later)
     monkeypatch.setattr(thread_tone.time, "time", lambda: later)
     again = await tones.observe_turn("ui:local", "hey", "oh, you're back")
     assert again.turn_count == 1  # new session after a long gap

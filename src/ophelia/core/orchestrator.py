@@ -521,11 +521,12 @@ class Orchestrator:
         await asyncio.sleep(3.0)
         try:
             channel = self.settings.primary_user_channel() or "consciousness"
-            text = await self.agent.run_turn(
-                channel,
-                "[system] You just came online. Greet your user briefly in your own "
-                "voice — one or two sentences. No task questions, just presence.",
-            )
+            with self.agent.autonomous():
+                text = await self.agent.run_turn(
+                    channel,
+                    "[system] You just came online. Greet your user briefly in your own "
+                    "voice — one or two sentences. No task questions, just presence.",
+                )
             sent_any = False
             for owner_channel in self.settings.owner_channels():
                 if ":" not in owner_channel:
@@ -544,6 +545,7 @@ class Orchestrator:
                 # the greet isn't silently lost (e.g. owner id misconfigured).
                 await self.hub.broadcast_proactive(text)
                 log.info("greet.sent", channel="broadcast_fallback")
+            await self.agent.record_spoken(channel, text, kind="greeting")
         except Exception as e:
             log.warning("greet.failed", error=api_error_detail(e))
 

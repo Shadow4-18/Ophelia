@@ -48,6 +48,23 @@ def find_promises(text: str) -> list[str]:
     return out
 
 
+def promise_due_hours(sentence: str) -> float:
+    """When a promise should come back to mind, from how it was said, with
+    some spread so they don't all resurface exactly three hours later."""
+    import random
+
+    low = (sentence or "").lower()
+    if "tomorrow" in low:
+        return random.uniform(16, 24)
+    if any(w in low for w in ("tonight", "this evening", "later today")):
+        return random.uniform(3, 7)
+    if any(w in low for w in ("in a bit", "in a minute", "shortly", "soon", "in a sec")):
+        return random.uniform(0.3, 1.5)
+    if any(w in low for w in ("this week", "some time", "sometime", "one day")):
+        return random.uniform(24, 72)
+    return random.uniform(1.5, 6)
+
+
 class OpenLoops:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -107,7 +124,8 @@ class OpenLoops:
     async def capture_promises(self, channel: str, reply: str) -> list[int]:
         ids = []
         for sentence in find_promises(reply):
-            ids.append(await self.add(channel, sentence, source="promise"))
+            ids.append(await self.add(channel, sentence, source="promise",
+                                      due_in_hours=promise_due_hours(sentence)))
         return [i for i in ids if i]
 
     async def open(self, channel: str | None = None, limit: int = 5) -> list[dict]:

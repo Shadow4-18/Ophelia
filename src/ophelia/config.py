@@ -558,6 +558,14 @@ class Settings(BaseSettings):
         alias="OPHELIA_HUMANIZE_TEXT",
         description="Strip AI tells (em dashes, bracket narration) from text replies",
     )
+    body_clock_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_BODY_CLOCK",
+        description=(
+            "Her own energy/sleep rhythm (anchored to OPHELIA_SLEEP_HOURS): tired late, "
+            "sleeps at night, woken by your messages."
+        ),
+    )
     screenshot_keep_hours: float = Field(
         default=24,
         alias="OPHELIA_SCREENSHOT_KEEP_HOURS",

@@ -34,7 +34,7 @@ class PsycheState:
         feelings = ", ".join(self.feelings) if self.feelings else "none"
         urges = ", ".join(self.urges) if self.urges else "none"
         parts = [
-            f"Mood: {self.mood.label} (valence={self.mood.valence:.2f}, arousal={self.mood.arousal:.2f})",
+            f"Mood: {self.mood.label}, {self.felt_mood()}",
             f"Feelings: {feelings}",
             f"Urges: {urges}",
             f"Internal thought: {self.internal_thought or '(quiet)'}",
@@ -42,6 +42,30 @@ class PsycheState:
         if drives_block:
             parts.append(drives_block)
         return "\n".join(parts)
+
+    def felt_mood(self) -> str:
+        """Valence/arousal as words, for prompts (numbers make her talk like
+        a system log)."""
+        v, a = self.mood.valence, self.mood.arousal
+        if v >= 0.4:
+            tone = "in a good place"
+        elif v >= 0.1:
+            tone = "fairly okay"
+        elif v > -0.2:
+            tone = "flat, neither here nor there"
+        elif v > -0.5:
+            tone = "a bit low"
+        else:
+            tone = "in a dark place"
+        if a >= 0.7:
+            energy = "keyed up"
+        elif a >= 0.45:
+            energy = "alert"
+        elif a >= 0.2:
+            energy = "calm"
+        else:
+            energy = "very still"
+        return f"{tone} and {energy}"
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -88,8 +112,8 @@ class PsycheState:
         """Drift mood toward baseline between ticks (homeostasis)."""
         if elapsed_seconds <= 0:
             return
-        # Rate: roughly 0.02 per minute toward baseline.
-        rate = min(0.5, 0.02 * (elapsed_seconds / 60.0))
+        # Slow on purpose: the drift loop already settles mood continuously.
+        rate = min(0.5, 0.004 * (elapsed_seconds / 60.0))
         self.mood.valence += (self.mood.baseline_valence - self.mood.valence) * rate
         self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * rate
         self.updated_at = time.time()
@@ -112,13 +136,18 @@ class PsycheState:
         # Decay rate: ~0.10 per minute toward baseline. Faster than relax()
         # because this runs often in small slices — we want visible but gentle
         # movement between ticks, not a snap back.
-        rate = min(0.4, 0.10 * (dt_seconds / 60.0))
-        self.mood.valence += (self.mood.baseline_valence - self.mood.valence) * rate
-        self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * rate
+        # Feelings linger: valence (how good/bad) settles over about an hour,
+        # arousal (how keyed up) over twenty-odd minutes. The old 0.10/min
+        # snapped every mood back to baseline within minutes.
+        minutes = dt_seconds / 60.0
+        v_rate = min(0.4, 0.012 * minutes)
+        a_rate = min(0.4, 0.03 * minutes)
+        self.mood.valence += (self.mood.baseline_valence - self.mood.valence) * v_rate
+        self.mood.arousal += (self.mood.baseline_arousal - self.mood.arousal) * a_rate
         # Subtle organic noise: ±0.005 per call on each axis. Keeps the mood
         # from sitting perfectly still at baseline — it breathes.
-        self.mood.valence = max(-1.0, min(1.0, self.mood.valence + random.uniform(-0.005, 0.005)))
-        self.mood.arousal = max(0.0, min(1.0, self.mood.arousal + random.uniform(-0.005, 0.005)))
+        self.mood.valence = max(-1.0, min(1.0, self.mood.valence + random.uniform(-0.0015, 0.0015)))
+        self.mood.arousal = max(0.0, min(1.0, self.mood.arousal + random.uniform(-0.0015, 0.0015)))
         self.updated_at = time.time()
 
     def tick_interval_seconds(self, base: int) -> float:

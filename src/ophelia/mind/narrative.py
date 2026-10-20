@@ -99,12 +99,27 @@ class DailyNarrative:
 
         agent = self.agent
         inner_tail = self.inner.tail(15)[:1500] if self.inner else ""
+        from ophelia.mind import day_log
+        from ophelia.mind.growth import persona_system
+
+        did = []
+        try:
+            from datetime import datetime as _dt
+
+            did = day_log.yesterday_lines(
+                agent.settings, _dt.strptime(day, "%Y-%m-%d").replace(tzinfo=self._tz_now().tzinfo)
+            )
+        except Exception as e:
+            log.debug("narrative.day_log_failed", error=str(e))
         messages = [
-            {"role": "system", "content": NARRATIVE_PROMPT},
+            # Written as her, not by a generic assistant summarizing her.
+            {"role": "system", "content": persona_system(NARRATIVE_PROMPT)},
             {
                 "role": "user",
                 "content": (
-                    f"Yesterday was {day}.\nConversations:\n" + "\n".join(lines)
+                    f"Yesterday was {day}.\n"
+                    + ("What you did:\n" + "\n".join(did) + "\n\n" if did else "")
+                    + "Conversations:\n" + "\n".join(lines)
                     + f"\n\nYour inner thoughts:\n{inner_tail or '(none)'}"
                 ),
             },
