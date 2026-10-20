@@ -515,12 +515,17 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         image: str | None = None,
         strength: float = 0.7,
         auto_pick: bool = True,
+        quality: str = "",
+        count: int = 1,
+        attempts: int = 1,
     ) -> str:
         # Guests get 1:1 only — wider aspect ratios cost more tokens and the
         # experience is "see I can make images," not "produce wallpaper for
-        # strangers." Owner is unaffected.
+        # strangers." Owner is unaffected. Same for batches, retries and
+        # the pricier quality profiles.
         if not self._is_owner:
             aspect_ratio = "1:1"
+            quality, count, attempts = "standard", 1, 1
         # Civitai: always let her pick unless she pinned a model AIR.
         if not (model or "").strip():
             auto_pick = True
@@ -549,6 +554,10 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             image=image,
             strength=strength,
             auto_pick=auto_pick,
+            quality=quality,
+            count=count,
+            attempts=attempts,
+            deliver_to=self._current_sender_channel or "",
         )
         return await self._finalize_media_tool_result(result)
 

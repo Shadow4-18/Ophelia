@@ -215,6 +215,11 @@ class Workstation:
         from ophelia.storage import HousekeepingLoop
 
         self._tasks.append(asyncio.create_task(HousekeepingLoop(self.settings).run()))
+        if self.settings.civitai_api_key:
+            # Slow Civitai images still get saved (and logged) after the wait.
+            from ophelia.providers.civitai.pending import PendingLoop
+
+            self._tasks.append(asyncio.create_task(PendingLoop(self.settings, ui=True).run()))
         if self.settings.backup_enabled:
             from ophelia.backup import BackupLoop
 

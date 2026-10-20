@@ -14,6 +14,12 @@ from ophelia.providers.router import build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
 
 
+def _civitai_catalog() -> str:
+    from ophelia.providers.civitai.catalog import catalog_text
+
+    return catalog_text(notes=False)
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -39,29 +45,33 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "generate_image",
             "description": (
                 "Generate an image. Auto-sends to chat — do NOT call send_file after. "
-                "Backends: xAI Grok Imagine, OpenAI DALL-E, Ollama, Pollinations, "
-                "A1111, ComfyUI, fal, Replicate, Civitai, ModelsLab. "
-                "Set nsfw=true ONLY for explicit/sexual content the user asked for — "
-                "that routes to the uncensored backend (Civitai when configured). "
-                "\n\nCivitai (NSFW / SDXL / Illustrious / Pony / LoRAs):\n"
-                "- Illustrious and Pony are BOTH SDXL-based (not SD1.5). "
-                "Only pair LoRAs with the same family (Illustrious↔Illustrious, "
-                "Pony↔Pony).\n"
-                "- Auto-pick selects a curated checkpoint from style "
-                "(anime/vtuber→Illustrious, pony→Pony V6, photo→SDXL). It does "
-                "NOT add random LoRAs or inject character trigger words.\n"
-                "- Pass model=<checkpoint AIR or alias 'pony'|'illustrious'> to "
-                "pin. Pass loras= as JSON {\"urn:air:...\": 0.8} for LoRAs — "
-                "never put a LoRA AIR in model= (it will be moved to loras "
-                "automatically). With loras= and no model, the checkpoint follows "
-                "the LoRA's family. A Pony LoRA on an Illustrious checkpoint (or "
-                "any other cross-family pair) is refused with the reason.\n"
-                "- Write the prompt yourself (danbooru tags for Illustrious/Pony). "
-                "Include short LoRA triggers in the prompt only when you use that LoRA.\n"
-                "- txt2img: prompt only. img2img: image=<path or URL> from "
-                "list_inbox_images + optional strength (0.6–0.8). img2img always "
-                "runs on Civitai.\n"
-                "- Never pass a Civitai AIR URN as model when using xAI/OpenAI."
+                "Normal images go to Grok. Set nsfw=true for explicit/sexual content "
+                "the owner asked for: that goes to Civitai (uncensored).\n\n"
+                "Civitai, how to get the best result:\n"
+                "- Leave model empty: the best-value model for the style is picked "
+                "(anime/vtuber→illustrious, pony/furry→pony, photo→lustify; no style "
+                "word→anime). Or name one: model=<recipe> or a checkpoint AIR from "
+                "search_civitai_models. Recipes:\n"
+                + _civitai_catalog() + "\n"
+                "- Prompt: write it yourself for the model. illustrious/pony/anima: "
+                "danbooru tags (1girl, solo, hair, eyes, outfit or nudity, pose, "
+                "expression, camera angle, setting, lighting); quality, rating and "
+                "anti-censor tags are added for you. lustify: tags or a short "
+                "description. zimage/qwen/flux: plain sentences.\n"
+                "- quality=high|max costs ~1.5-2x / ~2-3x Buzz (more steps, bigger "
+                "canvas): only when the owner asks for better quality.\n"
+                "- count=2-4 makes several in one go (Buzz x count).\n"
+                "- attempts=N only when the owner says to try again / keep trying; "
+                "failures are otherwise reported, not retried.\n"
+                "- loras={\"urn:air:...\": 0.8}: must match the model family "
+                "(Pony↔Pony, Illustrious↔Illustrious); with no model, the model "
+                "follows the LoRA. Add the LoRA's trigger words to your prompt "
+                "yourself. A LoRA AIR in model= is moved to loras.\n"
+                "- img2img: image=<path from list_inbox_images or URL>, strength "
+                "0.6-0.8 (lower keeps more of the source). SFW edits run on Grok, "
+                "explicit ones on Civitai.\n"
+                "- If a Civitai image is slow you'll get 'Pending:'; it is delivered "
+                "automatically when done, so don't generate it again."
             ),
             "parameters": {
                 "type": "object",
@@ -69,60 +79,63 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "prompt": {"type": "string"},
                     "aspect_ratio": {
                         "type": "string",
-                        "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4",
+                        "description": "e.g. 1:1, 16:9, 9:16, 4:3, 3:4, 2:3, 3:2",
                     },
                     "nsfw": {
                         "type": "boolean",
                         "description": (
-                            "True only for explicit/sexual content the user "
-                            "explicitly requested. Routed to an uncensored backend."
+                            "True for explicit/sexual content the owner asked for. "
+                            "Routed to Civitai."
                         ),
                     },
                     "model": {
                         "type": "string",
                         "description": (
-                            "Optional pin: checkpoint AIR URN from "
-                            "search_civitai_models. Omit to let Ophelia pick "
-                            "per image (recommended). Civitai only."
+                            "Civitai only, optional: a recipe name (illustrious, pony, "
+                            "lustify, anima, zimage-turbo, zimage-base, qwen, flux1, "
+                            "flux2-klein, sdxl) or a checkpoint AIR. Empty = auto."
+                        ),
+                    },
+                    "quality": {
+                        "type": "string",
+                        "enum": ["standard", "high", "max"],
+                        "description": "Civitai render profile. Default standard.",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Civitai: images in one request, 1-4 (default 1).",
+                    },
+                    "attempts": {
+                        "type": "integer",
+                        "description": (
+                            "Retry a failed generation up to N times (default 1). Only "
+                            "when the owner asked you to keep trying."
                         ),
                     },
                     "loras": {
                         "type": "string",
                         "description": (
-                            "Optional LoRAs for Civitai. JSON object "
-                            '{"urn:air:...": 0.8} or comma list urn|0.8,urn|0.7. '
-                            "Omit for checkpoint-only (recommended). Must match "
-                            "checkpoint family (no Pony LoRA on generic SDXL)."
+                            'Optional Civitai LoRAs: JSON {"urn:air:...": 0.8} or '
+                            "urn|0.8,urn|0.7. Same family as the model."
                         ),
                     },
                     "negative_prompt": {
                         "type": "string",
                         "description": (
-                            "Civitai/SD negative prompt. Optional — SD1/SDXL get "
-                            "a solid default if omitted. Leave empty for Flux."
+                            "Optional; each model gets a tuned default. Only set to "
+                            "exclude something specific."
                         ),
                     },
                     "image": {
                         "type": "string",
                         "description": (
-                            "Optional source image for img2img (Civitai createVariant). "
-                            "http(s) URL or local path from list_inbox_images. "
-                            "Omit for text-to-image."
+                            "Source image for img2img: local path from "
+                            "list_inbox_images or http(s) URL. Omit for text-to-image."
                         ),
                     },
                     "strength": {
                         "type": "number",
-                        "description": (
-                            "img2img denoise strength 0–1 (default 0.7). "
-                            "Lower = closer to source; 0.6–0.8 typical."
-                        ),
-                    },
-                    "auto_pick": {
-                        "type": "boolean",
-                        "description": (
-                            "Default true on Civitai when model is omitted. "
-                            "Set false only if you passed an explicit model pin."
-                        ),
+                        "description": "img2img change amount 0-1 (default 0.7).",
                     },
                 },
                 "required": ["prompt"],
@@ -135,7 +148,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "search_civitai_models",
             "description": (
                 "Browse Civitai checkpoints/LoRAs when you want to pin a specific "
-                "model. generate_image auto-pick is checkpoint-only (curated, no "
+                "model. generate_image auto mode picks a tested checkpoint (no "
                 "random LoRAs). Use this to find a character LoRA AIR, then pass "
                 "model=/loras= on generate_image. Check baseModel compatibility "
                 "and include short trigger_words in your own prompt."

@@ -129,6 +129,15 @@ All generated images are downloaded and saved under `~/.ophelia/data/artifacts`
   OpenAI, which would refuse them and risk flagging your account.
 - When off, explicit image requests are refused with a clear message.
 
+With Civitai as the NSFW provider, auto mode picks the best-value model for
+the style (anime → WAI-Illustrious, pony/furry → Pony V6, photo → LUSTIFY)
+with each model's recommended settings and tags. She can also name a model
+(anima, zimage-turbo, qwen, flux1, ...), make up to 4 images at once, use
+`quality=high|max` when you ask for better (more Buzz), and retry only when
+you tell her to. Slow jobs are delivered when they finish. Every generation
+is logged to `data/logs/image_generations.jsonl`, and generated images are
+never deleted. `ophelia civitai-test` checks it end to end.
+
 `OPHELIA_IMAGE_NSFW_PROVIDER=auto` picks the first configured uncensored
 backend (pollinations → a1111 → comfyui → modelslab → civitai → fal →
 replicate → ollama). Pollinations is the zero-config default.

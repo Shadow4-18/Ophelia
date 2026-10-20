@@ -284,14 +284,47 @@ class Settings(BaseSettings):
     civitai_image_model: str = Field(
         default="",
         alias="CIVITAI_IMAGE_MODEL",
-        description=(
-            "Optional FALLBACK checkpoint AIR URN if runtime auto-pick fails. "
-            "Leave blank (recommended) — Ophelia picks checkpoint/LoRA per image "
-            "from the prompt. Not a lock."
-        ),
+        description="Unused since the Civitai rewrite; see OPHELIA_CIVITAI_CHECKPOINTS.",
     )
     civitai_base_url: str = Field(
         default="https://orchestration.civitai.com", alias="CIVITAI_BASE_URL"
+    )
+    civitai_quality: str = Field(
+        default="standard",
+        alias="OPHELIA_CIVITAI_QUALITY",
+        description=(
+            "Default render profile: standard (each model's recommended settings), "
+            "high or max (more steps + bigger canvas, ~1.5-2x / ~2-3x the Buzz)."
+        ),
+    )
+    civitai_default_style: str = Field(
+        default="anime",
+        alias="OPHELIA_CIVITAI_DEFAULT_STYLE",
+        description="Style when a prompt names none: anime | pony | realistic.",
+    )
+    civitai_checkpoints: str = Field(
+        default="",
+        alias="OPHELIA_CIVITAI_CHECKPOINTS",
+        description=(
+            "Override auto-pick checkpoints per style, e.g. "
+            "'anime=urn:air:sdxl:checkpoint:civitai:1@2,realistic=urn:air:...'."
+        ),
+    )
+    civitai_max_count: int = Field(
+        default=4, alias="OPHELIA_CIVITAI_MAX_COUNT",
+        description="Most images one request may ask for (Buzz scales with it).",
+    )
+    civitai_wait_seconds: int = Field(
+        default=180, alias="OPHELIA_CIVITAI_WAIT_SECONDS",
+        description="Wait this long in chat; slower images are delivered when done.",
+    )
+    civitai_pending_hours: float = Field(
+        default=6, alias="OPHELIA_CIVITAI_PENDING_HOURS",
+        description="Keep checking a slow Civitai image for this long.",
+    )
+    image_max_attempts: int = Field(
+        default=5, alias="OPHELIA_IMAGE_MAX_ATTEMPTS",
+        description="Cap on attempts= when the owner asks her to keep trying.",
     )
 
     # ModelsLab (hosted SD APIs; explicit/adult models; safety_checker=false).

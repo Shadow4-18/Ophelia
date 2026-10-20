@@ -122,34 +122,11 @@ def _image_result_failed(result: str) -> bool:
         return True
     if result.startswith("Image saved to"):
         return False
-    if result.startswith("Refused:"):
-        return False  # policy refusal — do not fallback-retry as if it failed
+    if result.startswith(("Refused:", "Pending:")):
+        # Policy refusal, or a paid Civitai job still rendering (delivered
+        # later): neither is a failure to retry or fall back from.
+        return False
     return True
-
-
-def _is_transient_image_error(exc: BaseException | str) -> bool:
-    text = str(exc).lower()
-    needles = (
-        "timeout",
-        "timed out",
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "rate limit",
-        "overloaded",
-        "connection",
-        "temporarily",
-        "content_filter",
-        "content filter",
-        "safety",
-        "moderation",
-        "blocked",
-        "refused",
-        "policy",
-    )
-    return any(n in text for n in needles)
 
 
 async def _save_image_bytes(
@@ -232,8 +209,15 @@ async def _dispatch_image_provider(
     image: str | None,
     strength: float,
     auto_pick: bool,
+    quality: str = "",
+    count: int = 1,
+    deliver_to: str = "",
 ) -> str:
     """Call a single image backend. Raises on hard misconfiguration."""
+    if provider in ("xai-oauth", "xai") and image:
+        return await _xai_image_edit(
+            settings, stack, prompt, image, resolved_model, artifacts_dir
+        )
     if provider in ("xai-oauth", "xai"):
         return await _xai_image(
             settings, stack, prompt, aspect_ratio, resolved_model, artifacts_dir
@@ -279,6 +263,9 @@ async def _dispatch_image_provider(
             image=image,
             strength=strength,
             auto_pick=auto_pick,
+            quality=quality,
+            count=count,
+            deliver_to=deliver_to,
         )
     if provider == "modelslab":
         return await _modelslab_image(
@@ -343,6 +330,9 @@ def _fallback_image_providers(
     return out
 
 
+_IMG2IMG_PROVIDERS = ("civitai", "xai", "xai-oauth")
+
+
 async def generate_image(
     settings: Settings,
     stack: ProviderStack,
@@ -357,8 +347,15 @@ async def generate_image(
     image: str | None = None,
     strength: float = 0.7,
     auto_pick: bool = False,
+    quality: str = "",
+    count: int = 1,
+    attempts: int = 1,
+    deliver_to: str = "",
 ) -> str:
-    # Content tier gating.
+    """Route one image request. SFW goes to the image provider (Grok by
+    default), explicit to the NSFW provider (Civitai). A failed generation is
+    not retried unless ``attempts`` > 1 (the owner asked her to keep trying);
+    only connection-level errors get one automatic retry."""
     if nsfw and not settings.image_nsfw_allowed:
         return (
             "Refused: explicit image requested but OPHELIA_IMAGE_NSFW_ALLOWED is off. "
@@ -377,16 +374,16 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
-    # img2img only exists on Civitai here; every other backend would quietly
-    # ignore the source image and draw from scratch. Route it, or say why not.
-    if image and provider != "civitai":
+    # img2img: Grok edits SFW images, Civitai explicit ones. Other backends
+    # would ignore the source image and draw from scratch, so never use them.
+    if image and provider not in _IMG2IMG_PROVIDERS:
         if settings.civitai_api_key:
             log.info("image.reroute_img2img_to_civitai", from_provider=provider)
             provider = "civitai"
         else:
             return (
-                f"img2img needs Civitai (set CIVITAI_API_KEY); {provider} can't take a "
-                "source image. Call again without image= for a fresh text-to-image."
+                f"img2img needs Grok or Civitai; {provider} can't take a source image. "
+                "Call again without image= for a fresh text-to-image."
             )
 
     agent_model = (model or "").strip()
@@ -396,50 +393,43 @@ async def generate_image(
     if is_civitai_air and provider != "civitai":
         if settings.civitai_api_key:
             log.info(
-                "image.reroute_air_to_civitai",
-                from_provider=provider,
-                model=agent_model[:80],
+                "image.reroute_air_to_civitai", from_provider=provider, model=agent_model[:80]
             )
             provider = "civitai"
         else:
             log.warning(
-                "image.ignored_civitai_urn",
-                provider=provider,
-                model=agent_model[:80],
+                "image.ignored_civitai_urn", provider=provider, model=agent_model[:80]
             )
             agent_model = ""
 
-    # Civitai: Ophelia picks a curated checkpoint per image. Do NOT lock to the
-    # menu/env model (CIVITAI_IMAGE_MODEL / OPHELIA_IMAGE_NSFW_MODEL) — those
-    # are fallbacks only. Other backends still use router defaults.
     resolved_model, auto_pick = _resolve_image_model(
         stack, provider, agent_model, nsfw=nsfw, auto_pick=auto_pick
     )
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
-    attempts = [provider]
-    if not image:  # an img2img failure must not turn into a txt2img elsewhere
-        attempts += _fallback_image_providers(settings, provider, nsfw=nsfw)
+    cap = max(1, int(getattr(settings, "image_max_attempts", 5) or 1))
+    tries = max(1, min(int(attempts or 1), cap))
+    attempts_list = [provider]
+    # Free fallback backends for normal images when the primary fails. Never
+    # for img2img (would silently become txt2img) or Civitai (a submitted job
+    # failing is an answer to report, and the owner decides on retrying).
+    may_fall_back = not image and provider != "civitai"
+    if may_fall_back:
+        attempts_list += _fallback_image_providers(settings, provider, nsfw=nsfw)
     errors: list[str] = []
     result = ""
-    used_provider = provider
-    used_model = resolved_model
 
-    for attempt_idx, attempt_provider in enumerate(attempts):
-        # Only the first attempt keeps an explicit agent model pin (except AIR
-        # already rerouted). Fallbacks use each backend's own default model.
-        if attempt_provider == provider:
+    for attempt_idx, attempt_provider in enumerate(attempts_list):
+        if attempt_idx == 0:
             attempt_model, attempt_auto = resolved_model, auto_pick
         else:
-            pin = agent_model if attempt_provider == "civitai" and is_civitai_air else ""
             attempt_model, attempt_auto = _resolve_image_model(
-                stack, attempt_provider, pin, nsfw=nsfw, auto_pick=True
+                stack, attempt_provider, "", nsfw=nsfw, auto_pick=True
             )
-
-        # Primary: one retry on transient failure. Fallbacks: single shot.
-        retries = 2 if attempt_idx == 0 else 1
-        for retry in range(retries):
+        tried = 0
+        network_retry_used = False
+        while tried < (tries if attempt_idx == 0 else 1):
             try:
                 async with gate.session(
                     "image", attempt_model or "civitai-auto", attempt_provider
@@ -458,63 +448,45 @@ async def generate_image(
                         image=image,
                         strength=strength,
                         auto_pick=attempt_auto,
+                        quality=quality,
+                        count=count,
+                        deliver_to=deliver_to,
                     )
             except Exception as e:
-                err = f"{attempt_provider}: {e}"
-                errors.append(err)
+                errors.append(f"{attempt_provider}: {e}")
                 log.warning(
-                    "image.attempt_exception",
-                    provider=attempt_provider,
-                    retry=retry,
-                    error=str(e)[:200],
+                    "image.attempt_exception", provider=attempt_provider, error=str(e)[:200]
                 )
-                if retry + 1 < retries and _is_transient_image_error(e):
-                    await asyncio.sleep(0.6 * (retry + 1))
+                if _is_connection_error(e) and not network_retry_used:
+                    network_retry_used = True  # never reached the backend: free retry
+                    await asyncio.sleep(1.0)
                     continue
                 break
-
+            tried += 1
             if not _image_result_failed(result):
-                used_provider = attempt_provider
-                used_model = attempt_model
                 if attempt_idx > 0:
-                    log.info(
-                        "image.fallback_succeeded",
-                        primary=provider,
-                        used=attempt_provider,
-                    )
-                # Annotate which backend actually ran.
-                label = used_model or "auto"
-                fallback_note = (
-                    f"; fell back from {provider}" if attempt_idx > 0 else ""
-                )
-                return (
-                    f"{result} (backend: {used_provider}/{label}{nsfw_tag}"
-                    f"{fallback_note})"
-                )
+                    log.info("image.fallback_succeeded", primary=provider, used=attempt_provider)
+                if result.startswith(("Refused:", "Pending:")):
+                    return result
+                label = attempt_model or "auto"
+                notes = f"; fell back from {provider}" if attempt_idx > 0 else ""
+                if tried > 1:
+                    notes += f"; succeeded on attempt {tried}"
+                return f"{result} (backend: {attempt_provider}/{label}{nsfw_tag}{notes})"
+            errors.append(f"{attempt_provider}: {result[:300]}")
+            log.warning("image.attempt_failed", provider=attempt_provider, attempt=tried,
+                        error=result[:200])
 
-            errors.append(f"{attempt_provider}: {result[:180]}")
-            log.warning(
-                "image.attempt_failed",
-                provider=attempt_provider,
-                retry=retry,
-                error=result[:180],
-            )
-            if retry + 1 < retries and _is_transient_image_error(result):
-                await asyncio.sleep(0.6 * (retry + 1))
-                continue
-            break
+    summary = errors[-1] if errors else (result or "unknown error")
+    tried_note = f" ({tries} attempts)" if tries > 1 else ""
+    return f"Image generation failed{tried_note}: {summary}"
 
-        # Don't cascade fallbacks for hard policy refusals.
-        if result.startswith("Refused:"):
-            return result
 
-    # All attempts failed — surface the primary error plus what we tried.
-    summary = errors[0] if errors else (result or "unknown error")
-    tried = ", ".join(attempts)
-    return (
-        f"Image generation failed after trying: {tried}. "
-        f"Last error: {summary}"
-    )
+def _is_connection_error(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
+        return True
+    text = str(exc).lower()
+    return any(n in text for n in ("connection", "temporarily unavailable", "name resolution"))
 
 
 async def generate_video(
@@ -588,6 +560,50 @@ async def _xai_image(
     if not saved:
         return "Image generation failed to save."
     log.info("image.saved", provider="xai", model=model, path=str(saved))
+    return f"Image saved to {saved}"
+
+
+async def _xai_image_edit(
+    settings: Settings,
+    stack: ProviderStack,
+    prompt: str,
+    image: str,
+    model: str,
+    artifacts_dir: Path,
+) -> str:
+    """Grok image edit (POST /v1/images/edits, JSON). The OpenAI SDK's
+    images.edit sends multipart, which xAI rejects, so this is raw HTTP."""
+    backend = stack.backend("image")
+    assert isinstance(backend, XAIBackend)
+    src = (image or "").strip()
+    if not src.startswith(("http://", "https://", "data:")):
+        p = Path(src).expanduser()
+        if not p.is_file():
+            return f"Image edit source not found: {src}"
+        mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(
+            p.suffix.lower(), "image/png"
+        )
+        src = f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+    token = await backend.bearer_fresh()
+    base = settings.xai_base_url.rstrip("/")
+    body = {"model": model, "prompt": prompt, "image": {"url": src, "type": "image_url"}}
+    async with httpx.AsyncClient(timeout=180.0) as http:
+        r = await http.post(
+            f"{base}/images/edits", headers={"Authorization": f"Bearer {token}"}, json=body
+        )
+    if r.status_code >= 400:
+        return f"Grok image edit failed HTTP {r.status_code}: {r.text[:300]}"
+    data = (r.json() or {}).get("data") or [{}]
+    url = data[0].get("url")
+    b64 = data[0].get("b64_json")
+    if not url and not b64:
+        return f"Grok image edit returned no image: {str(r.json())[:300]}"
+    saved = await _save_image_artifact(
+        artifacts_dir=artifacts_dir, prompt=prompt, url=url, b64=b64, model=model
+    )
+    if not saved:
+        return "Grok image edit failed to save."
+    log.info("image.saved", provider="xai", model=model, path=str(saved), edit=True)
     return f"Image saved to {saved}"
 
 
@@ -1013,34 +1029,6 @@ async def _replicate_image(
     return f"Image saved to {saved}"
 
 
-def _image_ledger(settings: Settings, record: dict) -> None:
-    """Append one line per Civitai generation (success or failure) to
-    data/logs/image_generations.jsonl — the on-disk record of what was
-    actually sent and what came back."""
-    try:
-        path = Path(settings.data_dir) / "logs" / "image_generations.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": round(time.time(), 3), **record}) + "\n")
-    except Exception as e:  # never let bookkeeping break a generation
-        log.debug("image.ledger_failed", error=str(e))
-
-
-def _deep_find_seed(node: object) -> int | None:
-    stack: list[object] = [node]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            for k, v in cur.items():
-                if isinstance(k, str) and k.lower() == "seed" and isinstance(v, int) \
-                        and not isinstance(v, bool):
-                    return v
-                stack.append(v)
-        elif isinstance(cur, list):
-            stack.extend(cur)
-    return None
-
-
 async def _civitai_image(
     settings: Settings,
     prompt: str,
@@ -1054,321 +1042,23 @@ async def _civitai_image(
     image: str | None = None,
     strength: float = 0.7,
     auto_pick: bool = True,
+    quality: str = "",
+    count: int = 1,
+    deliver_to: str = "",
 ) -> str:
-    """Civitai orchestration — txt2img (createImage) or img2img (createVariant).
+    """Civitai orchestration: see ophelia.providers.civitai.pipeline."""
+    from ophelia.providers.civitai import GenerationRequest, run_generation
 
-    By default auto_pick selects a curated general checkpoint (no LoRAs, no
-    trigger injection). Pass model=<AIR> to pin a checkpoint; pass loras= to
-    add LoRAs. With LoRAs and no pin, the checkpoint family follows the LoRAs.
-    A verified LoRA/checkpoint family mismatch is refused, not generated.
-    CIVITAI_IMAGE_MODEL is a last-resort fallback only.
-    """
-    from ophelia.providers import civitai as civ
-
-    w, h = _dims(aspect_ratio)
-    base = settings.civitai_base_url.rstrip("/")
-    headers = {
-        "Authorization": f"Bearer {settings.civitai_api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "Ophelia/1.0 (+https://github.com/Shadow4-18/Ophelia)",
-        "Accept": "application/json",
-    }
-
-    # Agent-provided pin only. Menu/env models are NOT applied up front.
-    model_air = civ.sanitize_air((model or "").strip())
-    if model_air.lower() in ("auto", "pick", "dynamic"):
-        model_air = ""
-        explicit_pin = False
-    elif model_air.lower() == "flux":
-        explicit_pin = True
-    else:
-        explicit_pin = bool(model_air)
-
-    lora_map = civ.parse_loras(loras)
-    lora_map = {civ.sanitize_air(k): v for k, v in lora_map.items() if civ.sanitize_air(k)}
-    pick_note = ""
-    checkpoint_base = ""
-    style, style_reason = civ.detect_style_with_reason(prompt)
-
-    # Common mistake: pass a LoRA AIR as model=. A LoRA is never sent as the
-    # checkpoint — move it to loras= and pick a checkpoint to carry it.
-    if model_air and civ.air_kind(model_air) == "lora":
-        lora_map.setdefault(model_air, 0.8)
-        pick_note = "model_was_lora→loras; "
-        model_air = ""
-        explicit_pin = False
-    elif model_air and not model_air.startswith("urn:air:"):
-        # Short aliases: model=pony / model=illustrious
-        alias = civ.resolve_checkpoint_alias(model_air)
-        if alias:
-            key = model_air.lower()
-            model_air = alias
-            explicit_pin = True
-            checkpoint_base = civ.curated_base_model(
-                "pony" if "pony" in key else "illustrious" if alias == civ._FALLBACK_ILLUSTRIOUS_AIR
-                else "sdxl"
-            )
-            pick_note = f"alias→{alias}; "
-
-    # LoRA baseModels from the site API (also reported back as trigger hints;
-    # triggers are never written into the prompt for her).
-    lora_meta: dict[str, str] = {}
-    lora_triggers: list[str] = []
-    for air in list(lora_map)[:5]:
-        if "@" not in air:
-            continue
-        try:
-            vid_s = air.rsplit("@", 1)[-1].split("+")[0]
-            if vid_s.isdigit():
-                ver = await civ.get_version(settings, int(vid_s))
-                if ver:
-                    lora_meta[air] = ver.base_model or ""
-                    lora_triggers.extend(t for t in ver.trained_words[:3] if t)
-        except Exception as e:
-            log.debug("civitai.lora_meta_fetch_failed", error=str(e))
-
-    ecosystem = civ.ecosystem_from_air_or_base(model_air)
-
-    should_pick = bool(auto_pick) and not explicit_pin
-    if should_pick:
-        # With LoRAs, the checkpoint family follows them (a Pony LoRA gets the
-        # Pony checkpoint) instead of guessing from prompt words.
-        lora_fams = {civ.base_family(b) for b in lora_meta.values() if b}
-        if len(lora_fams) == 1 and next(iter(lora_fams)) in ("pony", "illustrious", "sdxl"):
-            style, style_reason = next(iter(lora_fams)), "lora family"
-        air, name = civ._CURATED_CHECKPOINTS.get(style, civ._CURATED_CHECKPOINTS["sdxl"])
-        model_air = civ.sanitize_air(air)
-        ecosystem = "sdxl"
-        checkpoint_base = civ.curated_base_model(style)
-        pick_note += (
-            f"checkpoint={name} ({model_air}, style={style}"
-            f"{', matched ' + repr(style_reason) if style_reason else ', default'}); "
-            "loras=" + ("agent" if lora_map else "none")
-        )
-        log.info(
-            "civitai.auto_pick",
-            style=style,
-            matched=style_reason or None,
-            checkpoint=model_air,
-            loras=list(lora_map) or None,
-        )
-
-    # Fallback chain if nothing chosen: env default → known SDXL URN. The env
-    # model is skipped if it's a LoRA (never sent as a checkpoint).
-    if not model_air:
-        env_model = civ.sanitize_air((settings.civitai_image_model or "").strip())
-        if (
-            env_model
-            and env_model.lower() not in ("auto", "dynamic", "pick", "flux")
-            and civ.air_kind(env_model) != "lora"
-        ):
-            model_air = env_model
-            ecosystem = civ.ecosystem_from_air_or_base(model_air)
-            pick_note = (pick_note + "; " if pick_note else "") + f"fallback_env={env_model}"
-        else:
-            air, _name = civ._CURATED_CHECKPOINTS.get(style, civ._CURATED_CHECKPOINTS["sdxl"])
-            model_air = air
-            checkpoint_base = civ.curated_base_model(style)
-            ecosystem = "sdxl"
-            pick_note = (pick_note + "; " if pick_note else "") + f"fallback_urn={model_air}"
-
-    model_air = civ.sanitize_air(model_air)
-
-    # Enrich ecosystem/base from site API — do NOT pull trainedWords into prompt.
-    if model_air.startswith("urn:air:") and "@" in model_air:
-        try:
-            vid_s = model_air.rsplit("@", 1)[-1].split("+")[0]
-            if vid_s.isdigit():
-                ver = await civ.get_version(settings, int(vid_s))
-                if ver:
-                    ecosystem = ver.ecosystem or ecosystem
-                    checkpoint_base = ver.base_model or checkpoint_base
-        except Exception as e:
-            log.debug("civitai.version_enrich_failed", error=str(e))
-
-    record: dict = {
-        "provider": "civitai",
-        "operation": "createVariant" if image else "createImage",
-        "checkpoint": model_air,
-        "checkpoint_base": checkpoint_base or None,
-        "loras": dict(lora_map),
-        "prompt": prompt,
-        "pick": pick_note or None,
-    }
-
-    # Hard stop on verified cross-family pairs (Pony LoRA on Illustrious, an
-    # SD1.5 LoRA on SDXL, ...): those make garbage, so say so instead.
-    mismatches = [
-        err
-        for air in lora_map
-        if (err := civ.lora_family_error(model_air, checkpoint_base, air, lora_meta.get(air, "")))
-    ]
-    if mismatches:
-        msg = (
-            "Refused: LoRA/checkpoint family mismatch: " + "; ".join(mismatches)
-            + ". Use LoRAs of the checkpoint's family, or pin a matching checkpoint "
-            "(model='pony' or model='illustrious'), or leave model empty so the "
-            "checkpoint follows the LoRA."
-        )
-        log.warning("civitai.family_mismatch", checkpoint=model_air, errors=mismatches)
-        _image_ledger(settings, {**record, "error": msg})
-        return msg
-
-    # Prompt: her words, plus soft quality tags only on danbooru-style
-    # checkpoints. No trigger words are injected.
-    fam = civ.base_family(checkpoint_base, model_air)
-    final_prompt = civ.maybe_quality_prefix(prompt, fam)
-    record["prompt"] = final_prompt
-
-    neg = (negative_prompt or "").strip()
-    if not neg and ecosystem in ("sd1", "sdxl"):
-        neg = civ.default_negative_for(ecosystem)
-
-    image_url = None
-    if image:
-        try:
-            strength = min(1.0, max(0.05, float(strength)))
-        except (TypeError, ValueError):
-            strength = 0.7
-        record["strength"] = strength
-        record["source_image"] = image
-        try:
-            image_url = await civ.resolve_image_url(settings, image)
-        except Exception as e:
-            msg = f"Civitai img2img source failed: {e}"
-            _image_ledger(settings, {**record, "error": msg})
-            return msg
-
-    step_input = civ.build_step_input(
-        prompt=final_prompt,
-        width=w,
-        height=h,
-        model_air=model_air,
-        ecosystem=ecosystem,
-        negative_prompt=neg,
-        loras=lora_map or None,
-        image_url=image_url,
-        strength=strength,
+    del auto_pick  # auto unless a model is named; kept for callers
+    return await run_generation(
+        settings,
+        GenerationRequest(
+            prompt=prompt, aspect_ratio=aspect_ratio, nsfw=nsfw, model=model or "",
+            quality=quality, loras=loras, negative_prompt=negative_prompt, image=image,
+            strength=strength, count=count, deliver_to=deliver_to,
+        ),
+        artifacts_dir,
     )
-    # Civitai doesn't report the seed it used, so choose it here: the ledger
-    # then holds a seed that reproduces the image.
-    seed = random.randint(1, 2**32 - 1)
-    step_input["seed"] = seed
-    record["seed"] = seed
-    record["checkpoint"] = step_input.get("model") or step_input.get("diffuserModel")
-    record["operation"] = step_input.get("operation")
-    record["negative_prompt"] = step_input.get("negativePrompt")
-    # NSFW requests must always allow mature content on orchestration.
-    allow_mature = bool(nsfw or settings.image_nsfw_allowed)
-    mature = "true" if allow_mature else "false"
-    body: dict = {
-        "steps": [{"$type": "imageGen", "input": step_input}],
-        "allowMatureContent": allow_mature,
-    }
-    log.info(
-        "civitai.submit",
-        operation=step_input.get("operation"),
-        ecosystem=step_input.get("ecosystem"),
-        checkpoint=record["checkpoint"],
-        loras=dict(lora_map) or None,
-        img2img=bool(image_url),
-        strength=strength if image_url else None,
-        pick=pick_note or None,
-        auto_pick=should_pick,
-        allow_mature=allow_mature,
-        prompt=final_prompt[:300],
-    )
-
-    def _fail(msg: str) -> str:
-        log.warning("civitai.failed", error=msg[:300])
-        _image_ledger(settings, {**record, "error": msg})
-        return msg
-
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
-        r = await http.post(
-            f"{base}/v2/consumer/workflows",
-            headers=headers,
-            params={"wait": "90", "allowMatureContent": mature},
-            json=body,
-        )
-        if r.status_code == 400 and "seed" in r.text.lower():
-            # Schema refused the seed field: generate without it.
-            step_input.pop("seed", None)
-            record["seed"] = None
-            r = await http.post(
-                f"{base}/v2/consumer/workflows",
-                headers=headers,
-                params={"wait": "90", "allowMatureContent": mature},
-                json=body,
-            )
-        if r.status_code >= 400:
-            return _fail(f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}")
-        wf = r.json()
-        wf_id = wf.get("id") or wf.get("workflowId")
-        record["workflow_id"] = wf_id
-        status = str(wf.get("status") or wf.get("state") or "").lower()
-
-        deadline = time.monotonic() + 180.0
-        while status not in ("done", "completed", "succeeded", "success") and time.monotonic() < deadline:
-            if status in ("failed", "error", "expired", "canceled", "cancelled"):
-                return _fail(f"Civitai workflow {status}: {str(wf)[:400]}")
-            await asyncio.sleep(5.0)
-            p = await http.get(f"{base}/v2/consumer/workflows/{wf_id}", headers=headers)
-            if p.status_code >= 400:
-                continue
-            wf = p.json()
-            status = str(wf.get("status") or wf.get("state") or "").lower()
-        if status not in ("done", "completed", "succeeded", "success"):
-            return _fail(f"Civitai workflow not done in 180s (id={wf_id}, status={status}).")
-
-        seed = _deep_find_seed(wf) or record["seed"]
-        record["seed"] = seed
-        url = _deep_find_first_str(
-            wf, ("url", "signed_url", "download_url", "result_url", "blob_url")
-        )
-        if not url:
-            return _fail(f"Civitai completed but no image URL found: {str(wf)[:400]}")
-        # Blob hosts often 301 to orchestration-new; follow_redirects is on.
-        # Never raise — return a soft error so the chat turn doesn't crash.
-        dl = await http.get(url, headers={"Authorization": f"Bearer {settings.civitai_api_key}"})
-        if dl.status_code >= 400:
-            dl = await http.get(url)
-        if dl.status_code >= 400:
-            return _fail(
-                f"Civitai image download failed HTTP {dl.status_code} "
-                f"(url={url[:120]}). Workflow succeeded but blob fetch failed."
-            )
-        if not dl.content or len(dl.content) < 100:
-            return _fail(
-                f"Civitai image download returned empty/tiny body ({len(dl.content)} bytes)."
-            )
-        saved = await _save_image_bytes(dl.content, artifacts_dir, "civitai", prompt)
-
-    record.update(path=str(saved), bytes=len(dl.content))
-    _image_ledger(settings, record)
-    log.info(
-        "image.saved",
-        provider="civitai",
-        checkpoint=record["checkpoint"],
-        loras=dict(lora_map) or None,
-        seed=seed,
-        path=str(saved),
-        bytes=len(dl.content),
-    )
-    extras = [f"civitai {step_input.get('operation', 'createImage')}"]
-    extras.append(f"model={record['checkpoint']}")
-    if lora_map:
-        extras.append("loras=" + ", ".join(f"{k}:{v}" for k, v in lora_map.items()))
-    if image_url:
-        extras.append(f"strength={strength}")
-    if seed is not None:
-        extras.append(f"seed={seed}")
-    if pick_note:
-        extras.append(f"picked: {pick_note}")
-    missing = [t for t in lora_triggers if t.lower() not in final_prompt.lower()]
-    if missing:
-        extras.append("LoRA trigger words not in your prompt: " + ", ".join(missing[:6]))
-    return f"Image saved to {saved} [" + "; ".join(extras) + "]"
 
 
 async def _modelslab_image(
