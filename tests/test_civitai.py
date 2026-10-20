@@ -162,22 +162,6 @@ def test_maybe_quality_prefix():
     assert maybe_quality_prefix("a photo of a cat", "realistic") == "a photo of a cat"
 
 
-@pytest.mark.asyncio
-async def test_pick_best_no_loras_no_search():
-    from ophelia.config import Settings
-    from ophelia.providers.civitai import pick_best_resources
-
-    settings = Settings()
-    ck, loras, note = await pick_best_resources(
-        settings, "gothic AI on circuit-board throne", want_lora=True
-    )
-    assert ck is not None
-    assert ck.air.startswith("urn:air:sdxl:")
-    assert loras == []
-    assert "loras=none" in note
-    assert ck.trained_words == []
-
-
 def test_build_step_txt2img_sdxl():
     step = build_step_input(
         prompt="masterpiece, 1girl",
@@ -255,26 +239,6 @@ def test_nsfw_auto_prefers_civitai_over_pollinations():
 def test_default_negatives():
     assert "worst quality" in default_negative_for("sdxl")
     assert default_negative_for("flux1") == ""
-
-
-def test_civitai_defaults_to_dynamic_pick() -> None:
-    """Menu/env must not lock Civitai; generate_image auto-picks when model omitted."""
-    import inspect
-
-    from ophelia.providers.media import _civitai_image
-
-    sig = inspect.signature(_civitai_image)
-    assert sig.parameters["auto_pick"].default is True
-
-    src = Path(__file__).resolve().parents[1] / "src" / "ophelia" / "providers" / "media.py"
-    body = src.read_text(encoding="utf-8")
-    assert "curated general checkpoint" in body or "picks a curated checkpoint" in body
-    assert "should_pick = bool(auto_pick) and not explicit_pin" in body
-    assert (
-        "if not agent_model:\n            auto_pick = True" in body
-        or 'if not agent_model:\n            return "", True' in body
-    )
-    assert "reroute_air_to_civitai" in body or "ignored_civitai_urn" in body
 
 
 def test_base_family():

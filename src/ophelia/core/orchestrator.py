@@ -271,6 +271,29 @@ class Orchestrator:
             except Exception as e:
                 log.warning("curator.error", error=str(e))
 
+    @staticmethod
+    def _split_channel(channel: str) -> tuple[str, int] | None:
+        platform, _, uid = (channel or "").partition(":")
+        return (platform, int(uid)) if platform and uid.isdigit() else None
+
+    async def _deliver_late_media(self, paths, caption: str, channel: str) -> bool:
+        """Send images that finished after the chat turn to whoever asked."""
+        target = self._split_channel(channel)
+        if target:
+            ok = True
+            for p in paths:
+                ok = await self.hub.send_file_to_user(target[0], target[1], p, caption=caption) and ok
+            return ok
+        await self.hub.broadcast_proactive_media(list(paths), caption=caption)
+        return True
+
+    async def _deliver_late_text(self, text: str, channel: str) -> None:
+        target = self._split_channel(channel)
+        if target:
+            await self.hub.send_to_user(target[0], target[1], text)
+        else:
+            await self.hub.broadcast_proactive(text)
+
     async def _heartbeat_loop(self) -> None:
         """Write a heartbeat file every 30s for `ophelia status` / external monitors."""
         import json as _json
@@ -626,6 +649,16 @@ class Orchestrator:
 
         self.housekeeping = HousekeepingLoop(self.settings)
         tasks.append(asyncio.create_task(self.housekeeping.run()))
+        # Civitai images that outlived the chat wait: deliver when done.
+        if self.settings.civitai_api_key:
+            from ophelia.providers.civitai.pending import PendingLoop
+
+            self.civitai_pending = PendingLoop(
+                self.settings,
+                deliver_media=self._deliver_late_media,
+                deliver_text=self._deliver_late_text,
+            )
+            tasks.append(asyncio.create_task(self.civitai_pending.run()))
         # Daily diary entry (one short curator call per day, when idle).
         from ophelia.mind.narrative import DailyNarrative
 
