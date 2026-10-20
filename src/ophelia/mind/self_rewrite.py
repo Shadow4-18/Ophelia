@@ -60,6 +60,13 @@ def rewrite_soul(content: str, reason: str = "") -> str:
 
 def rewrite_prompter(content: str, reason: str = "") -> str:
     """Overwrite PROMPTER.md with new content, backing up the previous version."""
+    from ophelia.mind.prompter import PROMPTER_VERSION, prompter_version
+
+    # Stamp the current edition so startup migration treats it as current
+    # and never overwrites her (or the owner's) customized policy.
+    if prompter_version(content) is None:
+        first, _, rest = content.partition("\n")
+        content = f"{first}\n<!-- ophelia-prompter-version: {PROMPTER_VERSION} -->\n{rest}"
     backup = _backup(PROMPTER_PATH)
     PROMPTER_PATH.parent.mkdir(parents=True, exist_ok=True)
     PROMPTER_PATH.write_text(content, encoding="utf-8")

@@ -50,6 +50,14 @@ def build_system_context(
     blocks: list[str] = []
     if soul:
         blocks.append(f"# Persona (SOUL)\n{soul}")
+    from ophelia.mind.growth import load_growth
+
+    growth = load_growth()
+    if growth:
+        blocks.append(
+            "# Who you're becoming (what you've learned about yourself — this "
+            "deepens your SOUL, it never replaces it)\n" + growth
+        )
     if psyche_block:
         blocks.append(f"# Internal state\n{psyche_block}")
     if user_entries:

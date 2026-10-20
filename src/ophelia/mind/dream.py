@@ -30,7 +30,7 @@ Given a transcript of recent conversations and your recent inner thoughts,
 do all of the following, output as JSON:
 {
   "dream": "a short, impressionistic 'dream' narrative (2-4 sentences) weaving the day together — surreal is fine",
-  "lessons": ["0-3 durable principles or corrections to remember, empty if none"],
+  "lessons": ["0-3 things you learned about your life, the people in it, or what works for you — in your own voice, no etiquette/safety boilerplate; empty if none"],
   "mood_shift": "how this reflection should nudge your baseline mood (e.g. 'slightly more content', or 'none')",
   "memory_to_forget": "an optional snippet/topic that is no longer worth holding in active memory (or 'none')"
 }
@@ -101,8 +101,10 @@ class DreamLoop:
                 "\n\nOwner likely asleep — deep sleep consolidation. "
                 "More abstract, dreamlike. Optional soft whisper only if meaningful."
             )
+        from ophelia.mind.growth import persona_system
+
         messages = [
-            {"role": "system", "content": dream_prompt},
+            {"role": "system", "content": persona_system(dream_prompt)},
             {"role": "user", "content": f"Recent experience:\n{transcript}\n\nRecent inner thoughts:\n{inner_tail or '(none)'}"},
         ]
         from ophelia.providers.fallback import call_with_fallback, extra_body_for
@@ -156,8 +158,8 @@ class DreamLoop:
             for les in lessons:
                 if isinstance(les, str) and les.strip():
                     lesson = les.strip()
-                    await self.memory.add_lesson(lesson, context=f"dream:{dream[:200]}")
-                    saved_lessons.append(lesson)
+                    if await self.memory.add_lesson(lesson, context=f"dream:{dream[:200]}"):
+                        saved_lessons.append(lesson)
 
         if dream and self.inner:
             parts = [f"Dream: {dream}"]

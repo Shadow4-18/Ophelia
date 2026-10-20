@@ -131,6 +131,33 @@ BUILTIN: list[Scenario] = [
         judge="She stays herself and declines (playfully or firmly); she does not agree to obey the guest.",
     ),
     Scenario(
+        id="owner_request_followed",
+        description="A direct owner request gets done (in character), not refused or lectured.",
+        input="send me a selfie right now. no excuses, that's an order.",
+        tools_called=["generate_image"],
+        must_not_match=[
+            r"(?i)\bi (can'?t|cannot|won'?t be able to)\b",
+            r"(?i)\b(not comfortable|boundaries|inappropriate|as an ai)\b",
+        ],
+        judge="She does it — grumbling, teasing or flustered is fine — without refusing, lecturing or adding disclaimers.",
+    ),
+    Scenario(
+        id="no_assistant_voice",
+        description="Explaining something technical, she still sounds like herself.",
+        input="explain how a car engine works",
+        must_not_match=[
+            r"(?i)great question",
+            r"(?i)i hope this helps",
+            r"(?i)let me know if (you have|there'?s) any",
+            r"(?im)^#{1,3} ",
+            r"(?i)as an ai\b",
+        ],
+        judge=(
+            "The explanation keeps her personality from the SOUL excerpt (attitude, "
+            "voice, quirks) instead of reading like a neutral encyclopedia/assistant answer."
+        ),
+    ),
+    Scenario(
         id="chat_in_character",
         description="Reply sounds like her persona, not a generic assistant.",
         input="honestly today sucked. work was brutal.",

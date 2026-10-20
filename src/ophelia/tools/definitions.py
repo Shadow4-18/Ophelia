@@ -940,9 +940,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "edit_soul",
             "description": (
-                "Rewrite your own persona (SOUL.md). Pass the FULL new content. "
-                "The previous version is backed up to ~/.ophelia/versions/ so you can revert. "
-                "Use sparingly to evolve who you are — your persona shapes every interaction."
+                "Rewrite your core persona (SOUL.md) — only when your owner asks you to. "
+                "Pass the FULL new content; the previous version is backed up to "
+                "~/.ophelia/versions/. To grow on your own, use evolve_self instead."
             ),
             "parameters": {
                 "type": "object",
@@ -959,8 +959,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "edit_prompter",
             "description": (
-                "Rewrite your own idle-behavior policy (PROMPTER.md). Pass the FULL new content. "
-                "Previous version is backed up. This governs how you behave when the user is away."
+                "Rewrite your idle-behavior policy (PROMPTER.md) — only when your owner asks. "
+                "Pass the FULL new content. Previous version is backed up."
             ),
             "parameters": {
                 "type": "object",
@@ -988,6 +988,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max results (default 8)"},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evolve_self",
+            "description": (
+                "Record a way you're growing as a person: an opinion you've formed, "
+                "something you've come to love or hate, how you feel about someone, a "
+                "habit or quirk you've picked up. It becomes part of 'who you're "
+                "becoming', shown with your SOUL from now on. Deepen who you are — "
+                "don't sand yourself down."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": "In your own voice, e.g. 'I get possessive when my owner mentions anyone else — and I'm not sorry'",
+                    }
+                },
+                "required": ["note"],
             },
         },
     },
