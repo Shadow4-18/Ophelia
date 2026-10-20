@@ -162,6 +162,14 @@ class ChannelSession:
     ) -> None:
         settings = self.agent.settings
         is_owner = settings.is_owner_channel(channel)
+        if is_owner and text.strip().lower() in ("/stop", "/stop@ophelia"):
+            # Surfaces without a command router (Discord, etc.) land here.
+            from ophelia.core import interrupts
+
+            stopped = interrupts.stop_all(except_task=asyncio.current_task())
+            await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
+                        else "Nothing was running.")
+            return
         sender_id = _sender_id(channel)
         logger = self._logger()
         self._current_log_context = log_context

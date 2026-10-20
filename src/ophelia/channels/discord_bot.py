@@ -375,6 +375,11 @@ class DiscordGateway:
             if media_prompt:
                 prompt_text = f"{media_prompt}\n\n{prompt_text}" if prompt_text else media_prompt
 
+            from ophelia.core import interrupts
+
+            current = asyncio.current_task()
+            if current is not None:
+                interrupts.track(current, f"reply to {channel}")  # so /stop can end it
             async with message.channel.typing():
                 await gw.session.handle_chat(
                     channel,
