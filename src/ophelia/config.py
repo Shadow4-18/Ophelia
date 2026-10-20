@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     deepseek_base_url: str = Field(
         default="https://api.deepseek.com/v1", alias="DEEPSEEK_BASE_URL"
     )
-    deepseek_model: str = Field(default="deepseek-v4-flash", alias="DEEPSEEK_MODEL")
+    deepseek_model: str = Field(default="deepseek-flash", alias="DEEPSEEK_MODEL")
     deepseek_consciousness_model: str | None = Field(
         default=None, alias="DEEPSEEK_CONSCIOUSNESS_MODEL"
     )
@@ -124,6 +124,8 @@ class Settings(BaseSettings):
     deepseek_curator_model: str | None = Field(
         default=None, alias="DEEPSEEK_CURATOR_MODEL"
     )
+    # Only the Flash model takes images (deepseek-v4-pro is text-only), so
+    # vision never inherits DEEPSEEK_MODEL; see deepseek_vision_resolved().
     deepseek_vision_model: str | None = Field(
         default=None, alias="DEEPSEEK_VISION_MODEL"
     )
@@ -875,11 +877,13 @@ class Settings(BaseSettings):
 
     web_search_enabled: bool = Field(default=True, alias="OPHELIA_WEB_SEARCH")
     # Web search backend. duckduckgo needs no key (free, less reliable);
-    # tavily / serper / brave need an API key (reliable, AI-friendly).
+    # tavily / serper / brave need their own API key; deepseek reuses
+    # DEEPSEEK_API_KEY (Search/Fetch API, about $0.75 per 1,000 searches).
     web_search_provider: str = Field(
         default="auto",
         alias="OPHELIA_WEB_SEARCH_PROVIDER",
-        description="auto | duckduckgo | tavily | serper | brave (auto = first key set, else duckduckgo)",
+        description="auto | deepseek | duckduckgo | tavily | serper | brave "
+        "(auto = first search key set, else DeepSeek when its key is set, else duckduckgo)",
     )
     tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
     serper_api_key: str | None = Field(default=None, alias="SERPER_API_KEY")
@@ -957,11 +961,16 @@ class Settings(BaseSettings):
 
         return is_termux()
 
+    def deepseek_vision_resolved(self) -> str | None:
+        """The DeepSeek model that can see, or None if the configured one can't."""
+        model = (self.deepseek_vision_model or "deepseek-flash").strip()
+        return None if "pro" in model.lower() else model
+
     def web_search_provider_resolved(self) -> str:
         """Effective search backend: explicit choice, else first keyed backend,
         else duckduckgo. 'auto' picks the first available API key."""
         p = (self.web_search_provider or "auto").strip().lower()
-        if p in ("tavily", "serper", "brave", "duckduckgo"):
+        if p in ("tavily", "serper", "brave", "deepseek", "duckduckgo"):
             return p
         # auto: prefer keyed backends for reliability
         if self.tavily_api_key:
@@ -970,6 +979,8 @@ class Settings(BaseSettings):
             return "serper"
         if self.brave_api_key:
             return "brave"
+        if self.deepseek_api_key:
+            return "deepseek"
         return "duckduckgo"
 
     # Providers that can serve explicit/NSFW imagery (xAI/OpenAI are NOT here).

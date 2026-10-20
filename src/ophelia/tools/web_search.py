@@ -1,9 +1,9 @@
 """Web search with pluggable backends.
 
 Default backend is DuckDuckGo (no API key, less reliable). For reliable
-AI-friendly results, set an API key for Tavily, Serper, or Brave and select it
-via OPHELIA_WEB_SEARCH_PROVIDER (or OPHELIA_WEB_SEARCH_PROVIDER=auto to pick
-the first available key). All backends return a plain-text result blob the
+AI-friendly results, set an API key for Tavily, Serper, or Brave, or use
+DeepSeek's Search/Fetch API with the DEEPSEEK_API_KEY she already has, and
+select it via OPHELIA_WEB_SEARCH_PROVIDER (auto picks the first available). All backends return a plain-text result blob the
 agent can read; on failure they fall back to DuckDuckGo so a search never
 hard-fails the turn.
 """
@@ -53,6 +53,12 @@ async def search_web(query: str, max_results: int = 8, settings: Settings | None
             return result
         log.info("web_search.fallback", provider="brave", reason="no result, falling back to ddg")
 
+    if provider == "deepseek" and settings is not None and settings.deepseek_api_key:
+        result = await _deepseek_search(query, settings, max_results)
+        if result:
+            return result
+        log.info("web_search.fallback", provider="deepseek", reason="no result, falling back to ddg")
+
     return await _duckduckgo_search(query, max_results)
 
 
@@ -90,6 +96,65 @@ async def _tavily_search(query: str, api_key: str, max_results: int) -> str:
     except (httpx.HTTPError, ValueError) as e:
         log.warning("web_search.tavily_exception", error=str(e))
         return ""
+
+
+def _deepseek_tools_url(settings: Settings, tool: str) -> str:
+    base = (settings.deepseek_base_url or "https://api.deepseek.com").rstrip("/")
+    return f"{base.removesuffix('/v1')}/v1/tools/{tool}"
+
+
+async def _deepseek_search(query: str, settings: Settings, max_results: int) -> str:
+    """DeepSeek Search API: ranked results with a model-sized summary each."""
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(
+                _deepseek_tools_url(settings, "search"),
+                headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+                json={"query": query[:128], "count": max(1, min(int(max_results), 50))},
+            )
+            if r.status_code != 200:
+                log.warning("web_search.deepseek_error", status=r.status_code, body=r.text[:200])
+                return ""
+            data = r.json()
+        lines: list[str] = []
+        for item in (data.get("results") or [])[:max_results]:
+            title = (item.get("title") or "").strip()
+            link = (item.get("url") or "").strip()
+            text = (item.get("summary") or item.get("snippet") or "").strip()
+            if not title:
+                continue
+            date = (item.get("date") or "")[:10]
+            lines.append(f"- {title}{f' ({date})' if date else ''}\n  {link}\n  {text[:700]}")
+        if not lines:
+            return ""
+        return f"Web search (DeepSeek): {query}\n\n" + "\n".join(lines)
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("web_search.deepseek_exception", error=str(e))
+        return ""
+
+
+async def _deepseek_fetch(url: str, settings: Settings, max_chars: int) -> str:
+    """DeepSeek Fetch API: the page as clean Markdown, or '' to fall back."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                _deepseek_tools_url(settings, "fetch"),
+                headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+                json={"url": url},
+            )
+            if r.status_code != 200:
+                log.info("fetch_url.deepseek_error", status=r.status_code, body=r.text[:200])
+                return ""
+            data = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log.info("fetch_url.deepseek_exception", error=str(e))
+        return ""
+    content = (data.get("content") or "").strip()
+    if not content:
+        return ""
+    title = (data.get("title") or "").strip()
+    head = f"From {urlparse(url).netloc}{f' ({title})' if title else ''}:\n"
+    return head + content[:max_chars]
 
 
 async def _serper_search(query: str, api_key: str, max_results: int) -> str:
@@ -215,10 +280,18 @@ async def _duckduckgo_search(query: str, max_results: int) -> str:
     return f"No results for '{query}'. Try a more specific query."
 
 
-async def fetch_url(url: str, max_chars: int = 8000) -> str:
+async def fetch_url(url: str, max_chars: int = 8000, settings: Settings | None = None) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         return "URL must start with http:// or https://"
+    if (
+        settings is not None
+        and settings.deepseek_api_key
+        and settings.web_search_provider_resolved() == "deepseek"
+    ):
+        got = await _deepseek_fetch(url, settings, max_chars)
+        if got:
+            return got
     host = urlparse(url).netloc
     async with httpx.AsyncClient(timeout=25.0, headers=HEADERS, follow_redirects=True) as client:
         try:
