@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import mimetypes
+import tempfile
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -88,6 +90,39 @@ def create_app(workstation: Workstation) -> FastAPI:
     async def chat(body: ChatRequest) -> dict[str, str]:
         reply = await workstation.chat(body.message)
         return {"reply": reply}
+
+    @app.post("/api/voice")
+    async def voice(audio: UploadFile = File(...)) -> dict[str, Any]:
+        """Mic clip → STT → chat → TTS. Built-in workstation voice."""
+        suffix = Path(audio.filename or "clip.webm").suffix or ".webm"
+        if suffix.lower() not in {".webm", ".ogg", ".wav", ".mp3", ".m4a", ".mp4"}:
+            suffix = ".webm"
+        tmp = Path(tempfile.gettempdir()) / f"ophelia_ui_voice_{int(time.time() * 1000)}{suffix}"
+        try:
+            data = await audio.read()
+            if not data:
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=400, detail="Empty audio upload")
+            tmp.write_bytes(data)
+            return await workstation.voice_turn(tmp)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    @app.get("/api/artifacts/ui_voice/{name}")
+    async def ui_voice_artifact(name: str) -> FileResponse:
+        """Serve TTS clips produced by /api/voice."""
+        from fastapi import HTTPException
+
+        safe = Path(name).name
+        path = workstation.settings.data_dir / "artifacts" / "ui_voice" / safe
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Audio not found")
+        media = "audio/mpeg" if path.suffix.lower() == ".mp3" else "audio/wav"
+        return FileResponse(path, media_type=media)
 
     @app.post("/api/consciousness/pause")
     async def pause_consciousness() -> dict[str, bool]:

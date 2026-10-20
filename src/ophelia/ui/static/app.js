@@ -564,3 +564,152 @@ resizeCanvas();
 startPolling();
 connect();
 chatInput.focus();
+
+/* --- Boot splash ------------------------------------------------------- */
+(function bootSplash() {
+  const el = $("bootSplash");
+  if (!el) return;
+  const finish = () => {
+    el.classList.add("done");
+    setTimeout(() => el.remove(), 900);
+  };
+  // Fade after first live status, or after a short beat if offline.
+  let done = false;
+  const once = () => {
+    if (done) return;
+    done = true;
+    finish();
+  };
+  const t = setTimeout(once, 2200);
+  const orig = renderStatus;
+  renderStatus = function patched(data) {
+    orig(data);
+    if (data && data.ready !== false) {
+      clearTimeout(t);
+      setTimeout(once, 400);
+    }
+  };
+})();
+
+/* --- Built-in voice (mic → /api/voice → play TTS) ---------------------- */
+const micBtn = $("micBtn");
+const voicePlayer = $("voicePlayer");
+let mediaRecorder = null;
+let micChunks = [];
+let micStream = null;
+
+async function startMic() {
+  if (sending || mediaRecorder) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    appendMessage("system", `Mic blocked: ${err.message}`, "system");
+    return;
+  }
+  micChunks = [];
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+    ? "audio/webm;codecs=opus"
+    : "audio/webm";
+  mediaRecorder = new MediaRecorder(micStream, { mimeType: mime });
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size) micChunks.push(e.data);
+  };
+  mediaRecorder.onstop = () => submitVoiceClip();
+  mediaRecorder.start();
+  micBtn.classList.add("recording");
+  micBtn.setAttribute("aria-pressed", "true");
+  micBtn.textContent = "…";
+  $("stageLine").textContent = "listening…";
+}
+
+async function stopMic() {
+  if (!mediaRecorder) return;
+  try {
+    mediaRecorder.stop();
+  } catch (_) {
+    /* ignore */
+  }
+  mediaRecorder = null;
+  if (micStream) {
+    micStream.getTracks().forEach((t) => t.stop());
+    micStream = null;
+  }
+  micBtn.classList.remove("recording");
+  micBtn.setAttribute("aria-pressed", "false");
+  micBtn.textContent = "mic";
+}
+
+async function submitVoiceClip() {
+  if (!micChunks.length || sending) return;
+  sending = true;
+  sendBtn.disabled = true;
+  micBtn.disabled = true;
+  const blob = new Blob(micChunks, { type: "audio/webm" });
+  micChunks = [];
+  const typing = document.createElement("div");
+  typing.className = "msg assistant typing";
+  typing.textContent = "Ophelia";
+  messagesEl.appendChild(typing);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  $("stageLine").textContent = "thinking…";
+  try {
+    const fd = new FormData();
+    fd.append("audio", blob, "clip.webm");
+    const r = await fetch("/api/voice", { method: "POST", body: fd });
+    const data = await r.json();
+    typing.remove();
+    if (!data.ok) {
+      appendMessage("system", data.error || "Voice failed", "system");
+      return;
+    }
+    if (data.transcript) {
+      const last = messagesEl.lastElementChild;
+      const already =
+        last &&
+        last.classList.contains("user") &&
+        last.textContent === data.transcript;
+      if (!already) appendMessage("user", data.transcript);
+    }
+    if (data.reply) {
+      const last = messagesEl.lastElementChild;
+      const already =
+        last &&
+        last.classList.contains("assistant") &&
+        last.textContent === data.reply;
+      if (!already) appendMessage("assistant", data.reply);
+    }
+    if (data.audio_url && voicePlayer) {
+      voicePlayer.src = data.audio_url;
+      try {
+        await voicePlayer.play();
+      } catch (err) {
+        logSystem(`TTS play blocked: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    typing.remove();
+    appendMessage("system", `Voice error: ${err.message}`, "system");
+  } finally {
+    sending = false;
+    sendBtn.disabled = false;
+    micBtn.disabled = false;
+  }
+}
+
+if (micBtn) {
+  micBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    startMic();
+  });
+  micBtn.addEventListener("pointerup", (e) => {
+    e.preventDefault();
+    stopMic();
+  });
+  micBtn.addEventListener("pointerleave", () => {
+    if (mediaRecorder) stopMic();
+  });
+  micBtn.addEventListener("click", (e) => {
+    // Prevent accidental click-toggle after pointerup.
+    e.preventDefault();
+  });
+}

@@ -68,6 +68,9 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
             "goal_update",
             "goal_complete",
             "goal_remove",
+            "curiosity_trail_open",
+            "curiosity_trail_deepen",
+            "curiosity_trail_close",
         }
     ),
     "guests": frozenset(
@@ -81,11 +84,11 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
 
 GROUP_DESCRIPTIONS: dict[str, str] = {
     "media": "make/send images, video, voice (TTS); browse photos/files people sent",
-    "self": "edit your soul/prompter, drives, timezone, skills, goals",
+    "self": "edit your soul/prompter, drives, timezone, skills, goals, curiosity trails",
     "guests": "list guests, DM a guest, rapport, read guest chats",
     "site": "your public website: pages, assets, files, preview, deploy",
     "data": "SQLite databases",
-    "phone": "phone body: screen, tap, swipe, apps, games",
+    "phone": "phone body: screen, tap, swipe, apps, games, battery, notifications, vibrate",
 }
 
 _TRIGGERS: dict[str, re.Pattern[str]] = {
@@ -95,13 +98,13 @@ _TRIGGERS: dict[str, re.Pattern[str]] = {
         r"render|generate|video|clip|animate|gif|voice|speak|say it|sing|audio|"
         r"tts|sound|song|meme|wallpaper|lora|civitai|send me)\b",
         "self": r"\b(soul|prompter|personality|goal|goals|drive|drives|timezone|"
-        r"time zone|skill|skills|habit|identity)\b",
+        r"time zone|skill|skills|habit|identity|curious|curiosity|rabbit hole)\b",
         "guests": r"\b(guest|guests|friend|friends|dm|dms|relay|rapport|stranger)\b",
         "site": r"\b(site|website|web ?page|page|pages|blog|wiki|deploy|html|css|"
         r"landing|cloudflare|post)\b",
         "data": r"\b(sqlite|database|db|sql|table)\b",
         "phone": r"\b(phone|screen|tap|swipe|app|apps|game|games|play|playing|"
-        r"open|scroll)\b",
+        r"open|scroll|battery|notification|notifications|vibrate|buzz)\b",
     }.items()
 }
 

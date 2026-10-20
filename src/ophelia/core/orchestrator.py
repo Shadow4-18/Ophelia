@@ -201,6 +201,11 @@ class Orchestrator:
         self.agent.life = self.life
         self.agent.humor = self.humor
         self.humor.bind_agent(self.agent)
+        from ophelia.mind.curiosity import CuriosityStore
+
+        self.curiosity = CuriosityStore(self.memory)
+        self.agent.curiosity = self.curiosity
+        self.tools.curiosity = self.curiosity
         self.alarms: AlarmLoop | None = None
         self.ambient: AmbientCommentaryLoop | None = None
 
@@ -669,6 +674,7 @@ class Orchestrator:
                 settings=self.settings,
                 humor=self.humor,
                 director=self.director,
+                curiosity=self.curiosity,
             )
             tasks.append(asyncio.create_task(self.consciousness.run()))
 

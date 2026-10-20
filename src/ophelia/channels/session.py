@@ -372,14 +372,6 @@ class ChannelSession:
             if is_owner:
                 self.drives.on_user_message()
                 await self.memory.save_drives(self.drives)
-                # "I'll look that up" → an open loop she'll come back to.
-                if out:
-                    try:
-                        from ophelia.mind.open_loops import OpenLoops
-
-                        await OpenLoops(self.memory.db_path).capture_promises(channel, out)
-                    except Exception as e:
-                        log.debug("open_loops.capture_failed", error=str(e))
             self.signals.last_agent_message_at = time.time()
             for i, chunk in enumerate(split_messages(out)):
                 cleaned = strip_consciousness_tick_leak(chunk)

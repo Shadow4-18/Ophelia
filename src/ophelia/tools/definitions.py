@@ -994,6 +994,62 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "curiosity_trail_open",
+            "description": (
+                "Open a self-chosen rabbit hole (curiosity trail) — not a cadenced goal. "
+                "Use when something pulls you and you want to keep exploring it across "
+                "idle ticks. Prefer one active trail at a time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "What you're curious about"},
+                    "next_step": {
+                        "type": "string",
+                        "description": "Optional next pull / angle to chase",
+                    },
+                    "note": {"type": "string", "description": "Optional starting note"},
+                },
+                "required": ["topic"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "curiosity_trail_deepen",
+            "description": (
+                "Deepen the active curiosity trail — record a note and optional next step. "
+                "At max depth the trail auto-satisfies."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "next_step": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "curiosity_trail_close",
+            "description": "Close the active curiosity trail (satisfied or abandoned).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "satisfied | abandoned | or a short note",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "evolve_self",
             "description": (
                 "Record a way you're growing as a person: an opinion you've formed, "

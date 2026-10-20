@@ -35,28 +35,121 @@ _ASPECT_DIMS: dict[str, tuple[int, int]] = {
     "2:3": (811, 1216),
 }
 
+# Prefer these when the primary image backend fails (timeouts, filters, 5xx).
+_IMAGE_FALLBACK_ORDER = (
+    "pollinations",
+    "civitai",
+    "fal",
+    "replicate",
+    "modelslab",
+    "ollama",
+    "a1111",
+    "comfyui",
+)
+
+
+def normalize_aspect_ratio(aspect_ratio: str | None) -> str:
+    """Map free-form / glitched aspect strings onto a known ratio.
+
+    Fixes common agent mistakes (\"16/9\", \"portrait\", \"square\", \"1x1\")
+    and snaps custom W:H values to the nearest supported preset so xAI/Grok
+    don't reject or distort the request.
+    """
+    raw = (aspect_ratio or "1:1").strip().lower().replace(" ", "")
+    aliases = {
+        "square": "1:1",
+        "1x1": "1:1",
+        "1/1": "1:1",
+        "landscape": "16:9",
+        "widescreen": "16:9",
+        "16x9": "16:9",
+        "16/9": "16:9",
+        "portrait": "9:16",
+        "9x16": "9:16",
+        "9/16": "9:16",
+        "vertical": "9:16",
+        "4x3": "4:3",
+        "4/3": "4:3",
+        "3x4": "3:4",
+        "3/4": "3:4",
+        "3x2": "3:2",
+        "3/2": "3:2",
+        "2x3": "2:3",
+        "2/3": "2:3",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw in _ASPECT_DIMS:
+        return raw
+    # Accept W:H / W/H / WxH and snap to nearest preset by ratio distance.
+    for sep in (":", "/", "x"):
+        if sep in raw:
+            try:
+                aw_s, ah_s = raw.split(sep, 1)
+                aw, ah = float(aw_s), float(ah_s)
+                if aw > 0 and ah > 0:
+                    target = aw / ah
+                    best = "1:1"
+                    best_d = 1e9
+                    for key in _ASPECT_DIMS:
+                        kw, kh = key.split(":")
+                        r = float(kw) / float(kh)
+                        d = abs(r - target)
+                        if d < best_d:
+                            best_d = d
+                            best = key
+                    return best
+            except Exception:
+                break
+    return "1:1"
+
 
 def _dims(aspect_ratio: str, *, clamp_max: int | None = None) -> tuple[int, int]:
     """Pixel dimensions for an aspect ratio, ~1MP, multiples of 8."""
-    ar = (aspect_ratio or "1:1").strip()
+    ar = normalize_aspect_ratio(aspect_ratio)
     w, h = _ASPECT_DIMS.get(ar, (1024, 1024))
-    if ar not in _ASPECT_DIMS:
-        try:
-            aw, ah = ar.split(":")
-            r = float(aw) / float(ah)
-            base = 1024
-            if r >= 1:
-                w, h = base, int(round(base / r))
-            else:
-                h, w = base, int(round(base / r))
-        except Exception:
-            w, h = 1024, 1024
     w = max(256, (w // 8) * 8)
     h = max(256, (h // 8) * 8)
     if clamp_max:
         w = min(w, clamp_max)
         h = min(h, clamp_max)
     return w, h
+
+
+def _image_result_failed(result: str) -> bool:
+    """True when a backend returned an error string instead of a saved image."""
+    if not result:
+        return True
+    if result.startswith("Image saved to"):
+        return False
+    if result.startswith("Refused:"):
+        return False  # policy refusal — do not fallback-retry as if it failed
+    return True
+
+
+def _is_transient_image_error(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    needles = (
+        "timeout",
+        "timed out",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "rate limit",
+        "overloaded",
+        "connection",
+        "temporarily",
+        "content_filter",
+        "content filter",
+        "safety",
+        "moderation",
+        "blocked",
+        "refused",
+        "policy",
+    )
+    return any(n in text for n in needles)
 
 
 async def _save_image_bytes(
@@ -124,6 +217,132 @@ def _first_image_url(node: object) -> str:
     return ""
 
 
+async def _dispatch_image_provider(
+    provider: str,
+    *,
+    settings: Settings,
+    stack: ProviderStack,
+    prompt: str,
+    aspect_ratio: str,
+    resolved_model: str,
+    artifacts_dir: Path,
+    nsfw: bool,
+    negative_prompt: str | None,
+    loras: dict[str, float] | str | None,
+    image: str | None,
+    strength: float,
+    auto_pick: bool,
+) -> str:
+    """Call a single image backend. Raises on hard misconfiguration."""
+    if provider in ("xai-oauth", "xai"):
+        return await _xai_image(
+            settings, stack, prompt, aspect_ratio, resolved_model, artifacts_dir
+        )
+    if provider == "openai":
+        return await _openai_image(
+            settings, stack, prompt, resolved_model, artifacts_dir
+        )
+    if provider == "ollama":
+        return await _ollama_image(
+            settings, prompt, resolved_model, artifacts_dir
+        )
+    if provider == "pollinations":
+        return await _pollinations_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
+        )
+    if provider == "a1111":
+        return await _a1111_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+        )
+    if provider == "comfyui":
+        return await _comfyui_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+        )
+    if provider == "fal":
+        return await _fal_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+        )
+    if provider == "replicate":
+        return await _replicate_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir
+        )
+    if provider == "civitai":
+        return await _civitai_image(
+            settings,
+            prompt,
+            aspect_ratio,
+            resolved_model,
+            artifacts_dir,
+            nsfw=nsfw,
+            negative_prompt=negative_prompt,
+            loras=loras,
+            image=image,
+            strength=strength,
+            auto_pick=auto_pick,
+        )
+    if provider == "modelslab":
+        return await _modelslab_image(
+            settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
+        )
+    raise RuntimeError(
+        f"Image generation not configured for provider '{provider}'. "
+        "Set OPHELIA_PROVIDER_IMAGE to one of: xai-oauth, xai, openai, ollama, "
+        "pollinations, a1111, comfyui, fal, replicate, civitai, modelslab."
+    )
+
+
+def _resolve_image_model(
+    stack: ProviderStack,
+    provider: str,
+    agent_model: str,
+    *,
+    nsfw: bool,
+    auto_pick: bool,
+) -> tuple[str, bool]:
+    """Return (resolved_model, auto_pick) for a provider attempt."""
+    if provider == "civitai":
+        resolved = agent_model
+        if not agent_model:
+            return "", True
+        if agent_model.lower() in ("auto", "pick", "dynamic"):
+            return "", True
+        return resolved, auto_pick
+    resolved = agent_model or stack.image_model_for(provider, nsfw=nsfw)
+    if (resolved or "").lower().startswith("urn:air:"):
+        log.warning("image.stripped_air_from_non_civitai", provider=provider)
+        resolved = stack.image_model_for(provider, nsfw=nsfw)
+    return resolved, auto_pick
+
+
+def _fallback_image_providers(
+    settings: Settings,
+    primary: str,
+    *,
+    nsfw: bool,
+) -> list[str]:
+    """Configured alternate backends to try when the primary fails."""
+    out: list[str] = []
+    for name in _IMAGE_FALLBACK_ORDER:
+        if name == primary:
+            continue
+        if nsfw and name in _CENSORED_IMAGE_PROVIDERS:
+            continue
+        try:
+            configured = settings.image_backend_configured(name)
+        except Exception:
+            continue
+        # Require exact True so MagicMock / odd stubs don't enable every backend.
+        if configured is True:
+            out.append(name)
+    # Pollinations is usually zero-config — always offer it as last resort
+    # for SFW (and NSFW when allowed) unless it was already primary.
+    if "pollinations" not in out and primary != "pollinations":
+        nsfw_ok = getattr(settings, "image_nsfw_allowed", False) is True
+        if not nsfw or nsfw_ok:
+            out.append("pollinations")
+    return out
+
+
 async def generate_image(
     settings: Settings,
     stack: ProviderStack,
@@ -147,6 +366,7 @@ async def generate_image(
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
+    aspect_ratio = normalize_aspect_ratio(aspect_ratio)
     provider = stack.image_provider_for(nsfw=nsfw)
     # Defensive: never let an explicit prompt reach a censored backend, even if
     # the user mis-configured OPHELIA_IMAGE_NSFW_PROVIDER to point at one.
@@ -180,89 +400,107 @@ async def generate_image(
     # Civitai: Ophelia picks a curated checkpoint per image. Do NOT lock to the
     # menu/env model (CIVITAI_IMAGE_MODEL / OPHELIA_IMAGE_NSFW_MODEL) — those
     # are fallbacks only. Other backends still use router defaults.
-    if provider == "civitai":
-        resolved_model = agent_model
-        # Default to auto-pick whenever she didn't pass an explicit AIR URN.
-        if not agent_model:
-            auto_pick = True
-        elif agent_model.lower() in ("auto", "pick", "dynamic"):
-            resolved_model = ""
-            auto_pick = True
-    else:
-        resolved_model = agent_model or stack.image_model_for(provider, nsfw=nsfw)
-        # Belt-and-suspenders: never send urn:air: to non-Civitai backends.
-        if (resolved_model or "").lower().startswith("urn:air:"):
-            log.warning("image.stripped_air_from_non_civitai", provider=provider)
-            resolved_model = stack.image_model_for(provider, nsfw=nsfw)
+    resolved_model, auto_pick = _resolve_image_model(
+        stack, provider, agent_model, nsfw=nsfw, auto_pick=auto_pick
+    )
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
+    attempts = [provider] + _fallback_image_providers(settings, provider, nsfw=nsfw)
+    errors: list[str] = []
+    result = ""
+    used_provider = provider
+    used_model = resolved_model
 
-    async with gate.session("image", resolved_model or "civitai-auto", provider):
-        if provider in ("xai-oauth", "xai"):
-            result = await _xai_image(
-                settings, stack, prompt, aspect_ratio, resolved_model, artifacts_dir
-            )
-        elif provider == "openai":
-            result = await _openai_image(
-                settings, stack, prompt, resolved_model, artifacts_dir
-            )
-        elif provider == "ollama":
-            result = await _ollama_image(
-                settings, prompt, resolved_model, artifacts_dir
-            )
-        elif provider == "pollinations":
-            result = await _pollinations_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
-            )
-        elif provider == "a1111":
-            result = await _a1111_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
-            )
-        elif provider == "comfyui":
-            result = await _comfyui_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
-            )
-        elif provider == "fal":
-            result = await _fal_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
-            )
-        elif provider == "replicate":
-            result = await _replicate_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir
-            )
-        elif provider == "civitai":
-            result = await _civitai_image(
-                settings,
-                prompt,
-                aspect_ratio,
-                resolved_model,
-                artifacts_dir,
-                nsfw=nsfw,
-                negative_prompt=negative_prompt,
-                loras=loras,
-                image=image,
-                strength=strength,
-                auto_pick=auto_pick,
-            )
-        elif provider == "modelslab":
-            result = await _modelslab_image(
-                settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
-            )
+    for attempt_idx, attempt_provider in enumerate(attempts):
+        # Only the first attempt keeps an explicit agent model pin (except AIR
+        # already rerouted). Fallbacks use each backend's own default model.
+        if attempt_provider == provider:
+            attempt_model, attempt_auto = resolved_model, auto_pick
         else:
-            raise RuntimeError(
-                f"Image generation not configured for provider '{provider}'. "
-                "Set OPHELIA_PROVIDER_IMAGE to one of: xai-oauth, xai, openai, ollama, "
-                "pollinations, a1111, comfyui, fal, replicate, civitai, modelslab."
+            pin = agent_model if attempt_provider == "civitai" and is_civitai_air else ""
+            attempt_model, attempt_auto = _resolve_image_model(
+                stack, attempt_provider, pin, nsfw=nsfw, auto_pick=True
             )
-    # Annotate the result with which backend actually ran, so the agent
-    # (and the owner) can see whether it was Grok, Pollinations, etc. —
-    # prevents the agent from claiming "I used Grok" when the image role
-    # silently fell through to Pollinations because xAI wasn't configured.
-    if result.startswith("Image saved to"):
-        label = resolved_model or "auto"
-        result = f"{result} (backend: {provider}/{label}{nsfw_tag})"
-    return result
+
+        # Primary: one retry on transient failure. Fallbacks: single shot.
+        retries = 2 if attempt_idx == 0 else 1
+        for retry in range(retries):
+            try:
+                async with gate.session(
+                    "image", attempt_model or "civitai-auto", attempt_provider
+                ):
+                    result = await _dispatch_image_provider(
+                        attempt_provider,
+                        settings=settings,
+                        stack=stack,
+                        prompt=prompt,
+                        aspect_ratio=aspect_ratio,
+                        resolved_model=attempt_model,
+                        artifacts_dir=artifacts_dir,
+                        nsfw=nsfw,
+                        negative_prompt=negative_prompt,
+                        loras=loras,
+                        image=image,
+                        strength=strength,
+                        auto_pick=attempt_auto,
+                    )
+            except Exception as e:
+                err = f"{attempt_provider}: {e}"
+                errors.append(err)
+                log.warning(
+                    "image.attempt_exception",
+                    provider=attempt_provider,
+                    retry=retry,
+                    error=str(e)[:200],
+                )
+                if retry + 1 < retries and _is_transient_image_error(e):
+                    await asyncio.sleep(0.6 * (retry + 1))
+                    continue
+                break
+
+            if not _image_result_failed(result):
+                used_provider = attempt_provider
+                used_model = attempt_model
+                if attempt_idx > 0:
+                    log.info(
+                        "image.fallback_succeeded",
+                        primary=provider,
+                        used=attempt_provider,
+                    )
+                # Annotate which backend actually ran.
+                label = used_model or "auto"
+                fallback_note = (
+                    f"; fell back from {provider}" if attempt_idx > 0 else ""
+                )
+                return (
+                    f"{result} (backend: {used_provider}/{label}{nsfw_tag}"
+                    f"{fallback_note})"
+                )
+
+            errors.append(f"{attempt_provider}: {result[:180]}")
+            log.warning(
+                "image.attempt_failed",
+                provider=attempt_provider,
+                retry=retry,
+                error=result[:180],
+            )
+            if retry + 1 < retries and _is_transient_image_error(result):
+                await asyncio.sleep(0.6 * (retry + 1))
+                continue
+            break
+
+        # Don't cascade fallbacks for hard policy refusals.
+        if result.startswith("Refused:"):
+            return result
+
+    # All attempts failed — surface the primary error plus what we tried.
+    summary = errors[0] if errors else (result or "unknown error")
+    tried = ", ".join(attempts)
+    return (
+        f"Image generation failed after trying: {tried}. "
+        f"Last error: {summary}"
+    )
 
 
 async def generate_video(

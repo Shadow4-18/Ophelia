@@ -47,6 +47,9 @@ def test_identity_tools_still_denied_for_guests():
         "save_lesson",
         "reflect",
         "goal_create",
+        "curiosity_trail_open",
+        "curiosity_trail_deepen",
+        "curiosity_trail_close",
         "recall_memory",
         "sqlite_exec",
         "run_code",
@@ -62,7 +65,15 @@ def test_list_inbox_images_still_denied_for_guests():
 
 def test_phone_tools_still_denied_for_guests():
     """Phone body is owner-only — guests can't tap or screenshot."""
-    for p in ("phone_tap", "phone_ui_dump", "phone_shell", "phone_see_screen"):
+    for p in (
+        "phone_tap",
+        "phone_ui_dump",
+        "phone_shell",
+        "phone_see_screen",
+        "phone_vibrate",
+        "phone_notifications",
+        "phone_battery",
+    ):
         assert p in GUEST_DENIED_TOOLS, p
 
 

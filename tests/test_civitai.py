@@ -270,7 +270,10 @@ def test_civitai_defaults_to_dynamic_pick() -> None:
     body = src.read_text(encoding="utf-8")
     assert "curated general checkpoint" in body or "picks a curated checkpoint" in body
     assert "should_pick = bool(auto_pick) and not explicit_pin" in body
-    assert "if not agent_model:\n            auto_pick = True" in body
+    assert (
+        "if not agent_model:\n            auto_pick = True" in body
+        or 'if not agent_model:\n            return "", True' in body
+    )
     assert "reroute_air_to_civitai" in body or "ignored_civitai_urn" in body
 
 
