@@ -171,7 +171,7 @@ class CivitaiClient:
         self.settings = settings
         self.base = settings.civitai_base_url.rstrip("/")
         self.headers = {
-            "Authorization": f"Bearer {settings.civitai_api_key}",
+            "Authorization": f"Bearer {(settings.civitai_api_key or '').strip()}",
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,
             "Accept": "application/json",
@@ -201,11 +201,52 @@ class CivitaiClient:
     async def download(self, url: str) -> httpx.Response:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as http:
             dl = await http.get(
-                url, headers={"Authorization": f"Bearer {self.settings.civitai_api_key}"}
+                url, headers={"Authorization": f"Bearer {(self.settings.civitai_api_key or '').strip()}"}
             )
             if dl.status_code >= 400:
                 dl = await http.get(url)
             return dl
+
+
+async def check_key(settings: Settings) -> tuple[int, str]:
+    """One free authenticated call (list her latest workflow): (HTTP status,
+    body excerpt). 200 means Civitai accepts the key."""
+    client = CivitaiClient(settings)
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+        r = await http.get(f"{client.base}/v2/consumer/workflows", headers=client.headers,
+                           params={"take": "1"})
+    return r.status_code, r.text[:400]
+
+
+def describe_key_source(settings: Settings) -> list[str]:
+    """Where the key she's using comes from, without printing it."""
+    import os
+
+    from ophelia.setup.env_io import env_path
+
+    key = (settings.civitai_api_key or "")
+    lines = []
+    if not key.strip():
+        return ["No CIVITAI_API_KEY is set."]
+    shown = f"{key.strip()[:4]}…{key.strip()[-4:]}" if len(key.strip()) > 10 else "(short)"
+    lines.append(f"Key in use: {shown} ({len(key.strip())} characters)")
+    if key != key.strip():
+        lines.append("  It has spaces or line breaks around it (now trimmed when sent).")
+    if os.environ.get("CIVITAI_API_KEY"):
+        lines.append("  It comes from the shell environment (export CIVITAI_API_KEY=...), which "
+                     "overrides ~/.ophelia/.env. Remove that export (check ~/.bashrc) or "
+                     "update it too.")
+    else:
+        path = env_path()
+        count = 0
+        if path.is_file():
+            for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                left = raw.strip().removeprefix("export ").split("=", 1)[0].strip()
+                if left == "CIVITAI_API_KEY":
+                    count += 1
+        lines.append(f"  From {path}" + (f" ({count} lines set it; the LAST one is used)"
+                                         if count > 1 else ""))
+    return lines
 
 
 async def upload_local_image(settings: Settings, path: Path) -> str:
@@ -219,7 +260,7 @@ async def upload_local_image(settings: Settings, path: Path) -> str:
         ".webp": "image/webp", ".gif": "image/gif",
     }.get(p.suffix.lower(), "application/octet-stream")
     headers = {
-        "Authorization": f"Bearer {settings.civitai_api_key}",
+        "Authorization": f"Bearer {(settings.civitai_api_key or '').strip()}",
         "Content-Type": mime,
         "User-Agent": _USER_AGENT,
     }

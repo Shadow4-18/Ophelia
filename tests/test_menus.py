@@ -230,3 +230,17 @@ def test_launcher_headers_are_not_actions(tmp_path, monkeypatch):
     labels, index = launcher._render_menu_labels(launcher._menu_items())
     assert isinstance(labels[0], tui.Header) and index[0] == -1
     assert labels[-1] == "Import from Hermes"
+
+
+def test_duplicate_keys_follow_what_ophelia_loads(home):
+    """dotenv uses the last line for a repeated key; setup used to replace
+    only the first, so a new API key was saved but never used."""
+    (home / ".env").write_text(
+        "CIVITAI_API_KEY=old1\nOTHER=x\nexport CIVITAI_API_KEY=old2\n", encoding="utf-8")
+    assert read_env_key("CIVITAI_API_KEY") == "old2"
+    write_env_updates({"CIVITAI_API_KEY": "new"})
+    from dotenv import dotenv_values
+
+    loaded = dotenv_values(home / ".env")
+    assert loaded["CIVITAI_API_KEY"] == "new" and loaded["OTHER"] == "x"
+    assert (home / ".env").read_text().count("CIVITAI_API_KEY") == 1
