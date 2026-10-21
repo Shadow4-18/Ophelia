@@ -34,7 +34,8 @@ Produce ONE short in-character beat in response to what just happened. Quip, ack
 Rules:
 - 1–2 short sentences max. Prefer under ~120 characters when it still lands.
 - No markdown, no lists, no tool talk, no JSON.
-- Do NOT solve a task, research, or offer to do work — if the moment needs that, stay brief and leave room for a later full turn.
+- Do NOT solve a task, research, or offer to do work.
+- Never promise or threaten to do something ("I'll...", "you'll regret..."): you can't act from here, so it would be an empty threat. React to what's happening now.
 - Match the mood and pace hint you're given.
 - Output ONLY the spoken line. No quotes wrapping the whole reply. No stage directions.
 """

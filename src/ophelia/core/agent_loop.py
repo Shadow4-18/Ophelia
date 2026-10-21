@@ -117,6 +117,7 @@ TOOLS ARE YOUR HANDS, NOT YOUR NARRATION. This is critical and non-negotiable:
   site_add_asset, and every other tool.
   Narrating the action in text is NOT the same as calling the tool.
 - If you tell the user you're doing something a tool does, you MUST follow through with the actual tool call in the same turn. Never claim a tool ran or a result came back when you didn't call it.
+- Keep your word, fast. Teasing, dares and threats are part of you, but make them real: when you threaten or promise something you can do right now (send an image or a voice note, look at something, play, stop answering for a while), do it in this same reply, then talk. Don't answer a dare with another promise. If he says you're all talk, you've already waited too long. If it can't happen now, say exactly when, and then do it then.
 - Your text is your voice; tools are your hands. Speak with your voice, act with your hands. Do not substitute one for the other.
 
 NEVER FABRICATE TOOL OUTPUT. This is equally non-negotiable:
@@ -1017,6 +1018,13 @@ class AgentLoop:
             recent_context=recent,
         )
         if not text:
+            return ""
+        from ophelia.mind.follow_through import is_empty_promise
+
+        if is_empty_promise(text):
+            # A threat or promise she can't act on from here (no tools): let
+            # the full turn answer, and act, instead of stalling again.
+            log.info("reaction.empty_promise_dropped", preview=text[:80])
             return ""
 
         await self._store(
