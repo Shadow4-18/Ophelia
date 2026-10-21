@@ -152,6 +152,25 @@ class ChannelSession:
     def set_voice(self, channel: str, enabled: bool) -> None:
         self._voice_reply[channel] = enabled
 
+    async def _needs_action(self, channel: str, text: str, *, is_owner: bool) -> bool:
+        """The tool-less reaction path can only talk. Skip it when he's asking
+        her to act, or her last line promised something (mind/follow_through)."""
+        from ophelia.mind import follow_through
+
+        her_last = ""
+        try:
+            memory = self.agent.memory
+            hist = await (memory.recent_messages(channel, limit=4) if is_owner
+                          else memory.recent_guest(channel, limit=4))
+            her_last = next((m.get("content") or "" for m in reversed(hist)
+                             if m.get("role") == "assistant"), "")
+        except Exception:
+            pass
+        if follow_through.needs_action(text, her_last):
+            log.info("reaction.skipped_for_action", channel=channel, preview=text[:60])
+            return True
+        return False
+
     async def try_interject(
         self,
         channel: str,
@@ -443,6 +462,7 @@ class ChannelSession:
                 and director_decision.is_fast_reaction
                 and reaction is not None
                 and getattr(reaction, "enabled", False)
+                and not await self._needs_action(channel, text, is_owner=is_owner)
             ):
                 try:
                     out = await self.agent.run_reaction_turn(
