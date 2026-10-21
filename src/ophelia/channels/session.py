@@ -84,6 +84,7 @@ class ChannelSession:
         self.hub: Any = None
         self._voice_reply: dict[str, bool] = {}
         self._chat_logger: ChatLogger | None = None
+        self._side_locks: dict[str, asyncio.Lock] = {}
         self._log_hooks: list[LogHookFn] = []
         self._current_log_context: dict | None = None
 
@@ -152,25 +153,83 @@ class ChannelSession:
         self._voice_reply[channel] = enabled
 
     async def try_interject(
-        self, channel: str, text: str, *, log_context: dict | None = None
+        self,
+        channel: str,
+        text: str,
+        *,
+        reply: ReplyFn | None = None,
+        log_context: dict | None = None,
     ) -> bool:
         """If she's mid-task in a chat turn with the owner on ``channel``,
-        hand ``text`` to that turn (she answers between steps, then carries
-        on). True when it was taken; False means run it as a normal turn."""
+        handle ``text`` without waiting for the task: in parallel mode she
+        answers at once while the task keeps going; in pause mode the task
+        answers between steps. True when handled; False means run it as a
+        normal turn."""
         from ophelia.core import interjections
 
         settings = self.agent.settings
-        if not getattr(settings, "interjections_enabled", True):
+        mode = settings.interjection_mode_resolved() if hasattr(
+            settings, "interjection_mode_resolved") else "pause"
+        if mode == "off" or not getattr(settings, "interjections_enabled", True):
             return False
         if not settings.is_owner_channel(channel) or text.strip().startswith("/"):
             return False
         if not interjections.accepting(channel):
             return False
+        self.signals.last_user_message_at = time.time()
+        if mode == "parallel" and reply is not None and await self._side_reply(
+            channel, text, reply, log_context=log_context
+        ):
+            return True
         if not await interjections.offer(channel, text):
             return False
-        self.signals.last_user_message_at = time.time()
         await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
         return True
+
+    async def _side_reply(
+        self, channel: str, text: str, reply: ReplyFn, *, log_context: dict | None
+    ) -> bool:
+        """Parallel mode: answer now while the task runs, then let the task
+        know what was said. False (fall back to pause mode) on any failure."""
+        from ophelia.core import interjections
+
+        lock = self._side_locks.setdefault(channel, asyncio.Lock())
+        async with lock:  # one quick reply at a time, in order
+            try:
+                answer = await self.agent.side_reply(channel, text)
+            except Exception as e:
+                log.warning("interjection.side_reply_failed", error=str(e))
+                return False
+            if not answer:
+                return False
+            await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+            await self._send_logged(channel, reply, answer, log_context=log_context)
+            interjections.post_answered(channel, text, answer)
+            return True
+
+    async def _send_logged(
+        self, channel: str, reply: ReplyFn, text: str, *, log_context: dict | None
+    ) -> None:
+        """Send a reply outside a turn: humanized like turn replies, split,
+        and logged."""
+        from ophelia.channels import humanize
+        from ophelia.channels.message_split import split_messages
+
+        settings = self.agent.settings
+        voice = self.voice_enabled(channel, settings.voice_reply_default)
+        logger = self._logger()
+        for chunk in split_messages(text):
+            if humanize.enabled(settings) and not voice:
+                chunk = humanize.humanize(chunk)
+            if not chunk:
+                continue
+            await reply(chunk)
+            if logger:
+                entry = {"channel": channel, "direction": "out", "text": chunk,
+                         "sender_id": _sender_id(channel), "is_owner": True,
+                         "role": "assistant", "log_context": log_context}
+                await logger.log(**{k: v for k, v in entry.items() if k != "log_context"})
+                await self._emit_log_hook(entry)
 
     async def _log_inbound(
         self, channel: str, text: str, *, is_owner: bool, log_context: dict | None
@@ -223,7 +282,7 @@ class ChannelSession:
             await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
                         else "Nothing was running.")
             return
-        if await self.try_interject(channel, text, log_context=log_context):
+        if await self.try_interject(channel, text, reply=reply, log_context=log_context):
             return
         sender_id = _sender_id(channel)
         logger = self._logger()

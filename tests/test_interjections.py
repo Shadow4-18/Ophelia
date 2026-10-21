@@ -159,7 +159,7 @@ async def test_offer_only_when_a_turn_is_open():
     t = asyncio.create_task(interjections.offer(CH, "one"))
     t2 = asyncio.create_task(interjections.offer(CH, "two"))
     await asyncio.sleep(0)
-    assert interjections.take_all(CH) == ["one", "two"]
+    assert [n.text for n in interjections.take_all(CH)] == ["one", "two"]
     assert await t is True and await t2 is True
     assert interjections.take_all("telegram:2") == []
 
@@ -184,6 +184,7 @@ async def test_session_try_interject_rules():
     session = ChannelSession.__new__(ChannelSession)
     session.agent = SimpleNamespace(settings=MagicMock())
     session.agent.settings.interjections_enabled = True
+    session.agent.settings.interjection_mode_resolved = lambda: "pause"
     session.agent.settings.is_owner_channel = lambda ch: ch == CH
     session.signals = SimpleNamespace(last_user_message_at=0)
     session._log_inbound = AsyncMock()
@@ -192,10 +193,10 @@ async def test_session_try_interject_rules():
     assert await session.try_interject(CH, "/stop") is False  # commands go their own way
     task = asyncio.create_task(session.try_interject(CH, "hi"))
     await asyncio.sleep(0)
-    assert interjections.take_all(CH) == ["hi"]
+    assert [n.text for n in interjections.take_all(CH)] == ["hi"]
     assert await task is True
     session._log_inbound.assert_awaited_once()
-    session.agent.settings.interjections_enabled = False
+    session.agent.settings.interjection_mode_resolved = lambda: "off"
     assert await session.try_interject(CH, "hi") is False
 
 
@@ -226,3 +227,110 @@ async def test_telegram_text_mid_task_goes_to_the_running_turn():
     await gw._in_background(gw.on_text)(update, None)
     await asyncio.sleep(0.01)
     assert ran == ["how's it going?"]
+
+
+# --- parallel mode: she replies while the task keeps going -----------------
+
+
+def _session(side_reply):
+    session = ChannelSession.__new__(ChannelSession)
+    settings = MagicMock()
+    settings.interjections_enabled = True
+    settings.interjection_mode_resolved = lambda: "parallel"
+    settings.is_owner_channel = lambda ch: ch == CH
+    settings.voice_reply_default = False
+    session.agent = SimpleNamespace(settings=settings, side_reply=side_reply)
+    session.signals = SimpleNamespace(last_user_message_at=0)
+    session._log_inbound = AsyncMock()
+    session._side_locks = {}
+    session._chat_logger = None
+    session._logger = lambda: None
+    session.voice_enabled = lambda *a: False
+    return session
+
+
+@pytest.mark.asyncio
+async def test_parallel_reply_is_sent_at_once_and_the_task_hears_it(monkeypatch):
+    from ophelia.channels import humanize
+
+    monkeypatch.setattr(humanize, "enabled", lambda s: False)
+    session = _session(AsyncMock(return_value="ante 3 and climbing, you?"))
+    sent: list[str] = []
+
+    async def reply(t):
+        sent.append(t)
+
+    interjections.open_for(CH)
+    assert await session.try_interject(CH, "how's it going?", reply=reply) is True
+    assert sent == ["ante 3 and climbing, you?"]  # no waiting on the task
+    notes = interjections.take_all(CH)
+    assert [(n.text, n.reply) for n in notes] == [("how's it going?", "ante 3 and climbing, you?")]
+
+
+@pytest.mark.asyncio
+async def test_parallel_falls_back_to_pause_when_reply_fails():
+    session = _session(AsyncMock(side_effect=RuntimeError("provider down")))
+    interjections.open_for(CH)
+    task = asyncio.create_task(session.try_interject(CH, "hey", reply=AsyncMock()))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    notes = interjections.take_all(CH)
+    assert [(n.text, n.reply) for n in notes] == [("hey", "")]  # the task answers it
+    assert await task is True
+
+
+@pytest.mark.asyncio
+async def test_task_keeps_going_after_an_answered_message():
+    agent = _agent()
+    agent.tools._message_sender = AsyncMock()
+    agent.tools.dispatch = AsyncMock(return_value="ok")
+    seen = []
+    replies = iter([
+        _choice(tool_calls=[_tc("phone_tap", '{"element": 1}')]),
+        _choice(tool_calls=[_tc("phone_tap", '{"element": 2}')]),
+        _choice(content="won!"),
+    ])
+
+    async def call(**kw):
+        seen.append(list(kw["messages"]))
+        if len(seen) == 1:  # he messages during the first step; mouth answers
+            interjections.post_answered(CH, "how's it going?", "good, ante 3")
+        return next(replies)
+
+    agent._call_with_fallback = AsyncMock(side_effect=call)
+    token = al._INTERJECT_CHANNEL.set(CH)
+    interjections.open_for(CH)
+    interjections.set_task(CH, "play balatro")
+    try:
+        out = await agent._complete([{"role": "user", "content": "play balatro"}],
+                                    store_channel=CH, role="chat")
+        status = interjections.status(CH)
+    finally:
+        interjections.close_for(CH)
+        al._INTERJECT_CHANNEL.reset(token)
+    assert out == "won!"
+    assert seen[1][-3:] == [
+        {"role": "user", "content": "how's it going?"},
+        {"role": "assistant", "content": "good, ante 3"},
+        {"role": "system", "content": al._ANSWERED_NOTE},
+    ]
+    # No pause: the step after the heads-up is the next game move, not a reply.
+    assert agent.tools.dispatch.await_args_list[1].args[0] == "phone_tap"
+    assert "You were asked: play balatro" in status and "phone_tap" in status
+
+
+@pytest.mark.asyncio
+async def test_side_reply_knows_what_shes_doing():
+    agent = _agent()
+    agent._build_messages = AsyncMock(return_value=[{"role": "user", "content": "x"}])
+    agent._call_with_fallback = AsyncMock(return_value=_choice(content="mid-run, going well"))
+    interjections.open_for(CH)
+    interjections.set_task(CH, "play balatro")
+    interjections.note_step(CH, "phone_tap(3) -> ok")
+    out = await agent.side_reply(CH, "how's it going?")
+    assert out == "mid-run, going well"
+    extra = agent._build_messages.await_args.kwargs["system_extra"]
+    assert "play balatro" in extra and "phone_tap(3)" in extra
+    assert agent._call_with_fallback.await_args.kwargs["tools"] is None  # mouth only
+    kinds = [c.kwargs.get("metadata") for c in agent._store.await_args_list]
+    assert kinds == [{"type": "interjection"}, {"type": "interjection_reply"}]

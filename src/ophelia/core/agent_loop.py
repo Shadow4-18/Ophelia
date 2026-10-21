@@ -70,6 +70,21 @@ _RESUME_NUDGE = (
     "left off. If he asked you to stop or change plans, wrap up with a short "
     "final reply instead."
 )
+# Parallel mode: she already answered (see side_reply); the task just hears it.
+_ANSWERED_NOTE = (
+    "Your owner messaged you while you were doing this, and you already "
+    "answered him (above). Keep going with the task. Only change course if "
+    "he asked you to stop, wait, or do something; then do that now."
+)
+# Written while the task keeps running: her mouth, not her hands.
+_SIDE_REPLY_PROMPT = """# Right now
+You're in the middle of something and you're still doing it while you chat:
+{status}
+
+Your owner just messaged you. Reply like you would while still busy with it,
+without stopping. Talk about what you're doing if it fits. You can't use tools
+in this reply; if he asks for something that needs them, or to stop or switch,
+just say so naturally. You'll see his message and act on it right after."""
 # Extra steps granted per interjection so answering doesn't eat the task's budget.
 _INTERJECTION_BONUS_ROUNDS = 2
 
@@ -894,6 +909,7 @@ class AgentLoop:
         token = _INTERJECT_CHANNEL.set(channel if interject else "")
         if interject:
             interjections.open_for(channel)
+            interjections.set_task(channel, user_text)
         try:
             text = await self._complete(
                 messages, store_channel=channel, role="chat", is_owner=is_owner
@@ -1271,7 +1287,15 @@ class AgentLoop:
                 break
             rounds_used = round_idx + 1
             if interject_here:
-                waiting = interjections.take_all(store_channel)
+                notes = interjections.take_all(store_channel)
+                answered = [n for n in notes if n.reply]
+                waiting = [n.text for n in notes if not n.reply]
+                for n in answered:  # parallel mode: stored by side_reply
+                    messages.append({"role": "user", "content": n.text})
+                    messages.append({"role": "assistant", "content": n.reply})
+                if answered:
+                    messages.append({"role": "system", "content": _ANSWERED_NOTE})
+                    bonus_rounds += 1
                 if waiting:
                     for said in waiting:
                         await self._store(store_channel, "user", said, is_owner=is_owner,
@@ -1280,8 +1304,9 @@ class AgentLoop:
                     messages.append({"role": "system", "content": _INTERJECTION_NUDGE})
                     answering = True
                     bonus_rounds += _INTERJECTION_BONUS_ROUNDS
-                    log.info("interjection.taken", channel=store_channel,
-                             round=round_idx + 1, count=len(waiting))
+                if notes:
+                    log.info("interjection.taken", channel=store_channel, round=round_idx + 1,
+                             answered=len(answered), waiting=len(waiting))
             try:
                 response = await self._call_with_fallback(
                     role=role,
@@ -1356,6 +1381,8 @@ class AgentLoop:
                 # (often empty) synthesis — looking like the turn died after
                 # the text.
                 await self._deliver_mid_turn_preamble(content_text)
+                if interject_here and content_text.strip():
+                    interjections.note_step(store_channel, f'you said: "{content_text.strip()}"')
                 if answering and content_text.strip():
                     answering = False
                     await self._store(store_channel, "assistant", content_text.strip(),
@@ -1413,6 +1440,10 @@ class AgentLoop:
                             await self._record_interjection_reply(
                                 store_channel, arguments, is_owner=is_owner
                             )
+                    if interject_here:
+                        interjections.note_step(
+                            store_channel, f"{name}({arguments[:80]}) -> {str(result)[:140]}"
+                        )
                     messages.append(
                         {
                             "role": "tool",
@@ -1630,6 +1661,41 @@ class AgentLoop:
             if isinstance(name, str) and name:
                 names.add(name)
         return names or None
+
+    async def side_reply(self, channel: str, text: str) -> str:
+        """Answer the owner while a task keeps running on ``channel``: one
+        tool-less reply that knows what she's doing (interjections.status).
+        Stores both sides in history. Returns '' when there's nothing to say."""
+        messages = await self._build_messages(
+            channel,
+            text,
+            system_extra=_SIDE_REPLY_PROMPT.format(status=interjections.status(channel)),
+            is_owner=True,
+        )
+        role = "chat"
+        provider = self.stack.name(role)  # type: ignore[arg-type]
+        response = await self._call_with_fallback(
+            role=role,
+            primary_provider=provider,
+            primary_model=self._model(role),
+            primary_client=await self._client(role),
+            messages=messages,
+            tools=None,
+            channel=channel,
+            round_idx=0,
+            gate=get_model_gate(),
+        )
+        from ophelia.channels.proactive_filter import strip_consciousness_tick_leak
+
+        reply = (response.choices[0].message.content or "").strip()
+        reply = (strip_consciousness_tick_leak(reply) or "").strip()
+        if not reply:
+            return ""
+        await self._store(channel, "user", text, is_owner=True, metadata={"type": "interjection"})
+        await self._store(channel, "assistant", reply, is_owner=True,
+                          metadata={"type": "interjection_reply"})
+        log.info("interjection.side_reply", channel=channel, chars=len(reply))
+        return reply
 
     async def _record_interjection_reply(
         self, channel: str, arguments: str, *, is_owner: bool

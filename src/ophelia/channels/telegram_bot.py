@@ -464,7 +464,10 @@ class TelegramGateway:
             return False
         channel = f"telegram:{user.id}"
         return await self.session.try_interject(
-            channel, update.message.text.strip(), log_context=self._telegram_log_context(user)
+            channel,
+            update.message.text.strip(),
+            reply=lambda t: self._send_reply(update, None, channel, t),
+            log_context=self._telegram_log_context(user),
         )
 
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

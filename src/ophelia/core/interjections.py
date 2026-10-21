@@ -3,9 +3,15 @@
 A long chat turn (playing a game, a chain of tool calls) used to hold every
 new owner message until it finished, so a quick "how's it going?" got its
 answer minutes later, after the whole task. Now the running turn opens a
-mailbox for its channel; a new owner message is posted there instead of
-queueing. Between steps the turn picks it up, she answers right away, and
-then carries on where she left off.
+mailbox for its channel and keeps a short status of what it's doing.
+
+parallel mode: the message is answered at once by a separate tool-less
+reply that knows the status (her mouth), while the task keeps going (her
+hands). The exchange is posted to the mailbox as a heads-up, so the task
+acts on it only if he asked for something.
+
+pause mode: the message itself is posted; between steps the task picks it
+up, she answers, then carries on where she left off.
 
 If the turn ends before it gets to a posted message, the message is handed
 back and handled as a normal turn, so nothing is lost.
@@ -14,6 +20,7 @@ back and handled as a normal turn, so nothing is lost.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 
 import structlog
@@ -28,6 +35,7 @@ _POLL_S = 0.25
 @dataclass
 class Note:
     text: str
+    reply: str = ""  # set when she already answered it (parallel mode)
     taken: bool = False
     withdrawn: bool = False
     _event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -50,6 +58,8 @@ class Note:
 
 _open: dict[str, int] = {}  # channel -> running turns accepting messages
 _mail: dict[str, list[Note]] = {}
+_task: dict[str, str] = {}  # channel -> what she was asked to do
+_steps: dict[str, deque] = {}  # channel -> her latest steps, newest last
 
 
 def open_for(channel: str) -> None:
@@ -63,6 +73,8 @@ def close_for(channel: str) -> None:
         # Anything still here was never taken; its sender sees the turn
         # closed and runs it normally.
         _mail.pop(channel, None)
+        _task.pop(channel, None)
+        _steps.pop(channel, None)
     else:
         _open[channel] = n
 
@@ -71,10 +83,39 @@ def accepting(channel: str) -> bool:
     return _open.get(channel, 0) > 0
 
 
-def take_all(channel: str) -> list[str]:
+def take_all(channel: str) -> list[Note]:
     """Messages waiting for the running turn on ``channel`` (claimed)."""
     notes = _mail.pop(channel, [])
-    return [n.text for n in notes if n.take()]
+    return [n for n in notes if n.take()]
+
+
+def set_task(channel: str, request: str) -> None:
+    _task[channel] = " ".join((request or "").split())[:300]
+
+
+def note_step(channel: str, step: str) -> None:
+    if accepting(channel):
+        _steps.setdefault(channel, deque(maxlen=6)).append(" ".join(step.split())[:240])
+
+
+def status(channel: str) -> str:
+    """What she's in the middle of, for a reply written while it runs."""
+    lines = []
+    if _task.get(channel):
+        lines.append(f"You were asked: {_task[channel]}")
+    if _steps.get(channel):
+        lines.append("Your latest steps (newest last):")
+        lines += [f"- {s}" for s in _steps[channel]]
+    return "\n".join(lines) or "(just getting started)"
+
+
+def post_answered(channel: str, text: str, reply: str) -> bool:
+    """Tell the running task about an exchange she already had (parallel
+    mode). Fire-and-forget; False when no task is running any more."""
+    if not accepting(channel):
+        return False
+    _mail.setdefault(channel, []).append(Note(text, reply=reply))
+    return True
 
 
 async def offer(channel: str, text: str) -> bool:
@@ -101,3 +142,5 @@ def reset() -> None:
     """For tests."""
     _open.clear()
     _mail.clear()
+    _task.clear()
+    _steps.clear()
