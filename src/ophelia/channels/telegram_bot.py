@@ -1251,7 +1251,16 @@ class TelegramGateway:
         if not token:
             raise RuntimeError("Set TELEGRAM_BOT_TOKEN in ~/.ophelia/.env")
 
-        app = Application.builder().token(token).build()
+        # The library's few-second defaults are too short to upload a photo
+        # over a phone connection: the upload timed out, she resent it, and
+        # the first copy had already arrived (duplicates).
+        builder = (
+            Application.builder().token(token)
+            .connect_timeout(20).read_timeout(30).write_timeout(60).pool_timeout(30)
+        )
+        if hasattr(builder, "media_write_timeout"):
+            builder = builder.media_write_timeout(180)
+        app = builder.build()
         app.add_error_handler(self._on_error)
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_help))

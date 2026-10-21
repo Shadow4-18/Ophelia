@@ -66,3 +66,20 @@ async def test_chat_log_media_is_hard_linked(tmp_path):
     await logger.log(channel="telegram:1", direction="out", media_path=src, media_kind="photo")
     (copy,) = list((tmp_path / "logs" / "media").iterdir())
     assert os.path.samefile(copy, src)  # same inode: no extra space used
+
+
+@pytest.mark.asyncio
+async def test_chat_log_copies_media_when_os_has_no_link(tmp_path, monkeypatch):
+    """Android's Python has no os.link; logging an image used to fail there."""
+    import os
+
+    from ophelia.channels.chat_log import ChatLogger
+
+    monkeypatch.delattr(os, "link")
+    src = tmp_path / "img.jpg"
+    src.write_bytes(b"x" * 200)
+    logger = ChatLogger(db_path=tmp_path / "log.db", media_dir=tmp_path / "media")
+    await logger.log(channel="telegram:1", direction="out", text="pic", media_path=src,
+                     media_kind="photo", sender_id="1", is_owner=True, role="media")
+    copies = [p for p in (tmp_path / "media").rglob("*") if p.is_file()]
+    assert len(copies) == 1 and copies[0].read_bytes() == src.read_bytes()
