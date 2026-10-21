@@ -25,7 +25,18 @@ class Goal:
         if not self.enabled:
             return False
         elapsed = time.time() - self.last_done_at
-        return elapsed >= self.cadence_hours * 3600
+        return elapsed >= self.cadence_hours * 3600 * self._stretch()
+
+    def _stretch(self) -> float:
+        """This cycle's own timing: somewhere between 0.75x and 1.5x the
+        cadence (most near 1x), fixed per goal and cycle, so 'every 8h' isn't
+        clockwork. Deterministic, so the due state doesn't flicker."""
+        import hashlib
+
+        seed = hashlib.sha256(f"{self.id}:{int(self.last_done_at)}".encode()).digest()
+        u = (seed[0] * 256 + seed[1]) / 65535  # 0..1
+        v = (seed[2] * 256 + seed[3]) / 65535
+        return 0.75 + 0.75 * ((u + v) / 2) ** 1.3
 
     def mark_done(self) -> None:
         self.last_done_at = time.time()
@@ -157,7 +168,11 @@ class GoalStore:
             ]
             if tagged:
                 due = tagged
-        return max(due, key=lambda g: g.priority)
+        # Weighted, not always the top priority: what she feels like doing
+        # varies, the important things still come up most.
+        import random
+
+        return random.choices(due, weights=[max(0.05, g.priority) ** 2 for g in due])[0]
 
     def get(self, goal_id: str) -> Goal | None:
         gid = goal_id.strip().lower()

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+from collections import deque
 
 import structlog
 
@@ -14,6 +16,23 @@ from ophelia.mind.initiative import InitiativeGovernor
 from ophelia.mind.life_context import LifeContext
 
 log = structlog.get_logger()
+
+# Don't comment on a screen she already remarked on within this long, and don't
+# say something close to one of her last few glance remarks.
+_SAME_SCREEN_S = 3 * 3600
+_SCREEN_SIMILAR = 0.6
+_REMARK_SIMILAR = 0.5
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9']{3,}", (text or "").lower()))
+
+
+def similarity(a: str, b: str) -> float:
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
 
 
 class AmbientCommentaryLoop:
@@ -37,6 +56,8 @@ class AmbientCommentaryLoop:
         self.notify = notify
         self._running = False
         self._last_at = 0.0
+        # (when, what the screen looked like, what she said), newest last.
+        self._recent: deque[tuple[float, str, str]] = deque(maxlen=8)
 
     async def run(self) -> None:
         if not self.vision or not self.settings.ambient_commentary_enabled:
@@ -62,7 +83,19 @@ class AmbientCommentaryLoop:
             return
         if not seen or len(seen) < 20:
             return
+        now = time.time()
+        if any(now - ts < _SAME_SCREEN_S and similarity(seen, screen) >= _SCREEN_SIMILAR
+               for ts, screen, _ in self._recent):
+            log.debug("ambient_commentary.same_screen")
+            return
         channel = self.settings.primary_user_channel() or "consciousness"
+        from ophelia.mind import quiet
+
+        if quiet.active(channel) is not None:
+            return  # she's not talking to him right now
+        said = [remark for _, _, remark in self._recent]
+        already = ("\nYou already said lately (don't repeat these or their idea): "
+                   + " / ".join(f'"{r}"' for r in said[-4:])) if said else ""
         try:
             with self.agent.autonomous():
                 reply = await self.agent.run_turn(
@@ -70,7 +103,7 @@ class AmbientCommentaryLoop:
                     f"You just glanced at your phone screen:\n{seen[:2000]}\n\n"
                     "If something catches your eye and you'd actually nudge a friend "
                     "about it, say one short line. Otherwise just let it go — no "
-                    "need to narrate or acknowledge boring UI. Silence is fine.",
+                    "need to narrate or acknowledge boring UI. Silence is fine." + already,
                     system_extra=(
                         self.life.to_context_block()
                         + "\n\nDon't describe what's on screen. Only speak if it's "
@@ -86,6 +119,9 @@ class AmbientCommentaryLoop:
         # genuine asides pass through.
         if not text or text.upper() == "SKIP" or len(text) > 200:
             return
+        if any(similarity(text, r) >= _REMARK_SIMILAR for r in said):
+            log.info("ambient_commentary.repeat_dropped", preview=text[:80])
+            return
         allowed, reason = self.governor.allow_outreach()
         if not allowed:
             return
@@ -94,6 +130,7 @@ class AmbientCommentaryLoop:
             await self.agent.record_spoken(channel, text, kind="glance")
             self.governor.record_outreach("ambient_commentary", 0.5, text)
             self._last_at = time.time()
+            self._recent.append((self._last_at, seen[:1500], text))
             log.info("ambient_commentary.sent", preview=text[:80])
         except Exception as e:
             log.warning("ambient_commentary.send_failed", error=str(e))

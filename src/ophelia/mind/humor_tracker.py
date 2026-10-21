@@ -45,6 +45,50 @@ _JOKE_HINTS = re.compile(
 )
 # Sticker / reaction signal in inbound. Telegram stickers arrive as a special
 # message kind; an emoji-only text reply is also a strong humor signal.
+_STOP = frozenset(
+    "that this with what your you're youre just like have from they them then there "
+    "about would could should been were when where which while into okay yeah".split()
+)
+
+
+def _bit_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']{4,}", (text or "").lower()) if w not in _STOP}
+
+
+def group_bits(events: list[dict], *, min_overlap: float = 0.34) -> list[dict]:
+    """Group jokes that are the same running bit told different ways (shared
+    distinctive words), so a bit that keeps landing is recognised as one.
+    Returns [{outbound, count, avg_score, examples}] best first."""
+    groups: list[dict] = []
+    for ev in events:
+        words = _bit_words(ev.get("outbound", ""))
+        if not words:
+            continue
+        home = None
+        for g in groups:
+            overlap = len(words & g["words"]) / max(1, min(len(words), len(g["words"])))
+            if overlap >= min_overlap:
+                home = g
+                break
+        if home is None:
+            home = {"words": set(words), "events": []}
+            groups.append(home)
+        home["events"].append(ev)
+        home["words"] |= words
+    out = []
+    for g in groups:
+        evs = g["events"]
+        best = max(evs, key=lambda e: e.get("score", 0.0))
+        out.append({
+            "outbound": best["outbound"],
+            "count": len(evs),
+            "avg_score": sum(e.get("score", 0.0) for e in evs) / len(evs),
+            "examples": [e["outbound"] for e in evs[:3]],
+        })
+    out.sort(key=lambda b: (b["count"] >= 2, b["avg_score"], b["count"]), reverse=True)
+    return out
+
+
 def _is_emoji_only(text: str) -> bool:
     """True if `text` is short and contains only emoji / punctuation / whitespace."""
     if not text or len(text) > 12:
@@ -190,7 +234,7 @@ class HumorTracker:
         """Tier B #8: when a bit lands repeatedly (>=3 events, avg >= 0.5),
         auto-feed save_lesson so durable comedic instincts enter memory."""
         try:
-            top = await self.memory.humor_top_bits(limit=8)
+            top = group_bits(await self.memory.humor_scored_events())[:8]
         except Exception as e:
             log.debug("humor.top_bits_failed", error=str(e))
             return
@@ -229,5 +273,13 @@ class HumorTracker:
             lines.append(f"- [{tag}] you: {h['outbound'][:100]}")
             if h.get("user_reply"):
                 lines.append(f"  them: {h['user_reply'][:80]}")
+        try:
+            running = [b for b in group_bits(await self.memory.humor_scored_events())
+                       if b["count"] >= 2 and b["avg_score"] >= 0.5][:2]
+        except Exception:
+            running = []
+        for b in running:
+            lines.append(f"- running bit with him (landed {b['count']}x): {b['outbound'][:100]}"
+                         " - call back to it now and then, with a new twist")
         lines.append("Lean into what landed; avoid repeating what flopped.")
         return "\n".join(lines)

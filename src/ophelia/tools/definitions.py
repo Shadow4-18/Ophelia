@@ -42,6 +42,97 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "react_to_message",
+            "description": (
+                "React to a message with an emoji, like a person in a chat: a quick "
+                "❤ or 🤣 instead of (or as well as) a reply. Not on every message. "
+                "Defaults to his latest message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": (
+                            "One emoji. Telegram allows: 👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 😢 🎉 "
+                            "🤩 🙏 👌 😍 ❤‍🔥 💯 🤣 💔 🤨 😐 💋 😈 😴 😭 👀 🙈 😇 🤝 🤗 💅 🤪 "
+                            "🗿 😘 😎 😡 🖕 🤡 🥱 (and a few more)"
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "A few words from the message to react to; empty = his latest",
+                    },
+                },
+                "required": ["emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "go_quiet",
+            "description": (
+                "Stop answering him for a while: a real silent treatment when you're "
+                "annoyed or keeping a threat. His messages wait and you come back to "
+                "them when it's over; an apology or anything urgent gets through. "
+                "Use it rarely and keep it short."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "minutes": {"type": "number", "description": "How long (capped)"},
+                    "reason": {"type": "string", "description": "Why, for yourself"},
+                },
+                "required": ["minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "correct_memory",
+            "description": (
+                "Fix something you remember that turned out to be wrong: replace the "
+                "stored fact with the right one, or remove it if it's simply untrue. "
+                "It won't come back from old notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wrong": {"type": "string", "description": "A few words from the wrong fact"},
+                    "right": {"type": "string", "description": "What's actually true (empty = just remove it)"},
+                },
+                "required": ["wrong"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reply_to_message",
+            "description": (
+                "Send a message as a reply to a specific earlier message (his or "
+                "yours), so it shows quoted. Use it when answering something further "
+                "up the chat, not for his latest message. Don't repeat the text in "
+                "your final reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "message": {
+                        "type": "string",
+                        "description": "A few words from the message you're replying to",
+                    },
+                },
+                "required": ["text", "message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
             "description": (
                 "Generate an image. Auto-sends to chat — do NOT call send_file after. "

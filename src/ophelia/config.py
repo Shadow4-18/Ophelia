@@ -421,6 +421,18 @@ class Settings(BaseSettings):
     )
 
     # Agentic tool loop (per turn)
+    human_pacing: bool = Field(
+        default=True,
+        alias="OPHELIA_HUMAN_PACING",
+        description="Show typing for about as long as a reply takes to write, pause "
+        "between split messages, and take a moment when just woken",
+    )
+    quiet_max_minutes: float = Field(
+        default=30.0,
+        alias="OPHELIA_QUIET_MAX_MINUTES",
+        description="Longest she can go quiet on you (go_quiet); apologies and urgent "
+        "messages always get through",
+    )
     interjection_mode: str = Field(
         default="parallel",
         alias="OPHELIA_INTERJECTIONS",

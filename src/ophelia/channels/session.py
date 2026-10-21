@@ -10,6 +10,7 @@ from pathlib import Path
 import structlog
 
 from ophelia.android.games import GameStore
+from ophelia.channels.chat_actions import ChatActions
 from ophelia.channels.chat_log import ChatLogger
 from ophelia.channels.media_reply import artifact_paths_in_text
 from ophelia.channels.message_split import split_messages
@@ -152,6 +153,90 @@ class ChannelSession:
     def set_voice(self, channel: str, enabled: bool) -> None:
         self._voice_reply[channel] = enabled
 
+    async def _pace(self, chunk: str, *, first: bool, elapsed: float,
+                    actions: ChatActions | None) -> None:
+        """Wait like a person typing (channels/pacing.py), showing typing."""
+        from ophelia.channels import pacing
+
+        settings = self.agent.settings
+        if not pacing.enabled(settings):
+            return
+        wait = pacing.typing_seconds(chunk, first=first, elapsed=elapsed)
+        if first:
+            wait += pacing.sleepy_seconds(settings)
+        typing = actions.typing if actions is not None else None
+        end = time.time() + wait
+        while (left := end - time.time()) > 0.05:
+            if typing is not None:
+                try:
+                    await typing()
+                except Exception:
+                    typing = None
+            await asyncio.sleep(min(left, 4.5))
+
+    async def _hold_while_quiet(self, channel: str, text: str, q, *, reply: ReplyFn,
+                                media_reply: MediaReplyFn | None, log_context: dict | None,
+                                actions: ChatActions | None) -> None:
+        """She's giving him the silent treatment: keep his message (history,
+        log) without answering, and come back to it when the time is up."""
+        q.waiting.append(text)
+        q.resume = {"reply": reply, "media_reply": media_reply, "log_context": log_context,
+                    "actions": actions}
+        self.signals.last_user_message_at = time.time()
+        await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+        try:
+            await self.agent.memory.append_message(channel, "user", text,
+                                                   metadata={"type": "while_quiet"})
+        except Exception as e:
+            log.debug("quiet.store_failed", error=str(e))
+        log.info("quiet.holding", channel=channel, waiting=len(q.waiting))
+        if not q.comeback_scheduled:
+            q.comeback_scheduled = True
+            asyncio.create_task(self._comeback(channel, q))
+
+    async def _comeback(self, channel: str, q) -> None:
+        from ophelia.mind import quiet
+
+        await asyncio.sleep(max(0.0, q.until - time.time()))
+        if quiet.active(channel) is not None or quiet._quiet.get(channel) is not q:
+            return  # extended, ended early or replaced
+        quiet.end(channel)
+        plumbing = q.resume
+        if not q.waiting or not plumbing.get("reply"):
+            return
+        await self.handle_chat(channel, quiet.comeback_note(q), plumbing["reply"],
+                               media_reply=plumbing.get("media_reply"),
+                               log_context=plumbing.get("log_context"),
+                               actions=plumbing.get("actions"))
+
+    async def note_reaction(self, channel: str, note: str, emoji: str) -> None:
+        """He reacted to a message: it goes in their history (she sees it next
+        time she replies, like noticing a ❤ on your message) and counts as
+        feedback for her humor. No reply: people don't answer reactions."""
+        settings = self.agent.settings
+        is_owner = settings.is_owner_channel(channel)
+        try:
+            if is_owner:
+                await self.agent.memory.append_message(
+                    channel, "user", note, metadata={"type": "reaction_received"})
+            else:
+                await self.agent.memory.append_guest_message(channel, "user", note)
+        except Exception as e:
+            log.debug("reaction.note_failed", error=str(e))
+        if is_owner and getattr(self.agent, "humor", None):
+            try:
+                await self.agent.humor.note_sticker_reaction(emoji)
+            except Exception as e:
+                log.debug("reaction.humor_failed", error=str(e))
+        logger = self._logger()
+        if logger:
+            try:
+                await logger.log(channel=channel, direction="in", text=note,
+                                 sender_id=_sender_id(channel), is_owner=is_owner, role="user")
+            except Exception:
+                pass
+        log.info("reaction.received", channel=channel, emoji=emoji)
+
     async def _needs_action(self, channel: str, text: str, *, is_owner: bool) -> bool:
         """The tool-less reaction path can only talk. Skip it when he's asking
         her to act, or her last line promised something (mind/follow_through)."""
@@ -290,6 +375,7 @@ class ChannelSession:
         *,
         media_reply: MediaReplyFn | None = None,
         log_context: dict | None = None,
+        actions: ChatActions | None = None,
     ) -> None:
         settings = self.agent.settings
         is_owner = settings.is_owner_channel(channel)
@@ -298,11 +384,29 @@ class ChannelSession:
             from ophelia.core import interrupts
 
             stopped = interrupts.stop_all(except_task=asyncio.current_task())
+            from ophelia.mind import quiet
+
+            if quiet.end_all():
+                stopped.append("silent treatment")
             await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
                         else "Nothing was running.")
             return
+        if is_owner:
+            from ophelia.mind import quiet
+
+            q = quiet.active(channel)
+            if q is not None:
+                if not quiet.breaks_silence(text):
+                    await self._hold_while_quiet(channel, text, q, reply=reply,
+                                                 media_reply=media_reply,
+                                                 log_context=log_context, actions=actions)
+                    return
+                quiet.end(channel)
+                text = f"{quiet.comeback_note(q, broken_by=text)}\n{text}"
         if await self.try_interject(channel, text, reply=reply, log_context=log_context):
             return
+        turn_started = time.time()
+        sent_count = [0]
         sender_id = _sender_id(channel)
         logger = self._logger()
         self._current_log_context = log_context
@@ -312,6 +416,7 @@ class ChannelSession:
         await self.signals.set_agent_thinking(True)
         self.agent.tools.begin_turn_artifacts()
         self.agent.tools.set_owner(is_owner)
+        self.agent.tools.set_chat_actions(actions)
         # Record who's speaking so guest-self-only tools (e.g. set_guest_name)
         # can verify the sender matches the target.
         self.agent.tools._current_sender_channel = channel
@@ -365,6 +470,9 @@ class ChannelSession:
                 chunk = humanize.humanize(chunk)
                 if not chunk:
                     return
+            await self._pace(chunk, first=sent_count[0] == 0,
+                             elapsed=time.time() - turn_started, actions=actions)
+            sent_count[0] += 1
             await reply(chunk)
             if logger:
                 out_entry = {

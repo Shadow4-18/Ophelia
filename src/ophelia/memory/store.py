@@ -738,6 +738,22 @@ class MemoryStore:
             )
             await db.commit()
 
+    async def humor_scored_events(self, limit: int = 300) -> list[dict]:
+        """Recent humor events he actually reacted to (newest first)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT outbound, user_reply, score, created_at FROM humor_events
+                WHERE user_reply IS NOT NULL AND score IS NOT NULL
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+        return [{"outbound": r["outbound"], "user_reply": r["user_reply"],
+                 "score": float(r["score"] or 0.0), "created_at": r["created_at"]} for r in rows]
+
     async def humor_top_bits(self, *, kind: str | None = None, limit: int = 6) -> list[dict]:
         """Bits that landed repeatedly — grouped by outbound text, average score.
 
