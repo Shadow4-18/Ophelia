@@ -84,6 +84,29 @@ def _site_headers(settings: Settings) -> dict[str, str]:
     return _auth_headers(settings)
 
 
+async def _site_get(http: httpx.AsyncClient, url: str, settings: Settings,
+                    params: dict[str, Any] | None = None) -> httpx.Response:
+    """GET on the civitai.com REST API. Some valid keys get 403 there when
+    sent as a Bearer header but work as ?token= (the orchestration API takes
+    the header fine); public endpoints also work with no key at all. Try
+    those in turn so a model search or version lookup doesn't fail on how
+    the key is sent."""
+    headers = _site_headers(settings)
+    r = await http.get(url, headers=headers, params=params)
+    key = (settings.civitai_api_key or "").strip()
+    if r.status_code not in (401, 403) or not key:
+        return r
+    plain = {k: v for k, v in headers.items() if k != "Authorization"}
+    retry = await http.get(url, headers=plain, params={**(params or {}), "token": key})
+    if retry.status_code < 400:
+        log.info("civitai.site_auth", via="token", first_status=r.status_code)
+        return retry
+    anon = await http.get(url, headers=plain, params=params)
+    if anon.status_code < 400:
+        log.info("civitai.site_auth", via="none", first_status=r.status_code)
+    return anon if anon.status_code < 400 else r
+
+
 async def search_models(
     settings: Settings,
     query: str,
@@ -119,13 +142,13 @@ async def search_models(
 
     url = f"{SITE_API}/models"
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-        r = await http.get(url, headers=_site_headers(settings), params=params)
+        r = await _site_get(http, url, settings, params)
         if r.status_code >= 400:
             log.warning(
                 "civitai.search_failed",
                 status=r.status_code,
                 body=r.text[:200],
-                url=str(r.url),
+                url=url,  # not r.url: it may carry ?token=
             )
             raise RuntimeError(
                 f"Civitai search failed HTTP {r.status_code}: {r.text[:200]}"
@@ -182,7 +205,7 @@ async def get_version(settings: Settings, version_id: int) -> CivitaiResource | 
     """Fetch a single model version (canonical air + trainedWords)."""
     url = f"{SITE_API}/model-versions/{int(version_id)}"
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
-        r = await http.get(url, headers=_site_headers(settings))
+        r = await _site_get(http, url, settings)
         if r.status_code >= 400:
             return None
         ver = r.json()
@@ -210,7 +233,7 @@ async def latest_version_air(
     used when a stored version was removed from Civitai."""
     url = f"{SITE_API}/models/{int(model_id)}"
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
-        r = await http.get(url, headers=_site_headers(settings))
+        r = await _site_get(http, url, settings)
         if r.status_code >= 400:
             return ""
         data = r.json()
