@@ -71,6 +71,25 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "correct_memory",
+            "description": (
+                "Fix something you remember that turned out to be wrong: replace the "
+                "stored fact with the right one, or remove it if it's simply untrue. "
+                "It won't come back from old notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "wrong": {"type": "string", "description": "A few words from the wrong fact"},
+                    "right": {"type": "string", "description": "What's actually true (empty = just remove it)"},
+                },
+                "required": ["wrong"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reply_to_message",
             "description": (
                 "Send a message as a reply to a specific earlier message (his or "

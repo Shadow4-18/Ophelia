@@ -20,7 +20,103 @@ log = structlog.get_logger()
 
 CURATOR_PROMPT = """Extract 0-3 durable facts worth remembering months from now.
 Skip ephemeral chit-chat. Output one fact per line, no bullets, no JSON.
-If nothing worth keeping, output exactly: NONE"""
+If the conversation shows one of the already-stored facts below is wrong or
+out of date, also output a line: FIX: <the stored fact, copied exactly> => <the corrected fact>
+(or => REMOVE if it's simply untrue). Don't repeat facts that are already stored.
+If nothing worth keeping or fixing, output exactly: NONE"""
+
+
+# --- corrections ------------------------------------------------------------
+# A fact she learns was wrong is replaced or removed, and remembered as
+# retired so it isn't re-added from a pending note or a later chat.
+
+_MEMORY_FILES = ("MEMORY.md", "USER.md")
+
+
+def _retired_path(home: Path) -> Path:
+    # Not under memories/: every .md there is loaded into her prompt.
+    return home / "data" / "memory_retired.json"
+
+
+def retired_facts(home: Path) -> list[str]:
+    import json
+
+    try:
+        data = json.loads(_retired_path(home).read_text(encoding="utf-8"))
+        return [str(x) for x in data if str(x).strip()]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _retire(home: Path, facts: list[str]) -> None:
+    import json
+
+    have = retired_facts(home)
+    for f in facts:
+        if f not in have:
+            have.append(f)
+    path = _retired_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(have[-500:], ensure_ascii=False, indent=0), encoding="utf-8")
+
+
+def is_retired(home: Path, fact: str) -> bool:
+    f = fact.strip().lower()
+    return any(f == r.lower() or (len(r) > 20 and (r.lower() in f or f in r.lower()))
+               for r in retired_facts(home))
+
+
+def matching_facts(entries: list[str], query: str) -> list[str]:
+    """Entries a description refers to: containing it, or sharing most words."""
+    import re
+
+    q = " ".join((query or "").lower().split())
+    if not q:
+        return []
+    hits = [e for e in entries if q in e.lower() or e.lower() in q]
+    if hits:
+        return hits
+    words = set(re.findall(r"\w{3,}", q))
+    if not words:
+        return []
+    scored = []
+    for e in entries:
+        have = set(re.findall(r"\w{3,}", e.lower()))
+        score = len(words & have) / len(words)
+        if score >= 0.6:
+            scored.append((score, e))
+    scored.sort(reverse=True)
+    return [e for _, e in scored[:3]]
+
+
+def correct_fact(home: Path, wrong: str, right: str = "") -> list[str]:
+    """Replace (or, with no ``right``, remove) the stored facts matching
+    ``wrong`` in MEMORY.md / USER.md. Returns the facts that were changed."""
+    mem_dir = home / "memories"
+    changed: list[str] = []
+    for name in _MEMORY_FILES:
+        path = mem_dir / name
+        if not path.is_file():
+            continue
+        entries = parse_hermes_memory_file(path.read_text(encoding="utf-8"))
+        hits = matching_facts(entries, wrong)
+        if not hits:
+            continue
+        new: list[str] = []
+        replaced = False
+        for e in entries:
+            if e in hits:
+                changed.append(e)
+                if right.strip() and not replaced:
+                    new.append(right.strip())
+                    replaced = True
+                continue
+            new.append(e)
+        path.write_text("\n§\n".join(new), encoding="utf-8")
+    if changed:
+        _retire(home, changed)
+        log.info("memory.corrected", removed=[c[:80] for c in changed], new=right[:80])
+    return changed
 
 RECONCILE_PROMPT = """You are Ophelia's memory curator. Reconcile stored facts against AUTHORITATIVE context.
 
@@ -77,6 +173,9 @@ class MemoryCurator:
         fact = fact.strip()
         if not fact or len(fact) < 8:
             return False
+        if is_retired(self.mem_file.parent.parent, fact):
+            log.info("curator.skip_retired", fact=fact[:80])
+            return False
         existing = self._existing_entries()
         if fact in existing or any(fact in e or e in fact for e in existing if len(e) > 20):
             return False
@@ -123,6 +222,10 @@ class MemoryCurator:
             if hits:
                 hermes_ctx = "\nOld sessions:\n" + "\n".join(h.content[:200] for h in hits)
 
+        known = parse_hermes_memory_file(self.mem_file.read_text(encoding="utf-8")) \
+            if self.mem_file.is_file() else []
+        stored = "\n".join(f"- {e[:200]}" for e in known[-40:]) or "(nothing yet)"
+
         stack = build_provider_stack(self.settings)
         backend = stack.backend("curator")
         model = stack.model("curator")
@@ -145,7 +248,8 @@ class MemoryCurator:
                         {"role": "system", "content": CURATOR_PROMPT},
                         {
                             "role": "user",
-                            "content": f"Recent conversation:\n{blob}\n{hermes_ctx}",
+                            "content": f"Already stored:\n{stored}\n\n"
+                            f"Recent conversation:\n{blob}\n{hermes_ctx}",
                         },
                     ],
                     max_tokens=300,
@@ -174,6 +278,14 @@ class MemoryCurator:
         count = 0
         for line in raw.splitlines():
             line = line.lstrip("-•0123456789. ").strip()
+            if line.upper().startswith("FIX:") and "=>" in line:
+                old_fact, _, new_fact = line[4:].partition("=>")
+                new_fact = new_fact.strip()
+                if new_fact.upper() == "REMOVE":
+                    new_fact = ""
+                if correct_fact(self.mem_file.parent.parent, old_fact.strip(), new_fact):
+                    count += 1
+                continue
             if line and self._append_memory(line):
                 count += 1
         await self.memory.set_fact("curator:last_run", str(time.time()))

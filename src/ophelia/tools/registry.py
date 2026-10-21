@@ -215,6 +215,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
             "react_to_message": self._react_to_message,
+            "correct_memory": self._correct_memory,
             "reply_to_message": self._reply_to_message,
             "generate_image": self._generate_image,
             "search_civitai_models": self._search_civitai_models,
@@ -296,6 +297,26 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 
     def set_chat_actions(self, actions: Any) -> None:
         self._chat_actions = actions
+
+    on_memories_changed: Callable[[], None] | None = None
+
+    async def _correct_memory(self, wrong: str, right: str = "") -> str:
+        from ophelia.config import OPHELIA_HOME
+        from ophelia.memory.curator import correct_fact
+
+        home = getattr(self.settings, "data_dir", None)
+        home = home.parent if home is not None else OPHELIA_HOME
+        changed = correct_fact(home, wrong, right)
+        if not changed:
+            return f"No stored fact matches {wrong!r}. Quote a few words from it."
+        if self.on_memories_changed is not None:
+            try:
+                self.on_memories_changed()
+            except Exception:
+                pass
+        verb = "Replaced" if right.strip() else "Removed"
+        return f"{verb}: " + " | ".join(f'"{c[:100]}"' for c in changed) + (
+            f' -> "{right.strip()[:100]}"' if right.strip() else "")
 
     async def _react_to_message(self, emoji: str, message: str = "") -> str:
         actions = self._chat_actions
