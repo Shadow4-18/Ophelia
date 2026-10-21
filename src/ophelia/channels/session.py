@@ -151,6 +151,59 @@ class ChannelSession:
     def set_voice(self, channel: str, enabled: bool) -> None:
         self._voice_reply[channel] = enabled
 
+    async def try_interject(
+        self, channel: str, text: str, *, log_context: dict | None = None
+    ) -> bool:
+        """If she's mid-task in a chat turn with the owner on ``channel``,
+        hand ``text`` to that turn (she answers between steps, then carries
+        on). True when it was taken; False means run it as a normal turn."""
+        from ophelia.core import interjections
+
+        settings = self.agent.settings
+        if not getattr(settings, "interjections_enabled", True):
+            return False
+        if not settings.is_owner_channel(channel) or text.strip().startswith("/"):
+            return False
+        if not interjections.accepting(channel):
+            return False
+        if not await interjections.offer(channel, text):
+            return False
+        self.signals.last_user_message_at = time.time()
+        await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+        return True
+
+    async def _log_inbound(
+        self, channel: str, text: str, *, is_owner: bool, log_context: dict | None
+    ) -> None:
+        """Log an inbound message (text + any referenced photo path) for owner
+        oversight. The "[User sent a photo — saved <path>]" prompt text
+        carries the inbound media filename; we capture it explicitly too."""
+        logger = self._logger()
+        if not logger:
+            return
+        settings = self.agent.settings
+        inbound_media = self._extract_inbound_media(text, settings)
+        media_kind = None
+        if inbound_media:
+            from ophelia.channels.inbound_media import classify_attachment
+
+            media_kind = classify_attachment(filename=inbound_media) or "file"
+            if media_kind == "image":
+                media_kind = "photo"  # keep chat-log convention
+        inbound_entry = {
+            "channel": channel,
+            "direction": "in",
+            "text": text,
+            "media_path": inbound_media,
+            "media_kind": media_kind,
+            "sender_id": _sender_id(channel),
+            "is_owner": is_owner,
+            "role": "user",
+            "log_context": log_context,
+        }
+        await logger.log(**{k: v for k, v in inbound_entry.items() if k != "log_context"})
+        await self._emit_log_hook(inbound_entry)
+
     async def handle_chat(
         self,
         channel: str,
@@ -169,6 +222,8 @@ class ChannelSession:
             stopped = interrupts.stop_all(except_task=asyncio.current_task())
             await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
                         else "Nothing was running.")
+            return
+        if await self.try_interject(channel, text, log_context=log_context):
             return
         sender_id = _sender_id(channel)
         logger = self._logger()
@@ -208,31 +263,7 @@ class ChannelSession:
             except Exception as e:
                 log.debug("director.chat_decide_error", error=str(e))
 
-        # Log the inbound message (text + any referenced photo path) — universal,
-        # for owner oversight. The "[User sent a photo — saved <path>]" prompt
-        # text carries the inbound media filename; we capture it explicitly too.
-        if logger:
-            inbound_media = self._extract_inbound_media(text, settings)
-            media_kind = None
-            if inbound_media:
-                from ophelia.channels.inbound_media import classify_attachment
-
-                media_kind = classify_attachment(filename=inbound_media) or "file"
-                if media_kind == "image":
-                    media_kind = "photo"  # keep chat-log convention
-            inbound_entry = {
-                "channel": channel,
-                "direction": "in",
-                "text": text,
-                "media_path": inbound_media,
-                "media_kind": media_kind,
-                "sender_id": sender_id,
-                "is_owner": is_owner,
-                "role": "user",
-                "log_context": log_context,
-            }
-            await logger.log(**{k: v for k, v in inbound_entry.items() if k != "log_context"})
-            await self._emit_log_hook(inbound_entry)
+        await self._log_inbound(channel, text, is_owner=is_owner, log_context=log_context)
 
         # Wrap the reply/media senders so every outbound chunk + media file is
         # logged too — including mid-turn send_message / preamble delivery.

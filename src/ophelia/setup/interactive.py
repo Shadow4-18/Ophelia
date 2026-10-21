@@ -439,6 +439,7 @@ def _section_ai(on_phone: bool) -> None:
             Opt("OPHELIA_CHAT_TEMPERATURE", "Chat temperature",
                 help="Blank = the provider's default. 0.7-1.0 is typical."),
             Opt("OPHELIA_MAX_TOOL_ROUNDS", "Tool rounds per turn"),
+            Opt("OPHELIA_INTERJECTIONS", "Answer messages mid-task"),
             Opt("OPHELIA_TOOL_LOOP_RESUME", "Resume long tool chains"),
             Opt("OPHELIA_TOOL_TIERS", "Send only relevant tools",
                 choices=[("auto", "auto"), ("on", "on"), ("off", "off")]),

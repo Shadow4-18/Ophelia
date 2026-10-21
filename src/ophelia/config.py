@@ -421,6 +421,12 @@ class Settings(BaseSettings):
     )
 
     # Agentic tool loop (per turn)
+    interjections_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_INTERJECTIONS",
+        description="Answer owner messages mid-task (between steps) and carry on, "
+        "instead of queueing them until the task finishes",
+    )
     max_tool_rounds: int = Field(
         default=25,
         alias="OPHELIA_MAX_TOOL_ROUNDS",

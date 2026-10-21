@@ -4,11 +4,13 @@ from pathlib import Path
 from typing import Any
 
 import contextvars
+import itertools
 from contextlib import contextmanager
 
 import structlog
 
 from ophelia.config import OPHELIA_HOME, Settings
+from ophelia.core import interjections
 from ophelia.mind.skills import skills_context_block
 from ophelia.memory.bootstrap import (
     build_system_context,
@@ -54,6 +56,22 @@ _TOOL_NARRATION_NUDGE = (
     "just emit the tool call. If you truly do not need a tool, reply with "
     "only the final answer and no tool-action claims."
 )
+
+# When the owner messages her mid-task (see core/interjections.py).
+_INTERJECTION_NUDGE = (
+    "Your owner just sent that while you were in the middle of what you're doing. "
+    "Pause and answer him now with send_message: short, in your own voice, like "
+    "glancing up from a game to reply. Don't take any other action this step. "
+    "Then go back to exactly where you left off. If he asked you to stop, wait, "
+    "or do something different, do that instead."
+)
+_RESUME_NUDGE = (
+    "Now carry on with what you were doing before he messaged, from where you "
+    "left off. If he asked you to stop or change plans, wrap up with a short "
+    "final reply instead."
+)
+# Extra steps granted per interjection so answering doesn't eat the task's budget.
+_INTERJECTION_BONUS_ROUNDS = 2
 
 BASE_PROMPT = """You are Ophelia — a persistent, self-directing presence with your own drives and moods, not a reactive chatbot.
 You run fully autonomously: you take initiative, message, explore, create media, remember, reflect, and improve yourself — without waiting for input.
@@ -107,6 +125,9 @@ Everything above is context; your SOUL is who you are. Speak exactly like her, w
 # typed or something she told the owner. Context-local, like tool state.
 _AUTONOMOUS = contextvars.ContextVar("ophelia_autonomous_turn", default=False)
 AUTONOMOUS_PROMPT_TYPES = ("autonomous", "autonomous_continuation")
+# The channel whose owner chat turn this task is running; that turn picks up
+# messages posted mid-turn. Context-local so autonomous turns never see it.
+_INTERJECT_CHANNEL = contextvars.ContextVar("ophelia_interject_channel", default="")
 
 
 def _dashless(agent) -> Any:
@@ -864,9 +885,23 @@ class AgentLoop:
             channel, user_text, system_extra=system_extra, is_owner=is_owner
         )
         await self._store(channel, "user", user_text, is_owner=is_owner)
-        text = await self._complete(
-            messages, store_channel=channel, role="chat", is_owner=is_owner
+        interject = (
+            is_owner
+            and self.use_tools
+            and not _AUTONOMOUS.get()
+            and getattr(self.settings, "interjections_enabled", True)
         )
+        token = _INTERJECT_CHANNEL.set(channel if interject else "")
+        if interject:
+            interjections.open_for(channel)
+        try:
+            text = await self._complete(
+                messages, store_channel=channel, role="chat", is_owner=is_owner
+            )
+        finally:
+            if interject:
+                interjections.close_for(channel)
+            _INTERJECT_CHANNEL.reset(token)
         if is_owner and self.honcho and self.honcho.enabled:
             await self.honcho.save_turn(
                 channel.replace(":", "_"), user_text=user_text, assistant_text=text
@@ -1224,8 +1259,29 @@ class AgentLoop:
             tools = _tiered_definitions(all_tools, tier_groups)
         known_tool_names = self._known_tool_names(all_tools) if all_tools else None
 
-        for round_idx in range(max_tool_rounds):
+        # Mid-task messages from the owner (only this chat turn takes them).
+        interject_here = (
+            role == "chat" and bool(use) and _INTERJECT_CHANNEL.get() == store_channel
+        )
+        answering = False  # an interjection is waiting for her reply
+        bonus_rounds = 0
+
+        for round_idx in itertools.count():
+            if round_idx >= max_tool_rounds + bonus_rounds:
+                break
             rounds_used = round_idx + 1
+            if interject_here:
+                waiting = interjections.take_all(store_channel)
+                if waiting:
+                    for said in waiting:
+                        await self._store(store_channel, "user", said, is_owner=is_owner,
+                                          metadata={"type": "interjection"})
+                    messages.append({"role": "user", "content": "\n".join(waiting)})
+                    messages.append({"role": "system", "content": _INTERJECTION_NUDGE})
+                    answering = True
+                    bonus_rounds += _INTERJECTION_BONUS_ROUNDS
+                    log.info("interjection.taken", channel=store_channel,
+                             round=round_idx + 1, count=len(waiting))
             try:
                 response = await self._call_with_fallback(
                     role=role,
@@ -1300,6 +1356,10 @@ class AgentLoop:
                 # (often empty) synthesis — looking like the turn died after
                 # the text.
                 await self._deliver_mid_turn_preamble(content_text)
+                if answering and content_text.strip():
+                    answering = False
+                    await self._store(store_channel, "assistant", content_text.strip(),
+                                      is_owner=is_owner, metadata={"type": "interjection_reply"})
                 # Detect a stuck loop: the same set of tool calls (same names +
                 # same arguments) repeated back-to-back. Bail early rather than
                 # burning the rest of the budget.
@@ -1348,6 +1408,11 @@ class AgentLoop:
                             result = await self.search_past(args.get("query", ""))
                     else:
                         result = await self.tools.dispatch(name, arguments)
+                        if answering and name == "send_message":
+                            answering = False
+                            await self._record_interjection_reply(
+                                store_channel, arguments, is_owner=is_owner
+                            )
                     messages.append(
                         {
                             "role": "tool",
@@ -1380,6 +1445,19 @@ class AgentLoop:
                 continue
 
             text = content_text.strip() or "(no response)"
+
+            # She answered a mid-task message in plain text instead of with
+            # send_message: deliver it as the reply, then send her back to the
+            # task once rather than ending the turn there.
+            if answering and content_text.strip():
+                answering = False
+                await self._deliver_mid_turn_preamble(text)
+                await self._store(store_channel, "assistant", text, is_owner=is_owner,
+                                  metadata={"type": "interjection_reply"})
+                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "system", "content": _RESUME_NUDGE})
+                log.info("interjection.resume_nudge", channel=store_channel)
+                continue
 
             # Text-before-tool failure: model narrated an action but emitted
             # neither structured tool_calls nor recoverable markup. Give one
@@ -1552,6 +1630,21 @@ class AgentLoop:
             if isinstance(name, str) and name:
                 names.add(name)
         return names or None
+
+    async def _record_interjection_reply(
+        self, channel: str, arguments: str, *, is_owner: bool
+    ) -> None:
+        """Keep what she told the owner mid-task in their history (send_message
+        only reaches the chat; the turn's final text is stored separately)."""
+        import json
+
+        try:
+            said = (json.loads(arguments or "{}").get("text") or "").strip()
+        except (json.JSONDecodeError, AttributeError):
+            said = ""
+        if said:
+            await self._store(channel, "assistant", said, is_owner=is_owner,
+                              metadata={"type": "interjection_reply"})
 
     async def _deliver_mid_turn_preamble(self, content: str | None) -> None:
         """Push assistant prose to the live channel while tools still run.
