@@ -84,6 +84,7 @@ class ChannelSession:
         self.hub: Any = None
         self._voice_reply: dict[str, bool] = {}
         self._chat_logger: ChatLogger | None = None
+        self._side_locks: dict[str, asyncio.Lock] = {}
         self._log_hooks: list[LogHookFn] = []
         self._current_log_context: dict | None = None
 
@@ -151,6 +152,117 @@ class ChannelSession:
     def set_voice(self, channel: str, enabled: bool) -> None:
         self._voice_reply[channel] = enabled
 
+    async def try_interject(
+        self,
+        channel: str,
+        text: str,
+        *,
+        reply: ReplyFn | None = None,
+        log_context: dict | None = None,
+    ) -> bool:
+        """If she's mid-task in a chat turn with the owner on ``channel``,
+        handle ``text`` without waiting for the task: in parallel mode she
+        answers at once while the task keeps going; in pause mode the task
+        answers between steps. True when handled; False means run it as a
+        normal turn."""
+        from ophelia.core import interjections
+
+        settings = self.agent.settings
+        mode = settings.interjection_mode_resolved() if hasattr(
+            settings, "interjection_mode_resolved") else "pause"
+        if mode == "off" or not getattr(settings, "interjections_enabled", True):
+            return False
+        if not settings.is_owner_channel(channel) or text.strip().startswith("/"):
+            return False
+        if not interjections.accepting(channel):
+            return False
+        self.signals.last_user_message_at = time.time()
+        if mode == "parallel" and reply is not None and await self._side_reply(
+            channel, text, reply, log_context=log_context
+        ):
+            return True
+        if not await interjections.offer(channel, text):
+            return False
+        await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+        return True
+
+    async def _side_reply(
+        self, channel: str, text: str, reply: ReplyFn, *, log_context: dict | None
+    ) -> bool:
+        """Parallel mode: answer now while the task runs, then let the task
+        know what was said. False (fall back to pause mode) on any failure."""
+        from ophelia.core import interjections
+
+        lock = self._side_locks.setdefault(channel, asyncio.Lock())
+        async with lock:  # one quick reply at a time, in order
+            try:
+                answer = await self.agent.side_reply(channel, text)
+            except Exception as e:
+                log.warning("interjection.side_reply_failed", error=str(e))
+                return False
+            if not answer:
+                return False
+            await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+            await self._send_logged(channel, reply, answer, log_context=log_context)
+            interjections.post_answered(channel, text, answer)
+            return True
+
+    async def _send_logged(
+        self, channel: str, reply: ReplyFn, text: str, *, log_context: dict | None
+    ) -> None:
+        """Send a reply outside a turn: humanized like turn replies, split,
+        and logged."""
+        from ophelia.channels import humanize
+        from ophelia.channels.message_split import split_messages
+
+        settings = self.agent.settings
+        voice = self.voice_enabled(channel, settings.voice_reply_default)
+        logger = self._logger()
+        for chunk in split_messages(text):
+            if humanize.enabled(settings) and not voice:
+                chunk = humanize.humanize(chunk)
+            if not chunk:
+                continue
+            await reply(chunk)
+            if logger:
+                entry = {"channel": channel, "direction": "out", "text": chunk,
+                         "sender_id": _sender_id(channel), "is_owner": True,
+                         "role": "assistant", "log_context": log_context}
+                await logger.log(**{k: v for k, v in entry.items() if k != "log_context"})
+                await self._emit_log_hook(entry)
+
+    async def _log_inbound(
+        self, channel: str, text: str, *, is_owner: bool, log_context: dict | None
+    ) -> None:
+        """Log an inbound message (text + any referenced photo path) for owner
+        oversight. The "[User sent a photo — saved <path>]" prompt text
+        carries the inbound media filename; we capture it explicitly too."""
+        logger = self._logger()
+        if not logger:
+            return
+        settings = self.agent.settings
+        inbound_media = self._extract_inbound_media(text, settings)
+        media_kind = None
+        if inbound_media:
+            from ophelia.channels.inbound_media import classify_attachment
+
+            media_kind = classify_attachment(filename=inbound_media) or "file"
+            if media_kind == "image":
+                media_kind = "photo"  # keep chat-log convention
+        inbound_entry = {
+            "channel": channel,
+            "direction": "in",
+            "text": text,
+            "media_path": inbound_media,
+            "media_kind": media_kind,
+            "sender_id": _sender_id(channel),
+            "is_owner": is_owner,
+            "role": "user",
+            "log_context": log_context,
+        }
+        await logger.log(**{k: v for k, v in inbound_entry.items() if k != "log_context"})
+        await self._emit_log_hook(inbound_entry)
+
     async def handle_chat(
         self,
         channel: str,
@@ -169,6 +281,8 @@ class ChannelSession:
             stopped = interrupts.stop_all(except_task=asyncio.current_task())
             await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
                         else "Nothing was running.")
+            return
+        if await self.try_interject(channel, text, reply=reply, log_context=log_context):
             return
         sender_id = _sender_id(channel)
         logger = self._logger()
@@ -208,31 +322,7 @@ class ChannelSession:
             except Exception as e:
                 log.debug("director.chat_decide_error", error=str(e))
 
-        # Log the inbound message (text + any referenced photo path) — universal,
-        # for owner oversight. The "[User sent a photo — saved <path>]" prompt
-        # text carries the inbound media filename; we capture it explicitly too.
-        if logger:
-            inbound_media = self._extract_inbound_media(text, settings)
-            media_kind = None
-            if inbound_media:
-                from ophelia.channels.inbound_media import classify_attachment
-
-                media_kind = classify_attachment(filename=inbound_media) or "file"
-                if media_kind == "image":
-                    media_kind = "photo"  # keep chat-log convention
-            inbound_entry = {
-                "channel": channel,
-                "direction": "in",
-                "text": text,
-                "media_path": inbound_media,
-                "media_kind": media_kind,
-                "sender_id": sender_id,
-                "is_owner": is_owner,
-                "role": "user",
-                "log_context": log_context,
-            }
-            await logger.log(**{k: v for k, v in inbound_entry.items() if k != "log_context"})
-            await self._emit_log_hook(inbound_entry)
+        await self._log_inbound(channel, text, is_owner=is_owner, log_context=log_context)
 
         # Wrap the reply/media senders so every outbound chunk + media file is
         # logged too — including mid-turn send_message / preamble delivery.

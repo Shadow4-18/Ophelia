@@ -439,6 +439,10 @@ class TelegramGateway:
 
         async def run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             async def guarded() -> None:
+                # Mid-task text from the owner goes to the running turn
+                # instead of waiting behind it (see core/interjections.py).
+                if handler == self.on_text and await self._interject(update):
+                    return
                 async with self._turn_lock:
                     try:
                         await handler(update, context)
@@ -453,6 +457,18 @@ class TelegramGateway:
             interrupts.track(asyncio.create_task(guarded()), label)
 
         return run
+
+    async def _interject(self, update: Update) -> bool:
+        user = update.effective_user
+        if not user or not update.message or not update.message.text:
+            return False
+        channel = f"telegram:{user.id}"
+        return await self.session.try_interject(
+            channel,
+            update.message.text.strip(),
+            reply=lambda t: self._send_reply(update, None, channel, t),
+            log_context=self._telegram_log_context(user),
+        )
 
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Stop whatever she's doing right now: the reply she's working on,

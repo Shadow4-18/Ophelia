@@ -421,6 +421,13 @@ class Settings(BaseSettings):
     )
 
     # Agentic tool loop (per turn)
+    interjection_mode: str = Field(
+        default="parallel",
+        alias="OPHELIA_INTERJECTIONS",
+        description="Owner messages that arrive mid-task: parallel = reply right away "
+        "while the task keeps going | pause = answer between steps, then carry on | "
+        "off = wait until the task finishes",
+    )
     max_tool_rounds: int = Field(
         default=25,
         alias="OPHELIA_MAX_TOOL_ROUNDS",
@@ -927,6 +934,18 @@ class Settings(BaseSettings):
             if not self.avatar_dir or self.avatar_dir == OPHELIA_HOME / "avatar":
                 self.avatar_dir = env_home_path / "avatar"
         return self
+
+    @property
+    def interjections_enabled(self) -> bool:
+        return self.interjection_mode_resolved() != "off"
+
+    def interjection_mode_resolved(self) -> str:
+        m = (self.interjection_mode or "").strip().lower()
+        if m in ("true", "on", "1", "yes", ""):
+            return "parallel"
+        if m in ("false", "0", "no"):
+            return "off"
+        return m if m in ("parallel", "pause", "off") else "parallel"
 
     def consciousness_on(self) -> bool:
         if self.autonomy_enabled is not None:
