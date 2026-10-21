@@ -284,3 +284,61 @@ async def test_telegram_menu_replaces_every_scope():
     assert ("BotCommandScopeChat", 111, "en") in deleted
     assert [s[0] for s in setted] == ["BotCommandScopeDefault", "BotCommandScopeAllPrivateChats"]
     assert "sessions" not in setted[0][1] and "status" in setted[0][1]
+
+
+@pytest.mark.asyncio
+async def test_aim_targets_the_uncovered_part(tmp_path):
+    """Fanned cards overlap: aiming at a card's middle hits the next card."""
+    from PIL import Image
+
+    from ophelia.android.vision import ScreenVision
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2400, 1080), (20, 20, 20)).save(buf, format="PNG")
+    shot = tmp_path / "s.png"
+    shot.write_bytes(buf.getvalue())
+    v = ScreenVision.__new__(ScreenVision)
+    v.android = SimpleNamespace(learn_display_size=lambda size: None)
+    v.capture = AsyncMock(return_value=shot)
+    v._ask = AsyncMock(side_effect=["G6", "5"])
+    await v.aim("7 of clubs")
+    for call in v._ask.await_args_list:
+        prompt = call.args[1]
+        assert "uncovered" in prompt and "center of" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_look_closer_zooms_with_the_same_cell_names(tmp_path):
+    from PIL import Image
+
+    from ophelia.android.vision import ScreenVision
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2400, 1080), (20, 20, 20)).save(buf, format="PNG")
+    shot = tmp_path / "s.png"
+    shot.write_bytes(buf.getvalue())
+    v = ScreenVision.__new__(ScreenVision)
+    v.capture = AsyncMock(return_value=shot)
+    seen = {}
+
+    async def look(png, prompt):
+        seen["size"] = Image.open(io.BytesIO(png)).size
+        seen["prompt"] = prompt
+        return "J♠ J♣ 7♣(raised) 5♣ 4♠"
+
+    v._look = look
+    out = await v.look_closer("F5:L7", "which cards are raised?")
+    assert out.endswith("(raised) 5♣ 4♠")
+    # Landscape 16x8 cells of 150x135: F5:L7 is 7x3 cells = 1050x405 px, upscaled.
+    assert seen["size"][0] > 1050 and abs(seen["size"][0] / seen["size"][1] - 1050 / 405) < 0.01
+    assert "cells F5:L7" in seen["prompt"] and "raised" in seen["prompt"]
+    assert v.last_grid[:2] == (16, 8)  # phone_tap(cell=...) works off the zoom
+    assert "isn't a cell" in await v.look_closer("hand area")
+    assert "off the grid" in await v.look_closer("F5:Z9")
+
+
+def test_shell_reports_stderr_when_stdout_is_empty():
+    from ophelia.android.shizuku import _no_output
+
+    assert _no_output("Error: no such file") == "Error: no such file"
+    assert _no_output("") == "(finished, no output)"

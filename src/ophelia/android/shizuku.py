@@ -16,6 +16,12 @@ from ophelia.platform import is_termux
 log = structlog.get_logger()
 
 
+def _no_output(err: str) -> str:
+    """Exit 0 with nothing on stdout: many commands report on stderr."""
+    err = (err or "").strip()
+    return err if err else "(finished, no output)"
+
+
 class AndroidBody:
     """Execute phone actions via Shizuku (Termux) or ADB (PC → phone)."""
 
@@ -111,7 +117,7 @@ class AndroidBody:
             timeout=45.0,
         )
         if code == 0:
-            return out or "(ok)"
+            return out or _no_output(err)
         return f"adb error {code}: {err or out}"
 
     async def shell(self, command: str) -> str:
@@ -122,18 +128,18 @@ class AndroidBody:
                 ["bash", str(self.phone_control), "shell", command]
             )
             if code == 0:
-                return out or "(ok)"
+                return out or _no_output(err)
             return f"phone_control error {code}: {err or out}"
         if self.rish_path:
             code, out, err = await self._run(
                 ["sh", str(self.rish_path), "-c", command]
             )
             if code == 0:
-                return out or "(ok)"
+                return out or _no_output(err)
             return f"rish error {code}: {err or out}"
         code, out, err = await self._run(["sh", "-c", command])
         if code == 0:
-            return out or "(ok)"
+            return out or _no_output(err)
         return f"shell error {code}: {err or out}"
 
     async def ui_dump(self) -> str:
@@ -362,7 +368,7 @@ class AndroidBody:
             except Exception as e:
                 log.warning("display_size.shell_failed", cmd=cmd, error=str(e))
                 continue
-            if not out or out == "(ok)":
+            if not out or out in ("(ok)", "(finished, no output)"):
                 continue
             last_out = out
             # "Override size" wins: Samsung (and others) run the panel below
