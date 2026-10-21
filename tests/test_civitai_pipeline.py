@@ -563,3 +563,34 @@ def test_key_source_explains_where_the_key_comes_from(tmp_path, monkeypatch):
     monkeypatch.setenv("CIVITAI_API_KEY", "shellkey12345678")
     lines = "\n".join(describe_key_source(Settings(_env_file=tmp_path / ".env")))
     assert "shell environment" in lines
+
+
+@pytest.mark.asyncio
+async def test_site_api_retries_when_bearer_key_gets_403(monkeypatch, tmp_path):
+    """Seen on the owner's real key: civitai.com 403s the Bearer header but
+    accepts ?token=. Searches and version lookups must not fail on that."""
+    import httpx
+
+    from ophelia.config import Settings
+    from ophelia.providers.civitai import site
+
+    monkeypatch.setenv("CIVITAI_API_KEY", "realkey123")
+    s = Settings(_env_file=None)
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.headers.get("authorization"), request.url.params.get("token")))
+        if request.headers.get("authorization"):
+            return httpx.Response(403, text="forbidden")
+        return httpx.Response(200, json={"modelVersions": [
+            {"id": 9, "baseModel": "Illustrious", "air": "urn:air:sdxl:checkpoint:civitai:1@9"}]})
+
+    real = httpx.AsyncClient
+
+    def client(**kw):
+        kw["transport"] = httpx.MockTransport(handler)
+        return real(**kw)
+
+    monkeypatch.setattr(site.httpx, "AsyncClient", client)
+    assert await site.latest_version_air(s, 1) == "urn:air:sdxl:checkpoint:civitai:1@9"
+    assert seen == [("Bearer realkey123", None), (None, "realkey123")]

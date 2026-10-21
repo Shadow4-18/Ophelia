@@ -98,9 +98,10 @@ class ChatLogger:
                     try:
                         # Hard link, not a copy: same bytes on disk, no extra
                         # space (full copies of every file grew to GBs).
+                        # Android's Python has no os.link (AttributeError).
                         try:
                             os.link(src, dst)
-                        except OSError:
+                        except (OSError, AttributeError):
                             shutil.copy2(src, dst)
                         media_store = str(dst)
                     except Exception as e:
