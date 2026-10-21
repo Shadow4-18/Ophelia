@@ -356,6 +356,17 @@ class Settings(BaseSettings):
     discord_enabled: bool | None = Field(default=None, alias="OPHELIA_DISCORD_ENABLED")
     # Discord logging server — Ophelia auto-creates categories/channels here.
     discord_guild_id: int | None = Field(default=None, alias="DISCORD_GUILD_ID")
+    discord_terminal_enabled: bool = Field(
+        default=True,
+        alias="OPHELIA_DISCORD_TERMINAL",
+        description="Stream her terminal (log lines, secrets redacted) into #terminal "
+        "in the Discord log server",
+    )
+    discord_terminal_level: str = Field(
+        default="info",
+        alias="OPHELIA_DISCORD_TERMINAL_LEVEL",
+        description="Lowest level sent to #terminal: debug | info | warning | error",
+    )
     discord_log_enabled: bool | None = Field(
         default=None,
         alias="OPHELIA_DISCORD_LOG",

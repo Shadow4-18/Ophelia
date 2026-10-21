@@ -1,0 +1,1 @@
+{"ts": 1792621941.5264437, "kind": "attempt", "provider": "pollinations", "model": "flux", "ok": false, "error": "Pollinations failed HTTP 500: internal error", "primary": "pollinations", "fell_back": false, "nsfw": false, "prompt": "a cat"}

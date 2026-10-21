@@ -18,13 +18,17 @@ from ophelia.providers.auth import (
 from ophelia.providers.oauth_refresh import load_oauth_state
 from ophelia.providers.router import ROLE_ENV, build_provider_stack
 
+from ophelia import log_tap  # noqa: E402
+
 structlog.configure(
     processors=[
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        log_tap.tap,  # copy for #terminal on Discord and Telegram /logs
         structlog.dev.ConsoleRenderer(),
     ]
 )
+log_tap.install_stdlib_tap()
 
 
 def cmd_ui(args: argparse.Namespace) -> int:

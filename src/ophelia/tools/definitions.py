@@ -136,8 +136,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "generate_image",
             "description": (
                 "Generate an image. Auto-sends to chat — do NOT call send_file after. "
-                "Normal images go to Grok. Set nsfw=true for explicit/sexual content "
-                "the owner asked for: that goes to Civitai (uncensored).\n\n"
+                "Normal images go to Grok, and so do lingerie and suggestive ones. "
+                "Set nsfw=true only for explicit content (nudity, sex) the owner asked "
+                "for: that goes to Civitai (uncensored). If Grok refuses something, it "
+                "falls back to Civitai and the result says so.\n\n"
                 "Civitai, how to get the best result:\n"
                 "- Leave model empty: the best-value model for the style is picked "
                 "(anime/vtuber→illustrious, pony/furry→pony, photo→lustify; no style "

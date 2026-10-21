@@ -45,6 +45,7 @@ MAIN_CHANNELS: dict[str, str] = {
     "consciousness": "consciousness",
     "inner-thoughts": "inner-thoughts",
     "system": "system",
+    "terminal": "terminal",
 }
 
 _STATE_PATH = OPHELIA_HOME / "data" / "discord_log_channels.json"
@@ -279,6 +280,7 @@ class DiscordLogChannels:
             "consciousness": "Spontaneous outreach and consciousness ticks",
             "inner-thoughts": "Inner monologue mirror",
             "system": "Startup, joins, and system events",
+            "terminal": "Her live terminal (log lines, keys redacted)",
         }
         return await self._ensure_text_channel(
             guild,
@@ -398,6 +400,32 @@ class DiscordLogChannels:
         if ch is None:
             return
         await self._post_plain(ch, "📋 activity", text)
+
+    async def post_terminal(self, bot, lines: list[str]) -> bool:
+        """Post log lines to #terminal as code blocks. False if unavailable."""
+        ch = await self._resolve_main_channel(bot, "terminal")
+        if ch is None:
+            return False
+        fence = "`" * 3
+        chunks: list[str] = []
+        block: list[str] = []
+        size = 0
+        for line in lines:
+            line = line.replace(fence, "'" * 3)[:1800]
+            if size + len(line) + 1 > 1880 and block:
+                chunks.append("\n".join(block))
+                block, size = [], 0
+            block.append(line)
+            size += len(line) + 1
+        if block:
+            chunks.append("\n".join(block))
+        for chunk in chunks:
+            try:
+                await ch.send(f"{fence}\n{chunk}\n{fence}")
+            except Exception as e:
+                log.warning("terminal_mirror.post_failed", error=str(e))
+                return False
+        return True
 
     async def _post_plain(self, channel, title: str, text: str) -> None:
         import discord
