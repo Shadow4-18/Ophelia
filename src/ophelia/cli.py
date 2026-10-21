@@ -764,6 +764,23 @@ def cmd_civitai_test(args: argparse.Namespace) -> int:
     from ophelia.providers.civitai import RECIPES, GenerationRequest, run_generation
 
     settings = Settings()
+    if args.key:
+        from ophelia.providers.civitai.orchestration import check_key, describe_key_source
+
+        for line in describe_key_source(settings):
+            print(line)
+        if not (settings.civitai_api_key or "").strip():
+            return 1
+        status, body = asyncio.run(check_key(settings))
+        if status == 200:
+            print("Civitai accepts this key. (If she still fails, restart her: she reads "
+                  "the key when she starts.)")
+            return 0
+        print(f"Civitai answered HTTP {status}: {body}")
+        if status in (401, 403):
+            print("The key is rejected. Make a new one at civitai.com → Account settings → "
+                  "API Keys, save it in ophelia setup → Images, then restart her.")
+        return 1
     if not settings.civitai_api_key:
         print("CIVITAI_API_KEY is not set in ~/.ophelia/.env")
         return 1
@@ -1601,6 +1618,8 @@ def main(argv: list[str] | None = None) -> int:
     p_civ.add_argument("--strength", type=float, default=0.7, help="img2img strength (default 0.7)")
     p_civ.add_argument("--recipe", help="Test one model instead (e.g. lustify, anima, zimage-turbo)")
     p_civ.add_argument("--quality", default="standard", choices=["standard", "high", "max"])
+    p_civ.add_argument("--key", action="store_true",
+                       help="Only check the API key (free): where it comes from and if Civitai accepts it")
     p_civ.set_defaults(func=cmd_civitai_test)
 
     p_backup = sub.add_parser(

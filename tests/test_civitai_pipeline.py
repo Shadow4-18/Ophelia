@@ -546,3 +546,20 @@ def test_generated_images_are_never_cleaned_up(tmp_path):
     os.utime(img, (0, 0))  # ancient
     housekeep(tmp_path, screenshot_hours=1, chat_media_days=1)
     assert img.is_file()
+
+
+def test_key_source_explains_where_the_key_comes_from(tmp_path, monkeypatch):
+    from ophelia.config import Settings
+    from ophelia.providers.civitai.orchestration import describe_key_source
+
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path))
+    monkeypatch.delenv("CIVITAI_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "CIVITAI_API_KEY=oldkey123456789\nCIVITAI_API_KEY=newkey987654321\n", encoding="utf-8")
+    s = Settings(_env_file=tmp_path / ".env")
+    lines = "\n".join(describe_key_source(s))
+    assert "newk…4321" in lines and "2 lines set it; the LAST one is used" in lines
+    assert "oldkey123456789" not in lines and "newkey987654321" not in lines  # never printed
+    monkeypatch.setenv("CIVITAI_API_KEY", "shellkey12345678")
+    lines = "\n".join(describe_key_source(Settings(_env_file=tmp_path / ".env")))
+    assert "shell environment" in lines
