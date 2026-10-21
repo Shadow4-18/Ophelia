@@ -19,6 +19,19 @@ games:
     enabled: false
 
   # Real examples (uncomment and fix package via: pm list packages | grep -i <name>)
+  # - id: balatro
+  #   name: Balatro
+  #   package: com.playstack.balatro.android
+  #   genre: puzzle
+  #   notes: >-
+  #     Landscape. Hand cards overlap: tap a card on its exposed left strip (rank
+  #     and suit corner), never its middle, which is the next card. Tap once per
+  #     card; a selected card sits raised, and the left panel names the hand you
+  #     have selected (Pair, Flush...) - check it before Play Hand or Discard.
+  #     Up to 5 cards. On the blind screen only the current blind's Select works.
+  #     Tapping a card also shows its info box; that's normal.
+  #   max_session_minutes: 30
+  #   enabled: true
   # - id: sudoku
   #   name: Google Sudoku
   #   package: com.google.android.apps.sudoku

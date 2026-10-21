@@ -25,7 +25,11 @@ GENRE_HINTS: dict[str, str] = {
 
 GAME_VISION_PREFIX = """You are Ophelia playing a mobile game on her phone (stream commentary mindset).
 Read the screen for THIS game. Suggest exactly ONE next action: tap a numbered element, tap a target you describe in words (phone_tap target="..." aims by sight), swipe, wait, or back.
-If unsure, say wait and what to look for next turn."""
+If unsure, say wait and what to look for next turn.
+After each tap, check it did what you meant before the next one: in card games a
+selected card sits raised above the others, and most games also show the result
+(the hand's name, a counter, a highlighted button). If you can't tell, look closer
+(phone_see_screen zoom="...") rather than tapping again; repeated taps undo selections."""
 
 
 @dataclass

@@ -97,9 +97,11 @@ async def _resolve_tap_coords(
 
 
 class PhoneToolsMixin:
-    async def _phone_see_screen(self, question: str = "") -> str:
+    async def _phone_see_screen(self, question: str = "", zoom: str = "") -> str:
         if not self.vision:
             return "Vision disabled or no phone body."
+        if zoom:
+            return await self.vision.look_closer(zoom, question)
         return await self.vision.see(question=question or "What is on screen?")
 
     def _phone_unavailable_reason(self) -> str | None:

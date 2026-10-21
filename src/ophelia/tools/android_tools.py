@@ -22,6 +22,14 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "What to look for on screen",
                     },
+                    "zoom": {
+                        "type": "string",
+                        "description": (
+                            "Look closer at a block of lettered cells, e.g. \"F5:L8\" "
+                            "(games): small details like which cards are raised, "
+                            "same cell names as the full view"
+                        ),
+                    },
                 },
             },
         },

@@ -61,7 +61,12 @@ _CELLS_GUIDE = (
     "rows 1, 2, 3... top to bottom, each cell labelled in its top-left corner. "
     "Say WHERE things are by cell, e.g. 'PLAY button: G7'. To tap, use "
     "phone_tap(cell=\"G7\"); for a small target add what it is, "
-    "phone_tap(cell=\"G7\", target=\"PLAY button\"), and it zooms in to hit it exactly."
+    "phone_tap(cell=\"G7\", target=\"PLAY button\"), and it zooms in to hit it exactly.\n"
+    "Overlapping things (a fanned hand of cards, stacked tiles) can only be touched "
+    "on their uncovered part: aim at the exposed strip with the card's corner label, "
+    "e.g. phone_tap(cell=\"G6\", target=\"7 of clubs, its exposed left strip\"). "
+    "Small details (which cards are raised/selected, small text) are much clearer "
+    "up close: phone_see_screen(zoom=\"F5:L8\") looks at just those cells."
 )
 
 _MARKS_GUIDE = (
@@ -190,23 +195,26 @@ def _annotate_marks(png_bytes: bytes, elements, space: tuple[int, int] | None) -
     return buf.getvalue()
 
 
-def _annotate_cells(png_bytes: bytes, cols: int, rows: int, *, labels: str = "grid") -> bytes:
+def _annotate_cells(png_bytes: bytes, cols: int, rows: int, *, labels: str = "grid",
+                    origin: tuple[int, int] = (0, 0), label_size: float = 1 / 3) -> bytes:
     """Lettered/numbered cells for two-step aiming. labels='grid' → A1..;
-    'numbers' → 1..cols*rows."""
+    'numbers' → 1..cols*rows. ``origin`` offsets grid labels for a crop of
+    the full-screen grid (so a zoomed view keeps the same cell names)."""
     from PIL import Image, ImageDraw
 
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     iw, ih = img.size
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font = _font(max(16, min(iw // cols, ih // rows) // 3))
+    font = _font(max(16, int(min(iw // cols, ih // rows) * label_size)))
     for c in range(cols):
         for r in range(rows):
             x1, y1 = iw * c / cols, ih * r / rows
             x2, y2 = iw * (c + 1) / cols, ih * (r + 1) / rows
             # Light lines so the game stays readable; solid label tags.
             draw.rectangle((x1, y1, x2, y2), outline=(255, 230, 0, 110), width=2)
-            tag = f"{chr(65 + c)}{r + 1}" if labels == "grid" else str(r * cols + c + 1)
+            tag = (f"{chr(65 + origin[0] + c)}{origin[1] + r + 1}" if labels == "grid"
+                   else str(r * cols + c + 1))
             if font:
                 tb = draw.textbbox((x1 + 4, y1 + 4), tag, font=font)
                 draw.rectangle((tb[0] - 2, tb[1] - 1, tb[2] + 2, tb[3] + 1), fill=(0, 0, 0, 200))
@@ -521,7 +529,10 @@ class ScreenVision:
             raise RuntimeError(f"Pillow is needed to aim (pkg install python-pillow): {e}")
         a1 = await self._ask(coarse, (
             f"The phone screen is divided into lettered cells (columns A-{chr(64 + cols)}, "
-            f"rows 1-{rows}). Which ONE cell contains the center of: {target}? "
+            f"rows 1-{rows}). Which ONE cell holds the part of {target} you'd touch to "
+            "press it? If it's partly covered by something on top of it (overlapping "
+            "cards, stacked tiles), pick its visible, uncovered part, like the exposed "
+            "edge with its corner label, not where its middle would be. "
             "Reply with only the cell label like C7, or NONE if it isn't visible."
         ))
         m = _re.search(r"\b([A-Z])\s*(\d{1,2})\b", a1.upper())
@@ -547,8 +558,10 @@ class ScreenVision:
         zoom = _annotate_cells(_crop(png, (bx1, by1, bx2, by2)), sub, sub, labels="numbers")
         a2 = await self._ask(zoom, (
             f"This is a zoomed-in part of the screen, split into numbered squares "
-            f"1-{sub * sub}. Which square contains the center of: {target}? "
-            "Reply with only the number."
+            f"1-{sub * sub}. Which square is the best spot to touch {target}? "
+            "Choose a square on its visible, uncovered part (for an overlapped card, "
+            "its exposed strip with the rank and suit), not on something lying on top "
+            "of it. Reply with only the number."
         ))
         m2 = _re.search(r"\d{1,2}", a2)
         if not m2 or not (1 <= int(m2.group()) <= sub * sub):
@@ -559,6 +572,72 @@ class ScreenVision:
         x = int(bx1 + (sc + 0.5) * (bx2 - bx1) / sub)
         y = int(by1 + (sr + 0.5) * (by2 - by1) / sub)
         return x, y, f"aimed by sight: cell {label}, square {k + 1}"
+
+    async def look_closer(self, cells: str, question: str = "") -> str:
+        """Zoomed view of a block of lettered cells (e.g. "F5:L8"), labelled
+        with the same cell names as the full-screen grid, so small details
+        (raised cards, small text) are readable and still tappable by cell."""
+        import re as _re
+
+        m = _re.fullmatch(r"\s*([A-Za-z])(\d{1,2})\s*(?::\s*([A-Za-z])(\d{1,2}))?\s*", cells or "")
+        if not m:
+            return f"zoom={cells!r} isn't a cell or cell range like F5 or F5:L8."
+        path = await self.capture()
+        if not path:
+            return "Couldn't take a screenshot."
+        png = path.read_bytes()
+        size = png_size(png)
+        if not size:
+            return "Unreadable screenshot."
+        w, h = size
+        cols, rows = grid_shape(w, h)
+        c1, r1 = ord(m.group(1).upper()) - 65, int(m.group(2)) - 1
+        c2 = ord((m.group(3) or m.group(1)).upper()) - 65
+        r2 = int(m.group(4) or m.group(2)) - 1
+        c1, c2 = sorted((c1, c2))
+        r1, r2 = sorted((r1, r2))
+        if not (0 <= c1 and c2 < cols and 0 <= r1 and r2 < rows):
+            return (f"zoom={cells} is off the grid (columns A-{chr(64 + cols)}, "
+                    f"rows 1-{rows}).")
+        cw, ch = w / cols, h / rows
+        box = (int(c1 * cw), int(r1 * ch), int((c2 + 1) * cw), int((r2 + 1) * ch))
+        # Upscale small areas so the model sees them large; keep it under ~2000px.
+        scale = max(1.0, min(3.0, 2000 / max(box[2] - box[0], box[3] - box[1])))
+        try:
+            # Small labels: up close, card corners are what she needs to read.
+            zoom = _annotate_cells(_crop(png, box, upscale=scale), c2 - c1 + 1, r2 - r1 + 1,
+                                   origin=(c1, r1), label_size=1 / 7)
+        except Exception as e:
+            return f"Pillow is needed to zoom (pkg install python-pillow): {e}"
+        self.last_grid = (cols, rows, w, h, time.time())
+        label = f"{chr(65 + c1)}{r1 + 1}:{chr(65 + c2)}{r2 + 1}"
+        prompt = (
+            f"{VISION_PROMPT}\n\nThis is a zoomed-in part of the phone screen: cells "
+            f"{label} of the full-screen grid, labelled with the same cell names. "
+            "Describe what's here precisely. For cards, list them left to right and "
+            "say which are raised above the others (selected). To tap something "
+            "here: phone_tap(cell=..., target=\"what it is\").\n\n"
+            f"Question: {question or 'What exactly is in this area?'}"
+        )
+        return await self._look(zoom, prompt)
+
+    async def _look(self, png: bytes, prompt: str) -> str:
+        client, model = await self._vision_client()
+        from ophelia.providers.fallback import extra_body_for
+
+        b64 = base64.standard_b64encode(png).decode("ascii")
+        async with get_model_gate().session("vision", model, self.stack.name("vision")):
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
+                ]}],
+                max_tokens=1500,
+                extra_body=extra_body_for(self.settings, self.stack.name("vision")),
+            )
+        return (resp.choices[0].message.content or "").strip() or "(vision returned nothing)"
 
     async def see_for_game(
         self, profile: GameProfile, intent: str = ""
