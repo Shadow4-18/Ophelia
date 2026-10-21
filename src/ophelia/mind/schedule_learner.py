@@ -38,6 +38,13 @@ _MIN_SAMPLES = 14
 # A hour-of-week is considered "quiet" if its activity count is < this fraction
 # of the median active hour. Tuned for sparse Telegram use.
 _QUIET_FRACTION = 0.20
+# Old activity fades: a sample counts half after this long, so a new job or
+# sleep schedule shows within a few weeks instead of months.
+_HALF_LIFE_S = 21 * 86400
+
+
+def _faded(count: float, last_seen: float, now: float) -> float:
+    return float(count) * 0.5 ** (max(0.0, now - float(last_seen or now)) / _HALF_LIFE_S)
 
 
 class ScheduleLearner:
@@ -53,16 +60,23 @@ class ScheduleLearner:
             dt = datetime.now(tz=self._tz())
         dow = dt.weekday()  # 0=Mon..6=Sun
         hour = dt.hour
+        now = time.time()
         async with aiosqlite.connect(self.memory.db_path) as db:
+            cursor = await db.execute(
+                "SELECT count, last_seen FROM owner_activity WHERE dow = ? AND hour = ?",
+                (dow, hour),
+            )
+            row = await cursor.fetchone()
+            count = (_faded(row[0], row[1], now) if row else 0.0) + 1.0
             await db.execute(
                 """
                 INSERT INTO owner_activity (dow, hour, count, last_seen)
-                VALUES (?, ?, 1, ?)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(dow, hour) DO UPDATE SET
-                    count = count + 1,
+                    count = excluded.count,
                     last_seen = excluded.last_seen
                 """,
-                (dow, hour, time.time()),
+                (dow, hour, count, now),
             )
             await db.commit()
         # Invalidate the cache so the next read picks up the new sample.
@@ -73,24 +87,26 @@ class ScheduleLearner:
 
         return resolve_timezone(self.settings.timezone)
 
-    async def _load_counts(self) -> dict[int, dict[int, int]]:
-        """Return {dow: {hour: count}}. Cached for 5 minutes."""
+    async def _load_counts(self) -> dict[int, dict[int, float]]:
+        """Return {dow: {hour: faded count}}. Cached for 5 minutes."""
         if self._cached is not None and time.time() - self._cached_at < 300:
             return self._cached
         result: dict[int, dict[int, int]] = {d: {} for d in range(7)}
         try:
             async with aiosqlite.connect(self.memory.db_path) as db:
                 cursor = await db.execute(
-                    "SELECT dow, hour, count FROM owner_activity"
+                    "SELECT dow, hour, count, last_seen FROM owner_activity"
                 )
                 rows = await cursor.fetchall()
         except aiosqlite.OperationalError:
             # Table doesn't exist yet (init hasn't run). Treat as empty.
             rows = []
-        total = 0
-        for dow, hour, count in rows:
-            result[int(dow)][int(hour)] = int(count)
-            total += int(count)
+        total = 0.0
+        now = time.time()
+        for dow, hour, count, last_seen in rows:
+            value = _faded(count, last_seen, now)
+            result[int(dow)][int(hour)] = value
+            total += value
         self._cached = result
         self._cached_at = time.time()
         log.debug("schedule_learner.loaded", samples=total)
@@ -98,7 +114,7 @@ class ScheduleLearner:
 
     async def total_samples(self) -> int:
         counts = await self._load_counts()
-        return sum(sum(h.values()) for h in counts.values())
+        return int(round(sum(sum(h.values()) for h in counts.values())))
 
     async def quiet_hours_for(self, dow: int) -> list[int]:
         """Hours of the given day-of-week where the owner is historically quiet.
@@ -119,7 +135,7 @@ class ScheduleLearner:
         median = active[len(active) // 2]
         if median == 0:
             return []
-        threshold = max(1, int(median * _QUIET_FRACTION))
+        threshold = max(0.5, median * _QUIET_FRACTION)
         return [h for h in range(24) if day.get(h, 0) < threshold]
 
     async def is_likely_quiet_now(self, dt: datetime | None = None) -> bool:
