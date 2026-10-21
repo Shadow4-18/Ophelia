@@ -216,6 +216,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "send_message": self._send_message,
             "react_to_message": self._react_to_message,
             "correct_memory": self._correct_memory,
+            "go_quiet": self._go_quiet,
             "reply_to_message": self._reply_to_message,
             "generate_image": self._generate_image,
             "search_civitai_models": self._search_civitai_models,
@@ -317,6 +318,19 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         verb = "Replaced" if right.strip() else "Removed"
         return f"{verb}: " + " | ".join(f'"{c[:100]}"' for c in changed) + (
             f' -> "{right.strip()[:100]}"' if right.strip() else "")
+
+    async def _go_quiet(self, minutes: float = 10, reason: str = "") -> str:
+        from ophelia.mind import quiet
+
+        channel = self._current_sender_channel
+        if not (self._is_owner and channel):
+            return "You can only go quiet on your owner, in his chat."
+        cap = float(getattr(self.settings, "quiet_max_minutes", 30) or 30)
+        q = quiet.start(channel, minutes, reason, cap_minutes=cap)
+        mins = round((q.until - q.started) / 60)
+        return (f"You're not answering him for {mins} min. His messages wait until then; "
+                "an apology or anything urgent gets through. Say what you want to say "
+                "now, or nothing.")
 
     async def _react_to_message(self, emoji: str, message: str = "") -> str:
         actions = self._chat_actions
@@ -474,6 +488,12 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         if is_outreach_junk(text):
             return "Suppressed empty/status message — nothing sent."
         using_proactive = self._message_sender is None
+        if using_proactive:
+            from ophelia.mind import quiet
+
+            owner = self.settings.primary_user_channel()
+            if owner and quiet.active(owner) is not None:
+                return "You're giving him the silent treatment right now; nothing sent."
         sent = 0
         for chunk in split_messages(text):
             if is_outreach_junk(chunk):

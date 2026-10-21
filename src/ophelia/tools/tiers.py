@@ -31,6 +31,7 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
             "send_message",
             "react_to_message",
             "reply_to_message",
+            "go_quiet",
             "send_file",
             "web_search",
             "fetch_url",

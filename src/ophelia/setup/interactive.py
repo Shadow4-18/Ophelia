@@ -991,6 +991,8 @@ def _section_autonomy() -> None:
             Opt("OPHELIA_SPONTANEOUS_VOICE", "Sends voice notes unprompted"),
             Opt("OPHELIA_AMBIENT_COMMENTARY", "Comments on what's happening"),
             Opt("OPHELIA_AMBIENT_COMMENTARY_MINUTES", "Commentary every (min)"),
+            Opt("OPHELIA_HUMAN_PACING", "Human reply timing"),
+            Opt("OPHELIA_QUIET_MAX_MINUTES", "Longest silent treatment (min)"),
             Header("— Minds —"),
             Opt("OPHELIA_DIRECTOR", "Director (decides how to respond)"),
             Opt("OPHELIA_REACTION", "Quick reactions"),

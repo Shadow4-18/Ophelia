@@ -95,6 +95,7 @@ class ChatActions:
 
     react: Callable[[str, str], Awaitable[str]]  # (emoji, which message) -> result
     reply: Callable[[str, str], Awaitable[str]]  # (text, which message) -> result
+    typing: Callable[[], Awaitable[None]] | None = None  # show "typing..." (~5s)
 
 
 def reaction_note(emoji: str, target: Entry | None) -> str:

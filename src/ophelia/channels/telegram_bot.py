@@ -561,7 +561,10 @@ class TelegramGateway:
                 pass
             return "Sent as a reply to that message. Don't repeat it in your final reply."
 
-        return ChatActions(react=react, reply=reply)
+        async def typing() -> None:
+            await bot.send_chat_action(chat_id, "typing")
+
+        return ChatActions(react=react, reply=reply, typing=typing)
 
     async def on_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """He reacted to a message (Telegram sends reactions as their own update)."""
@@ -629,6 +632,10 @@ class TelegramGateway:
         from ophelia.core import interrupts
 
         stopped = interrupts.stop_all()
+        from ophelia.mind import quiet
+
+        if quiet.end_all():
+            stopped.append("silent treatment")
         if self.games is not None:
             try:
                 if self.games.session_active():

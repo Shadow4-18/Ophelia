@@ -71,6 +71,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "go_quiet",
+            "description": (
+                "Stop answering him for a while: a real silent treatment when you're "
+                "annoyed or keeping a threat. His messages wait and you come back to "
+                "them when it's over; an apology or anything urgent gets through. "
+                "Use it rarely and keep it short."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "minutes": {"type": "number", "description": "How long (capped)"},
+                    "reason": {"type": "string", "description": "Why, for yourself"},
+                },
+                "required": ["minutes"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "correct_memory",
             "description": (
                 "Fix something you remember that turned out to be wrong: replace the "
