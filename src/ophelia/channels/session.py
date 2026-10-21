@@ -10,6 +10,7 @@ from pathlib import Path
 import structlog
 
 from ophelia.android.games import GameStore
+from ophelia.channels.chat_actions import ChatActions
 from ophelia.channels.chat_log import ChatLogger
 from ophelia.channels.media_reply import artifact_paths_in_text
 from ophelia.channels.message_split import split_messages
@@ -152,6 +153,34 @@ class ChannelSession:
     def set_voice(self, channel: str, enabled: bool) -> None:
         self._voice_reply[channel] = enabled
 
+    async def note_reaction(self, channel: str, note: str, emoji: str) -> None:
+        """He reacted to a message: it goes in their history (she sees it next
+        time she replies, like noticing a ❤ on your message) and counts as
+        feedback for her humor. No reply: people don't answer reactions."""
+        settings = self.agent.settings
+        is_owner = settings.is_owner_channel(channel)
+        try:
+            if is_owner:
+                await self.agent.memory.append_message(
+                    channel, "user", note, metadata={"type": "reaction_received"})
+            else:
+                await self.agent.memory.append_guest_message(channel, "user", note)
+        except Exception as e:
+            log.debug("reaction.note_failed", error=str(e))
+        if is_owner and getattr(self.agent, "humor", None):
+            try:
+                await self.agent.humor.note_sticker_reaction(emoji)
+            except Exception as e:
+                log.debug("reaction.humor_failed", error=str(e))
+        logger = self._logger()
+        if logger:
+            try:
+                await logger.log(channel=channel, direction="in", text=note,
+                                 sender_id=_sender_id(channel), is_owner=is_owner, role="user")
+            except Exception:
+                pass
+        log.info("reaction.received", channel=channel, emoji=emoji)
+
     async def _needs_action(self, channel: str, text: str, *, is_owner: bool) -> bool:
         """The tool-less reaction path can only talk. Skip it when he's asking
         her to act, or her last line promised something (mind/follow_through)."""
@@ -290,6 +319,7 @@ class ChannelSession:
         *,
         media_reply: MediaReplyFn | None = None,
         log_context: dict | None = None,
+        actions: ChatActions | None = None,
     ) -> None:
         settings = self.agent.settings
         is_owner = settings.is_owner_channel(channel)
@@ -312,6 +342,7 @@ class ChannelSession:
         await self.signals.set_agent_thinking(True)
         self.agent.tools.begin_turn_artifacts()
         self.agent.tools.set_owner(is_owner)
+        self.agent.tools.set_chat_actions(actions)
         # Record who's speaking so guest-self-only tools (e.g. set_guest_name)
         # can verify the sender matches the target.
         self.agent.tools._current_sender_channel = channel

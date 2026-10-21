@@ -13,7 +13,9 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    ExtBot,
     MessageHandler,
+    MessageReactionHandler,
     filters,
 )
 
@@ -21,6 +23,15 @@ from ophelia.android.factory import build_android_body
 from ophelia.channels.guest_approval import (
     GuestApprovals,
     append_user_to_allowlist,
+)
+from ophelia.channels.chat_actions import (
+    TELEGRAM_REACTIONS,
+    ChatActions,
+    MessageIndex,
+    describe_message,
+    normalize_emoji,
+    reaction_note,
+    reply_prefix,
 )
 from ophelia.channels.media_reply import artifact_paths_in_text, media_kind
 from ophelia.channels.session import ChannelSession
@@ -128,6 +139,40 @@ def _install_conflict_filter() -> None:
         h.addFilter(filt)
 
 
+def _message_kind(msg) -> str:
+    for attr, label in (("photo", "photo"), ("voice", "voice note"), ("video", "video"),
+                        ("audio", "audio"), ("sticker", "sticker"), ("document", "file"),
+                        ("animation", "gif")):
+        if getattr(msg, attr, None):
+            if attr == "sticker":
+                return f"sticker {getattr(msg.sticker, 'emoji', '') or ''}".strip()
+            return label
+    return ""
+
+
+def _describe(msg) -> str:
+    return describe_message(getattr(msg, "text", None), caption=getattr(msg, "caption", None),
+                            kind=_message_kind(msg))
+
+
+class _RecordingBot(ExtBot):
+    """Notes every message she sends so a reaction or reply to it can be
+    understood later. Swapped onto the built bot (same slots)."""
+
+    __slots__ = ()
+    on_sent = None  # set on the class by the gateway: callable(Message)
+
+    async def _send_message(self, *args, **kwargs):
+        msg = await super()._send_message(*args, **kwargs)
+        hook = type(self).on_sent
+        if hook is not None and msg is not None and not isinstance(msg, bool):
+            try:
+                hook(msg)
+            except Exception:
+                pass
+        return msg
+
+
 class TelegramGateway:
     platform = "telegram"
 
@@ -156,6 +201,8 @@ class TelegramGateway:
         self._last_text_msg = None
         # Guest approval state (pending/denied strangers who messaged her).
         self._guest_approvals = GuestApprovals()
+        # Recent messages per chat, for reactions and replies.
+        self._index = MessageIndex()
 
     def is_configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
@@ -431,6 +478,108 @@ class TelegramGateway:
         # through the approval flow instead of a cold rejection.
         await self._admit_chat(user, update, context, preview="(/start)")
 
+    # --- reactions and replies --------------------------------------------
+
+    def _record_sent(self, msg) -> None:
+        chat = getattr(msg, "chat", None) or getattr(msg, "chat_id", None)
+        chat_id = getattr(chat, "id", chat)
+        if chat_id is not None:
+            self._index.add(chat_id, msg.message_id, "her", _describe(msg))
+
+    def _record_received(self, update: Update) -> None:
+        msg = getattr(update, "message", None)
+        if msg is not None and getattr(update, "effective_chat", None) is not None:
+            self._index.add(update.effective_chat.id, msg.message_id, "him", _describe(msg))
+
+    def _with_reply(self, update: Update, text: str) -> str:
+        """Put what he's replying to in front of his message."""
+        msg = update.message
+        quoted_msg = getattr(msg, "reply_to_message", None) if msg else None
+        if quoted_msg is None:
+            return text
+        me = self._app.bot.id if self._app is not None else None
+        sender = getattr(quoted_msg, "from_user", None)
+        to_her = bool(sender and (sender.is_bot and (me is None or sender.id == me)))
+        part = getattr(getattr(msg, "quote", None), "text", None)
+        quoted = part or _describe(quoted_msg)
+        return f"{reply_prefix(quoted, to_her=to_her, partial=bool(part))}\n{text}"
+
+    def _chat_actions(self, update: Update, channel: str) -> ChatActions | None:
+        chat = update.effective_chat
+        if chat is None or self._app is None:
+            return None
+        chat_id = chat.id
+        bot = self._app.bot
+
+        def target(which: str):
+            if not (which or "").strip() and update.message is not None:
+                return self._index.get(chat_id, update.message.message_id) or \
+                    self._index.last(chat_id, "him")
+            return self._index.find(chat_id, which)
+
+        async def react(emoji: str, which: str = "") -> str:
+            e = normalize_emoji(emoji)
+            if e not in TELEGRAM_REACTIONS:
+                return (f"Telegram doesn't allow {emoji!r} as a reaction. Pick one of: "
+                        "❤ 🔥 🥰 😁 🤣 😍 😘 💋 😈 😭 😢 🤔 🙈 👀 💯 👍 🙏 🤗 😎 💔 😡")
+            t = target(which)
+            if t is None:
+                return f"Couldn't find a message matching {which!r}."
+            try:
+                await bot.set_message_reaction(chat_id, t.message_id, reaction=e)
+            except Exception as ex:
+                return f"Reaction failed: {ex}"
+            whose = "his" if t.who == "him" else "your own"
+            note = f"[You reacted {e} to {whose} message: \"{t.text[:200]}\"]"
+            try:
+                if self.settings.is_owner_channel(channel):
+                    await self.session.agent.memory.append_message(
+                        channel, "assistant", note, metadata={"type": "reaction_sent"})
+            except Exception:
+                pass
+            log.info("telegram.reacted", emoji=e, message_id=t.message_id)
+            return f"Reacted {e} to: \"{t.text[:80]}\""
+
+        async def reply(text: str, which: str = "") -> str:
+            from telegram import ReplyParameters
+
+            t = target(which)
+            if t is None:
+                return f"Couldn't find a message matching {which!r}; send it normally instead."
+
+            async def send(chunk: str) -> None:
+                await bot.send_message(chat_id, chunk[:4000],
+                                       reply_parameters=ReplyParameters(message_id=t.message_id))
+
+            await self.session._send_logged(channel, send, text, log_context=None)
+            try:
+                if self.settings.is_owner_channel(channel):
+                    await self.session.agent.memory.append_message(
+                        channel, "assistant", f"[replying to \"{t.text[:120]}\"] {text}",
+                        metadata={"type": "quote_reply"})
+            except Exception:
+                pass
+            return "Sent as a reply to that message. Don't repeat it in your final reply."
+
+        return ChatActions(react=react, reply=reply)
+
+    async def on_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """He reacted to a message (Telegram sends reactions as their own update)."""
+        mr = getattr(update, "message_reaction", None)
+        if mr is None or mr.user is None:
+            return
+        channel = f"telegram:{mr.user.id}"
+        if not self._allowed(mr.user.id):
+            return
+        old = {getattr(r, "emoji", None) for r in (mr.old_reaction or ())}
+        added = [r.emoji for r in (mr.new_reaction or ())
+                 if getattr(r, "emoji", None) and r.emoji not in old]
+        if not added:
+            return  # removed a reaction, or a custom emoji we can't read
+        target = self._index.get(mr.chat.id, mr.message_id)
+        emoji = " ".join(added)
+        await self.session.note_reaction(channel, reaction_note(emoji, target), emoji)
+
     def _in_background(self, handler):
         """Run a message handler as a tracked background task so a long turn
         doesn't block the update loop (and /stop can reach her mid-turn).
@@ -438,6 +587,8 @@ class TelegramGateway:
         from ophelia.core import interrupts
 
         async def run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            self._record_received(update)
+
             async def guarded() -> None:
                 # Mid-task text from the owner goes to the running turn
                 # instead of waiting behind it (see core/interjections.py).
@@ -465,7 +616,7 @@ class TelegramGateway:
         channel = f"telegram:{user.id}"
         return await self.session.try_interject(
             channel,
-            update.message.text.strip(),
+            self._with_reply(update, update.message.text.strip()),
             reply=lambda t: self._send_reply(update, None, channel, t),
             log_context=self._telegram_log_context(user),
         )
@@ -711,10 +862,11 @@ class TelegramGateway:
         await update.message.chat.send_action("typing")
         await self.session.handle_chat(
             channel,
-            "continue",
+            self._with_reply(update, "continue"),
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
             log_context=self._telegram_log_context(user),
+            actions=self._chat_actions(update, channel),
         )
         await self._maybe_attach_continue(update, context, channel)
 
@@ -763,10 +915,11 @@ class TelegramGateway:
             )
             await self.session.handle_chat(
                 channel,
-                prompt,
+                self._with_reply(update, prompt),
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
                 log_context=self._telegram_log_context(user),
+                actions=self._chat_actions(update, channel),
             )
         except Exception as e:
             log.exception("telegram.photo_error")
@@ -826,10 +979,11 @@ class TelegramGateway:
                 )
             await self.session.handle_chat(
                 channel,
-                prompt,
+                self._with_reply(update, prompt),
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
                 log_context=self._telegram_log_context(user),
+                actions=self._chat_actions(update, channel),
             )
         except Exception as e:
             log.exception("telegram.document_error")
@@ -877,10 +1031,11 @@ class TelegramGateway:
             )
             await self.session.handle_chat(
                 channel,
-                prompt,
+                self._with_reply(update, prompt),
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
                 log_context=self._telegram_log_context(user),
+                actions=self._chat_actions(update, channel),
             )
         except Exception as e:
             log.exception("telegram.video_error")
@@ -904,32 +1059,49 @@ class TelegramGateway:
         await update.message.chat.send_action("typing")
         await self.session.handle_chat(
             channel,
-            text,
+            self._with_reply(update, text),
             lambda t: self._send_reply(update, context, channel, t),
             media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
             log_context=self._telegram_log_context(user),
+            actions=self._chat_actions(update, channel),
         )
         await self._maybe_attach_continue(update, context, channel)
 
     async def on_sticker(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Tier B #8: a sticker is a humor/affection signal. Feed the humor
-        tracker so a sticker reacting to a joke counts as positive feedback.
-        We don't generate a full reply to a sticker unless one is pending —
-        avoids her yapping at every sticker the owner sends."""
+        """A sticker is a message: she sees which one (its emoji and set) and
+        can answer it, react to it, or let it be. It also counts as humor
+        feedback when it follows one of her jokes."""
         if not update.message or not update.message.sticker:
             return
         user = update.effective_user
-        if not self.settings.is_owner_channel(f"telegram:{user.id}"):
-            return
         sticker = update.message.sticker
         emoji = sticker.emoji or ""
-        file_id = sticker.file_id or ""
-        sig = emoji or f"[sticker:{file_id[:8]}]"
-        try:
-            if self.session.agent.humor:
-                await self.session.agent.humor.note_sticker_reaction(sig)
-        except Exception as e:
-            log.debug("telegram.sticker_humor_failed", error=str(e))
+        admission = await self._admit_chat(user, update, context,
+                                           preview=f"(sent a sticker {emoji})")
+        if admission != "ok":
+            return
+        self._remember_user(user.id)
+        channel = f"telegram:{user.id}"
+        if self.settings.is_owner_channel(channel):
+            try:
+                if self.session.agent.humor:
+                    await self.session.agent.humor.note_sticker_reaction(
+                        emoji or f"[sticker:{(sticker.file_id or '')[:8]}]")
+            except Exception as e:
+                log.debug("telegram.sticker_humor_failed", error=str(e))
+        kind = "animated sticker" if (sticker.is_animated or sticker.is_video) else "sticker"
+        pack = f" from the \"{sticker.set_name}\" pack" if sticker.set_name else ""
+        text = (f"[He sent a {kind}: {emoji or 'no emoji'}{pack}. Answer it like a "
+                "person would: a quick reply, a reaction (react_to_message), or "
+                "nothing if it just closes the moment.]")
+        await self.session.handle_chat(
+            channel,
+            self._with_reply(update, text),
+            lambda t: self._send_reply(update, context, channel, t),
+            media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+            log_context=self._telegram_log_context(user),
+            actions=self._chat_actions(update, channel),
+        )
 
     async def on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.voice:
@@ -970,10 +1142,11 @@ class TelegramGateway:
             await update.message.reply_text(f"Heard: {text[:500]}")
             await self.session.handle_chat(
                 channel,
-                text,
+                self._with_reply(update, text),
                 lambda t: self._send_reply(update, context, channel, t),
                 media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
                 log_context=self._telegram_log_context(user),
+                actions=self._chat_actions(update, channel),
             )
         except Exception as e:
             log.exception("telegram.voice_error")
@@ -1261,6 +1434,12 @@ class TelegramGateway:
         if hasattr(builder, "media_write_timeout"):
             builder = builder.media_write_timeout(180)
         app = builder.build()
+        try:
+            # Note every message she sends (for reactions/replies to it).
+            object.__setattr__(app.bot, "__class__", _RecordingBot)
+            _RecordingBot.on_sent = staticmethod(self._record_sent)
+        except Exception as e:
+            log.warning("telegram.recording_bot_unavailable", error=str(e))
         app.add_error_handler(self._on_error)
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_help))
@@ -1297,7 +1476,8 @@ class TelegramGateway:
         # to a joke counts as positive feedback even when the owner doesn't
         # type "lol". Emoji-only text is already scored by HumorTracker via
         # the normal on_text path.
-        app.add_handler(MessageHandler(filters.Sticker.ALL, self.on_sticker))
+        app.add_handler(MessageHandler(filters.Sticker.ALL, self._in_background(self.on_sticker)))
+        app.add_handler(MessageReactionHandler(self.on_reaction))
         self._app = app
         return app
 
@@ -1413,7 +1593,9 @@ class TelegramGateway:
             )
             return
         try:
-            await app.updater.start_polling(drop_pending_updates=True)
+            # Reactions only arrive when asked for explicitly.
+            await app.updater.start_polling(drop_pending_updates=True,
+                                            allowed_updates=Update.ALL_TYPES)
         except Exception as e:
             err = str(e)
             if "409" in err or "webhook" in err.lower() or "Conflict" in err:

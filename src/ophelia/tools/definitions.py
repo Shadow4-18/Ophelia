@@ -42,6 +42,58 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "react_to_message",
+            "description": (
+                "React to a message with an emoji, like a person in a chat: a quick "
+                "❤ or 🤣 instead of (or as well as) a reply. Not on every message. "
+                "Defaults to his latest message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": (
+                            "One emoji. Telegram allows: 👍 👎 ❤ 🔥 🥰 👏 😁 🤔 🤯 😱 😢 🎉 "
+                            "🤩 🙏 👌 😍 ❤‍🔥 💯 🤣 💔 🤨 😐 💋 😈 😴 😭 👀 🙈 😇 🤝 🤗 💅 🤪 "
+                            "🗿 😘 😎 😡 🖕 🤡 🥱 (and a few more)"
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "A few words from the message to react to; empty = his latest",
+                    },
+                },
+                "required": ["emoji"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reply_to_message",
+            "description": (
+                "Send a message as a reply to a specific earlier message (his or "
+                "yours), so it shows quoted. Use it when answering something further "
+                "up the chat, not for his latest message. Don't repeat the text in "
+                "your final reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "message": {
+                        "type": "string",
+                        "description": "A few words from the message you're replying to",
+                    },
+                },
+                "required": ["text", "message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_image",
             "description": (
                 "Generate an image. Auto-sends to chat — do NOT call send_file after. "

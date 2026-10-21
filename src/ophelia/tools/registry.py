@@ -50,6 +50,8 @@ log = structlog.get_logger()
 GUEST_ALLOWED_TOOLS: frozenset[str] = frozenset(
     {
         "send_message",
+        "react_to_message",
+        "reply_to_message",
         "send_file",
         "web_search",
         "fetch_url",
@@ -130,6 +132,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
     _current_sender_channel = _turn_state("sender_channel")
     # Per-turn reply callback (chat). Falls back to proactive_sender when unset.
     _message_sender = _turn_state("message_sender")
+    # Per-turn reactions/quote-replies in the current chat (chat_actions.ChatActions).
+    _chat_actions = _turn_state("chat_actions")
     # Per-turn media callback: sends a file (audio/video/image/doc) to the
     # current chat. Returns True on success. When unset (e.g. autonomous
     # turns), files are queued to _pending_artifacts for deferred delivery.
@@ -210,6 +214,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         self.proactive_media_sender: Callable[[Path, str], Awaitable[bool]] | None = None
         self._handlers: dict[str, ToolHandler] = {
             "send_message": self._send_message,
+            "react_to_message": self._react_to_message,
+            "reply_to_message": self._reply_to_message,
             "generate_image": self._generate_image,
             "search_civitai_models": self._search_civitai_models,
             "generate_video": self._generate_video,
@@ -287,6 +293,21 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 
     def clear_message_sender(self) -> None:
         self._message_sender = None
+
+    def set_chat_actions(self, actions: Any) -> None:
+        self._chat_actions = actions
+
+    async def _react_to_message(self, emoji: str, message: str = "") -> str:
+        actions = self._chat_actions
+        if actions is None:
+            return "Reactions aren't available in this chat."
+        return await actions.react(emoji, message)
+
+    async def _reply_to_message(self, text: str, message: str = "") -> str:
+        actions = self._chat_actions
+        if actions is None:
+            return await self._send_message(text)
+        return await actions.reply(text, message)
 
     def set_media_sender(self, fn: Callable[[Path, str], Awaitable[bool]]) -> None:
         self._media_sender = fn

@@ -29,6 +29,8 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
         {
             "load_tools",
             "send_message",
+            "react_to_message",
+            "reply_to_message",
             "send_file",
             "web_search",
             "fetch_url",
