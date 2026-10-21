@@ -624,6 +624,29 @@ class TelegramGateway:
             log_context=self._telegram_log_context(user),
         )
 
+    async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Owner: the tail of her terminal (secrets redacted)."""
+        user = update.effective_user
+        if not user or not self.settings.is_owner_channel(f"telegram:{user.id}"):
+            return
+        from ophelia import log_tap
+
+        log_tap.register_settings_secrets(self.settings)
+        n, level = 25, "info"
+        for arg in context.args or []:
+            if arg.isdigit():
+                n = max(1, min(200, int(arg)))
+            else:
+                level = arg
+        lines = log_tap.tail(n, min_level=log_tap.level_number(level))
+        if not lines:
+            await self._reply_text(update, "No log lines yet.")
+            return
+        text = "\n".join(lines)
+        for i in range(0, len(text), 3900):
+            # Plain text: log lines are full of characters Markdown would eat.
+            await update.message.reply_text(text[i:i + 3900])
+
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Stop whatever she's doing right now: the reply she's working on,
         anything queued behind it, and an autonomous turn in progress."""
@@ -1464,6 +1487,7 @@ class TelegramGateway:
         app.add_handler(CommandHandler("revoke", self.cmd_revoke))
         app.add_handler(CommandHandler("update", self.cmd_update))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
+        app.add_handler(CommandHandler("logs", self.cmd_logs))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
@@ -1514,6 +1538,7 @@ class TelegramGateway:
     MENU_COMMANDS: tuple[tuple[str, str], ...] = (
         ("stop", "stop what she's doing right now"),
         ("status", "what's on / running / pending"),
+        ("logs", "her latest terminal lines (/logs 50, /logs warn)"),
         ("pause", "pause autonomous outreach"),
         ("resume", "resume autonomous outreach"),
         ("continue", "resume an unfinished task"),

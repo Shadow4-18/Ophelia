@@ -36,6 +36,7 @@ class DiscordGateway:
         self._task: asyncio.Task | None = None
         self._guest_approvals = GuestApprovals()
         self._log_channels = DiscordLogChannels(settings)
+        self._terminal_task: asyncio.Task | None = None
         self._media_dir = settings.data_dir / "discord_media"
 
     def register_log_hooks(self, session: ChannelSession) -> None:
@@ -65,6 +66,31 @@ class DiscordGateway:
     async def mirror_inner_thought(self, text: str) -> None:
         if self._bot and self._log_channels.enabled():
             await self._log_channels.log_inner_thought(self._bot, text)
+
+    async def _terminal_pump(self, bot) -> None:
+        """Stream new log lines into #terminal every few seconds (batched,
+        rate-limited, secrets redacted by log_tap)."""
+        from ophelia import log_tap
+
+        log_tap.register_settings_secrets(self.settings)
+        level = log_tap.level_number(getattr(self.settings, "discord_terminal_level", "info"))
+        seq, _ = log_tap.since(0)
+        backlog = log_tap.tail(40, min_level=level)  # what led up to startup
+        if backlog:
+            await self._log_channels.post_terminal(bot, ["-- started --", *backlog])
+        while True:
+            await asyncio.sleep(4)
+            try:
+                seq, lines = log_tap.since(seq, min_level=level)
+                if not lines:
+                    continue
+                if len(lines) > 60:
+                    lines = [f"... {len(lines) - 60} lines skipped (busy) ...", *lines[-60:]]
+                await self._log_channels.post_terminal(bot, lines)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(10)
 
     def is_configured(self) -> bool:
         return bool(self.settings.discord_bot_token)
@@ -150,6 +176,9 @@ class DiscordGateway:
         async def on_ready() -> None:
             log.info("discord.ready", user=str(bot.user))
             await gw._log_channels.setup(bot)
+            if gw._terminal_task is None and gw._log_channels.enabled() and getattr(
+                    gw.settings, "discord_terminal_enabled", False) is True:
+                gw._terminal_task = asyncio.create_task(gw._terminal_pump(bot))
 
         @bot.event
         async def on_guild_join(guild) -> None:

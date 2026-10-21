@@ -1,0 +1,1 @@
+{"ts": 1792621941.5182016, "kind": "attempt", "provider": "xai-oauth", "model": "grok-imagine-image", "ok": true, "error": "", "primary": "xai-oauth", "fell_back": false, "nsfw": false, "prompt": "a cat"}

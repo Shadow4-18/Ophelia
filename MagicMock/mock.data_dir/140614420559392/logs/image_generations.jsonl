@@ -1,0 +1,2 @@
+{"ts": 1792621895.2306728, "kind": "attempt", "provider": "xai-oauth", "model": "grok-imagine-image", "ok": false, "error": "xAI timed out / content filter", "primary": "xai-oauth", "fell_back": false, "nsfw": false, "prompt": "a cat"}
+{"ts": 1792621895.2315066, "kind": "attempt", "provider": "pollinations", "model": "grok-imagine-image", "ok": true, "error": "", "primary": "xai-oauth", "fell_back": true, "nsfw": false, "prompt": "a cat"}

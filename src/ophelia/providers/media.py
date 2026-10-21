@@ -36,8 +36,8 @@ _ASPECT_DIMS: dict[str, tuple[int, int]] = {
 }
 
 # Prefer these when the primary image backend fails (timeouts, filters, 5xx).
+# Civitai first (real quality); free Pollinations only as the last resort.
 _IMAGE_FALLBACK_ORDER = (
-    "pollinations",
     "civitai",
     "fal",
     "replicate",
@@ -45,6 +45,7 @@ _IMAGE_FALLBACK_ORDER = (
     "ollama",
     "a1111",
     "comfyui",
+    "pollinations",
 )
 
 
@@ -351,6 +352,7 @@ async def generate_image(
     count: int = 1,
     attempts: int = 1,
     deliver_to: str = "",
+    fallback_mature: bool = False,
 ) -> str:
     """Route one image request. SFW goes to the image provider (Grok by
     default), explicit to the NSFW provider (Civitai). A failed generation is
@@ -427,6 +429,9 @@ async def generate_image(
             attempt_model, attempt_auto = _resolve_image_model(
                 stack, attempt_provider, "", nsfw=nsfw, auto_pick=True
             )
+        # A suggestive image Grok refused may be mature on Civitai (owner only).
+        attempt_nsfw = nsfw or (attempt_idx > 0 and fallback_mature
+                                and attempt_provider not in _CENSORED_IMAGE_PROVIDERS)
         tried = 0
         network_retry_used = False
         while tried < (tries if attempt_idx == 0 else 1):
@@ -442,7 +447,7 @@ async def generate_image(
                         aspect_ratio=aspect_ratio,
                         resolved_model=attempt_model,
                         artifacts_dir=artifacts_dir,
-                        nsfw=nsfw,
+                        nsfw=attempt_nsfw,
                         negative_prompt=negative_prompt,
                         loras=loras,
                         image=image,
@@ -457,19 +462,28 @@ async def generate_image(
                 log.warning(
                     "image.attempt_exception", provider=attempt_provider, error=str(e)[:200]
                 )
+                _route_ledger(settings, provider=attempt_provider, model=attempt_model,
+                              ok=False, error=str(e), primary=provider, nsfw=attempt_nsfw,
+                              prompt=prompt)
                 if _is_connection_error(e) and not network_retry_used:
                     network_retry_used = True  # never reached the backend: free retry
                     await asyncio.sleep(1.0)
                     continue
                 break
             tried += 1
-            if not _image_result_failed(result):
+            failed = _image_result_failed(result)
+            _route_ledger(settings, provider=attempt_provider, model=attempt_model,
+                          ok=not failed, error=result if failed else "", primary=provider,
+                          nsfw=attempt_nsfw, prompt=prompt)
+            if not failed:
                 if attempt_idx > 0:
-                    log.info("image.fallback_succeeded", primary=provider, used=attempt_provider)
+                    log.info("image.fallback_succeeded", primary=provider, used=attempt_provider,
+                             reason=errors[0][:200] if errors else "")
                 if result.startswith(("Refused:", "Pending:")):
                     return result
                 label = attempt_model or "auto"
-                notes = f"; fell back from {provider}" if attempt_idx > 0 else ""
+                why = f" because {errors[0][:160]}" if errors else ""
+                notes = f"; fell back from {provider}{why}" if attempt_idx > 0 else ""
                 if tried > 1:
                     notes += f"; succeeded on attempt {tried}"
                 return f"{result} (backend: {attempt_provider}/{label}{nsfw_tag}{notes})"
@@ -480,6 +494,25 @@ async def generate_image(
     summary = errors[-1] if errors else (result or "unknown error")
     tried_note = f" ({tries} attempts)" if tries > 1 else ""
     return f"Image generation failed{tried_note}: {summary}"
+
+
+def _route_ledger(settings: Settings, *, provider: str, model: str | None, ok: bool,
+                  error: str, primary: str, nsfw: bool, prompt: str) -> None:
+    """One line per image attempt on any backend (Civitai also writes its own
+    detailed line), so a silent fallback is visible afterwards."""
+    if provider == "civitai" and ok:
+        return  # the Civitai pipeline already logged this success in detail
+    try:
+        from ophelia.providers.civitai.pipeline import write_ledger
+
+        write_ledger(settings, {
+            "ts": time.time(), "kind": "attempt", "provider": provider,
+            "model": model or "auto", "ok": ok, "error": (error or "")[:300],
+            "primary": primary, "fell_back": provider != primary, "nsfw": nsfw,
+            "prompt": (prompt or "")[:200],
+        })
+    except Exception as e:
+        log.debug("image.route_ledger_failed", error=str(e))
 
 
 def _is_connection_error(exc: BaseException) -> bool:

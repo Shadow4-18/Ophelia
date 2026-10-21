@@ -69,7 +69,9 @@ GUEST_ALLOWED_TOOLS: frozenset[str] = frozenset(
 
 _EXPLICIT_RE = re.compile(
     r"\b(?:nude|naked|nudity|topless|bottomless|nsfw|nipples?|areolas?|"
-    r"genitals?|vagina|pussy|penis|explicit|uncensored|undressed|unclothed|"
+    r"genitals?|vagina|pussy|penis|cock|dick|cum|orgasm\w*|masturbat\w*|"
+    r"fingering|erotic|lewd|hentai|spread (?:legs|pussy)|touching (?:herself|himself)|"
+    r"explicit|uncensored|undressed|unclothed|"
     r"(?:no|without)\s+clothes|bare\s+(?:breasts?|chest)|exposed\s+breasts?|"
     r"porn\w*|sex(?:ual)?)\b",
     re.IGNORECASE,
@@ -621,6 +623,15 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
         ):
             nsfw = True
             log.info("generate_image.nsfw_auto_routed")
+        # Grok first for anything that isn't actually explicit (lingerie,
+        # suggestive, a torn dress): she sometimes flagged ordinary images
+        # nsfw and they went to paid Civitai. If Grok refuses, the fallback
+        # is Civitai with mature content allowed. A pinned Civitai model or
+        # an img2img edit keeps her choice.
+        mature_ok = self._is_owner and getattr(self.settings, "image_nsfw_allowed", False) is True
+        if nsfw and not looks_explicit(prompt) and not (model or "").strip() and not image:
+            nsfw = False
+            log.info("generate_image.sfw_first", preview=prompt[:80])
         result = await generate_image(
             self.settings,
             self.stack,
@@ -638,6 +649,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             count=count,
             attempts=attempts,
             deliver_to=self._current_sender_channel or "",
+            fallback_mature=mature_ok,
         )
         return await self._finalize_media_tool_result(result)
 
