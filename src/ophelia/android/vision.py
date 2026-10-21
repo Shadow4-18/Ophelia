@@ -44,6 +44,11 @@ _COORD_GUIDE = (
 )
 
 
+# Low temperature: the same screen should read the same way twice. Higher
+# values made her see a "different hand" on every look.
+_VISION_TEMPERATURE = 0.1
+
+
 def grid_shape(w: int, h: int) -> tuple[int, int]:
     """(cols, rows) of lettered cells: ~150px squares on a 1080x2400 screen,
     either way up (games are often landscape)."""
@@ -353,6 +358,7 @@ class ScreenVision:
 
         annotated_path: Path | None = None
         coord_guide = ""
+        clean_png: bytes | None = None  # unmarked copy, sent alongside cells
         marked = any(e.clickable or e.editable or e.scrollable for e in elements)
         if marked:
             annotated = _annotate_marks(b64_bytes, elements, native or shot_px)
@@ -360,10 +366,13 @@ class ScreenVision:
                 b64_bytes = annotated
                 coord_guide = _MARKS_GUIDE
         elif shot_px:
-            # Canvas/game: big lettered cells she can actually read and name.
+            # Canvas/game: lettered cells she can read and name, plus the
+            # clean screen, so labels never hide what she's reading (in card
+            # games they landed right on the rank/suit corners).
             try:
                 cols, rows = grid_shape(*shot_px)
-                b64_bytes = _annotate_cells(b64_bytes, cols, rows)
+                gridded = _annotate_cells(b64_bytes, cols, rows, label_size=1 / 5)
+                clean_png, b64_bytes = b64_bytes, gridded
                 self.last_grid = (cols, rows, shot_px[0], shot_px[1], time.time())
                 coord_guide = _CELLS_GUIDE
             except Exception as e:
@@ -400,6 +409,15 @@ class ScreenVision:
                 "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"},
             },
         ]
+        if clean_png is not None:
+            clean_b64 = base64.standard_b64encode(clean_png).decode("ascii")
+            content[1:1] = [
+                {"type": "text", "text": "Image 1: the screen as it is (read text, cards "
+                 "and numbers from this one). Image 2: the same screen with the cell grid "
+                 "(use it to say where things are)."},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/png;base64,{clean_b64}", "detail": "high"}},
+            ]
         if ui_text:
             content.insert(
                 1,
@@ -418,6 +436,7 @@ class ScreenVision:
                     model=model,
                     messages=[{"role": "user", "content": content}],
                     max_tokens=1500,  # reasoning models think first
+                    temperature=_VISION_TEMPERATURE,
                     extra_body=extra_body_for(self.settings, self.stack.name("vision")),
                 )
             text = (resp.choices[0].message.content or "").strip()
@@ -473,6 +492,7 @@ class ScreenVision:
                          "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
                     ]}],
                     max_tokens=600,
+                    temperature=_VISION_TEMPERATURE,
                     extra_body=extra_body_for(self.settings, self.stack.name("vision")),
                 )
             text = (resp.choices[0].message.content or "").strip()
@@ -635,6 +655,7 @@ class ScreenVision:
                      "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}},
                 ]}],
                 max_tokens=1500,
+                temperature=_VISION_TEMPERATURE,
                 extra_body=extra_body_for(self.settings, self.stack.name("vision")),
             )
         return (resp.choices[0].message.content or "").strip() or "(vision returned nothing)"

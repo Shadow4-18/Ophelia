@@ -342,3 +342,39 @@ def test_shell_reports_stderr_when_stdout_is_empty():
 
     assert _no_output("Error: no such file") == "Error: no such file"
     assert _no_output("") == "(finished, no output)"
+
+
+@pytest.mark.asyncio
+async def test_game_look_sends_a_clean_copy_to_read_from(tmp_path):
+    """Cell labels sat on card corners; she now also gets the unmarked screen."""
+    import base64
+
+    from PIL import Image
+
+    from ophelia.android.vision import _VISION_TEMPERATURE, ScreenVision
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2400, 1080), (20, 20, 20)).save(buf, format="PNG")
+    shot = tmp_path / "s.png"
+    shot.write_bytes(buf.getvalue())
+    v = ScreenVision.__new__(ScreenVision)
+    v.android = SimpleNamespace(mode="shizuku", display_size=AsyncMock(return_value=(2400, 1080)),
+                                learn_display_size=lambda size: None)
+    v.settings = SimpleNamespace(vision_grid_overlay=True, deepseek_thinking=False)
+    v.stack = SimpleNamespace(supports_vision=lambda: True, name=lambda role: "deepseek")
+    v.capture = AsyncMock(return_value=shot)
+    v.read_elements = AsyncMock(return_value=[])
+    sent = {}
+
+    async def create(**kw):
+        sent.update(kw)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hand: A♥ K♥"))])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    v._vision_client = AsyncMock(return_value=(client, "deepseek-flash"))
+    assert await v.see(question="what's in my hand?") == "hand: A♥ K♥"
+    images = [p["image_url"]["url"] for p in sent["messages"][0]["content"] if p["type"] == "image_url"]
+    assert len(images) == 2
+    assert base64.b64decode(images[0].split(",", 1)[1]) == shot.read_bytes()  # clean first
+    assert images[1] != images[0]  # then the gridded one
+    assert sent["temperature"] == _VISION_TEMPERATURE
