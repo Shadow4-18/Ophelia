@@ -248,11 +248,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "search_civitai_models",
             "description": (
-                "Browse Civitai checkpoints/LoRAs when you want to pin a specific "
-                "model. generate_image auto mode picks a tested checkpoint (no "
-                "random LoRAs). Use this to find a character LoRA AIR, then pass "
-                "model=/loras= on generate_image. Check baseModel compatibility "
-                "and include short trigger_words in your own prompt."
+                "Search or browse Civitai's checkpoints and LoRAs (its live site "
+                "API). Auto mode already rotates through top checkpoints and adds "
+                "concept LoRAs, so use this when you want something specific: a "
+                "character or outfit LoRA, a style, or what's hot this week "
+                "(empty query + base_model + sort='Highest Rated' + period='Week'). "
+                "Pass the air to generate_image model= (checkpoint) or loras= "
+                "(LoRA, same baseModel family) and put short trigger_words in your "
+                "prompt. A checkpoint you pin that he reacts ❤/🔥 to joins auto "
+                "mode's rotation."
             ),
             "parameters": {
                 "type": "object",
@@ -260,9 +264,25 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "What to find — e.g. 'illustrious anime', "
-                            "'realistic portrait sdxl', 'character name lora'."
+                            "Name words, e.g. 'hassaku', 'makima', 'latex bodysuit'. "
+                            "Empty to browse (then give base_model or period)."
                         ),
+                    },
+                    "base_model": {
+                        "type": "string",
+                        "enum": ["Illustrious", "Pony", "SDXL 1.0", "NoobAI", "Flux.1 D",
+                                 "ZImageTurbo", "Qwen"],
+                        "description": "Only this family (LoRAs must match the checkpoint's).",
+                    },
+                    "sort": {
+                        "type": "string",
+                        "enum": ["Most Downloaded", "Highest Rated", "Newest"],
+                        "description": "Default Most Downloaded.",
+                    },
+                    "period": {
+                        "type": "string",
+                        "enum": ["AllTime", "Year", "Month", "Week", "Day"],
+                        "description": "Time window for the sort. Default AllTime.",
                     },
                     "type": {
                         "type": "string",
@@ -278,7 +298,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "description": "Include NSFW-tagged models (default true).",
                     },
                 },
-                "required": ["query"],
+                "required": [],
             },
         },
     },

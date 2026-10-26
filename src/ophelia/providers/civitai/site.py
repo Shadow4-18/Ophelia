@@ -36,6 +36,8 @@ class CivitaiResource:
     download_count: int = 0
     thumbs_up: int = 0
     description: str = ""
+    availability: str = ""  # Public | EarlyAccess | ... ("" = not reported)
+    newest_base_model: str = ""  # baseModel of the model's newest version
 
     @property
     def ecosystem(self) -> str:
@@ -116,6 +118,7 @@ async def search_models(
     nsfw: bool | None = True,
     sort: str = "Most Downloaded",
     base_model: str | None = None,
+    period: str | None = None,
 ) -> list[CivitaiResource]:
     """Search Civitai models; return best version of each hit with AIR + triggers.
 
@@ -124,14 +127,17 @@ async def search_models(
     for NSFW gens — Flux is filtered out of auto-pick.
     """
     q = (query or "").strip()
-    if not q:
-        return []
+    if not q and not base_model and not period:
+        return []  # nothing to search for or browse by
     params: dict[str, Any] = {
-        "limit": max(1, min(int(limit), 20)),
-        "query": q,
+        "limit": max(1, min(int(limit), 100)),
         "types": types,
         "sort": sort,
     }
+    if q:
+        params["query"] = q
+    if period:
+        params["period"] = period  # AllTime | Year | Month | Week | Day
     # nsfw=true → include mature; false → SFW only; None → API default
     if nsfw is True:
         params["nsfw"] = "true"
@@ -160,6 +166,11 @@ async def search_models(
         versions = item.get("modelVersions") or []
         if not versions:
             continue
+        # One model can have versions for several bases (Big Love: Pony, SDXL,
+        # Qwen): with a base filter, take that base's newest version.
+        newest_base = str(versions[0].get("baseModel") or "")
+        if base_model:
+            versions = [v for v in versions if v.get("baseModel") == base_model] or versions
         # Prefer a version that already has an air / canGenerate when present.
         ver = versions[0]
         for v in versions:
@@ -196,6 +207,8 @@ async def search_models(
                 download_count=int(stats.get("downloadCount") or 0),
                 thumbs_up=int(stats.get("thumbsUpCount") or 0),
                 description=desc,
+                availability=str(ver.get("availability") or ""),
+                newest_base_model=newest_base,
             )
         )
     return out
