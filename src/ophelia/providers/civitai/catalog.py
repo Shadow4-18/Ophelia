@@ -79,6 +79,8 @@ class Recipe:
     pool: str = ""  # auto-mode rotation pool (anime|pony|realistic), "" = not pooled
     weight: float = 1.0  # share of its pool before feedback
     pony_source: str = ""  # tags in place of source_anime (realistic Pony merges)
+    sampler: str = ""  # sdcpp sampleMethod; "" = the family default (sampling_for)
+    schedule: str = ""  # sdcpp schedule; "" = the family default
 
     def estimate_buzz(self, width: int, height: int, steps: int, quantity: int) -> float:
         px = width * height
@@ -171,7 +173,7 @@ RECIPES: dict[str, Recipe] = {
         Recipe(
             key="lustify", label="LUSTIFY ZENITH V9 (photoreal NSFW, SDXL)",
             ecosystem="sdxl", family="sdxl", style="realistic",
-            model=LUSTIFY_AIR, steps=25, cfg=4.5, prompt_style="mixed",
+            model=LUSTIFY_AIR, steps=30, cfg=4.5, prompt_style="mixed",
             base_model="SDXL 1.0", pool="realistic", weight=3.0,
             notes="Photoreal, explicit-capable. Tags or natural language.",
         ),
@@ -301,6 +303,51 @@ _ALIASES = {
 def pool(style: str) -> list[Recipe]:
     """Recipes that take turns for a style in auto mode."""
     return [r for r in RECIPES.values() if r.pool == style]
+
+
+# Sampler per family. Civitai's sdcpp default is plain euler/discrete, which
+# under-cooks SDXL photoreal models (smeared hands, doubled limbs): photoreal
+# runs DPM++ 2M Karras like their authors recommend, anime/Pony Euler a.
+_SAMPLING = {
+    "anime": ("euler_a", "discrete"),
+    "realistic": ("dpm++2m", "karras"),
+}
+
+
+def sampling_for(recipe: Recipe) -> tuple[str, str]:
+    """(sampleMethod, schedule) for SDXL/SD1 checkpoints; ("", "") elsewhere."""
+    if recipe.ecosystem not in ("sdxl", "sd1"):
+        return "", ""
+    if recipe.sampler:
+        return recipe.sampler, recipe.schedule or "discrete"
+    if recipe.style == "realistic" or (recipe.family == "sdxl" and recipe.style != "anime"):
+        return _SAMPLING["realistic"]
+    return _SAMPLING["anime"]
+
+
+# Negative embeddings (textual inversions) per family: (AIR, trigger word).
+# They go in the request's embeddings list and their trigger words in the
+# negative prompt; each fixes what plain negative words can't (hands, extra
+# limbs, the plastic look). Picked from the most downloaded on Civitai, with
+# file names equal to their trigger words so the engine finds them.
+LAZYNEG = ("urn:air:sdxl:embedding:civitai:1302719@2121199", "lazyneg")
+LAZYHAND = ("urn:air:sdxl:embedding:civitai:1302719@2268235", "lazyhand")
+ZPDXL3 = ("urn:air:sdxl:embedding:civitai:332646@720175", "zPDXL3")
+ZPDXL_REAL = ("urn:air:sdxl:embedding:civitai:332646@482268", "zPDXLrl")
+DEEPNEG_XL = ("urn:air:sdxl:embedding:civitai:407448@454217", "DeepNegative_xl_v1")
+NEG_HANDS_XL = ("urn:air:sdxl:embedding:civitai:583583@651084", "NEGATIVE_HANDS")
+
+
+def negative_embeddings(recipe: Recipe) -> list[tuple[str, str]]:
+    if recipe.ecosystem != "sdxl" or not recipe.negative:
+        return []
+    if recipe.family == "illustrious":
+        return [LAZYNEG, LAZYHAND]
+    if recipe.family == "pony":
+        return [ZPDXL3, ZPDXL_REAL] if recipe.style == "realistic" else [ZPDXL3]
+    if recipe.family == "sdxl" and recipe.style != "anime":
+        return [DEEPNEG_XL, NEG_HANDS_XL]
+    return []
 
 
 def recipe_by_name(name: str) -> Recipe | None:

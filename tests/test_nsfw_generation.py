@@ -432,3 +432,44 @@ async def test_search_tool_browse(monkeypatch):
     assert got == {"query": "", "types": "Checkpoint", "limit": 5, "nsfw": True,
                    "sort": "Highest Rated", "base_model": "Illustrious", "period": "Week"}
     assert "browse (Illustrious, Highest Rated, Week)" in out
+
+
+
+# --- prompt vs negative prompt ------------------------------------------------------
+
+
+@pytest.mark.parametrize("prompt,clean,moved", [
+    ("1girl, nude, bad anatomy, (worst quality:1.4), no extra limbs, no bra, smile",
+     "1girl, nude, no bra, smile", ["bad anatomy", "worst quality", "extra limbs"]),
+    ("photo of a woman on a bed with no extra limbs, natural skin. Negative prompt: "
+     "blurry, deformed hands", "photo of a woman on a bed, natural skin",
+     ["blurry", "deformed hands", "extra limbs"]),
+    ("a woman with no makeup, freckles, perfect hands",
+     "a woman with no makeup, freckles, perfect hands", []),
+    ("1girl, no humans, no panties, extra_fingers", "1girl, no humans, no panties",
+     ["extra fingers"]),
+    ("woman, nude, without deformed hands, blurry background",
+     "woman, nude, blurry background", ["deformed hands"]),
+])
+def test_negative_words_leave_the_prompt(prompt, clean, moved):
+    from ophelia.providers.civitai.prompting import split_negatives
+
+    assert split_negatives(prompt) == (clean, moved)
+
+
+def test_negatives_and_embeddings_per_family():
+    from ophelia.providers.civitai.catalog import negative_embeddings, sampling_for
+    from ophelia.providers.civitai.pipeline import build_negative
+
+    neg, emb = build_negative(RECIPES["illustrious"], nsfw=True, extra="glasses, lazyneg")
+    assert neg.startswith("lazyneg, lazyhand, bad quality") and neg.endswith("glasses")
+    assert neg.count("lazyneg") == 1 and len(emb) == 2
+    triggers = [t for _, t in negative_embeddings(RECIPES["cyberrealistic-pony"])]
+    assert triggers == ["zPDXL3", "zPDXLrl"]
+    assert [t for _, t in negative_embeddings(RECIPES["pony"])] == ["zPDXL3"]
+    assert build_negative(RECIPES["lustify"], nsfw=False, embeddings=False)[1] == []
+    assert build_negative(RECIPES["zimage-turbo"], nsfw=True, extra="x") == ("", [])
+    assert sampling_for(RECIPES["pornmaster"]) == ("dpm++2m", "karras")
+    assert sampling_for(RECIPES["realism-il"]) == ("dpm++2m", "karras")
+    assert sampling_for(RECIPES["autismmix"]) == ("euler_a", "discrete")
+    assert sampling_for(RECIPES["qwen"]) == ("", "")

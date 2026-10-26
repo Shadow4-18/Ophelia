@@ -160,6 +160,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "zimage/qwen/flux: plain sentences. Be specific: body, hair, outfit "
                 "or what's exposed, the act, expression, where. Explicit images are of "
                 "adults only: prompts describing minors are refused.\n"
+                "- prompt = only what SHOULD be in the image. Never write what you "
+                "don't want there: 'no extra limbs' or 'bad anatomy' in the prompt "
+                "draws limbs and bad anatomy (those get moved out for you, and the "
+                "result says so). Clothing tags like 'no bra' are fine.\n"
+                "- negative_prompt = only what should NOT be in the image, as short "
+                "tags (e.g. 'tattoos, glasses, makeup'). It ADDS to each model's tuned "
+                "negatives, which already cover anatomy (extra limbs/fingers, fused "
+                "fingers, bad hands, deformed) and quality, plus negative embeddings "
+                "for the model family. So leave it empty unless there's something "
+                "specific to exclude.\n"
                 "- quality=high|max costs ~1.5-2x / ~2-3x Buzz (more steps, bigger "
                 "canvas): only when the owner asks for better quality.\n"
                 "- count=2-4 makes several in one go (Buzz x count).\n"
@@ -223,8 +233,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "negative_prompt": {
                         "type": "string",
                         "description": (
-                            "Optional; each model gets a tuned default. Only set to "
-                            "exclude something specific."
+                            "Optional extra things to keep OUT of the image, as tags. "
+                            "Added to the model's tuned negatives (anatomy/quality are "
+                            "already covered). Never put these words in prompt."
                         ),
                     },
                     "image": {
