@@ -257,7 +257,9 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
         strength = min(1.0, max(0.05, float(req.strength)))
     except (TypeError, ValueError):
         strength = 0.7
-    use_emb = getattr(settings, "civitai_negative_embeddings", True) is not False
+    # Opt-in: on Civitai these drew Patreon watermarks and censor bars into
+    # anime images (what a negative embedding encodes, applied positively).
+    use_emb = getattr(settings, "civitai_negative_embeddings", False) is True
     extra_negative = merge_negatives(req.negative_prompt or "", ", ".join(moved))
     negative, embeddings = build_negative(recipe, nsfw=req.nsfw, extra=extra_negative,
                                           embeddings=use_emb)
@@ -426,7 +428,13 @@ def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "") -> str
         bits.append("LoRA trigger words not in your prompt: " + ", ".join(missing[:6]))
     if note:
         bits.append(note)
-    return f"{head} [" + "; ".join(bits) + "]"
+    # Exactly what went to Civitai, so she can read it back instead of guessing.
+    sent = [f"settings: {plan.width}x{plan.height}, {plan.steps} steps, cfg {plan.recipe.cfg}"
+            + (f", sampler {record['sampler']}" if record.get("sampler") else "")
+            + (f", embeddings {', '.join(plan.embeddings)}" if plan.embeddings else ""),
+            f"prompt sent: {plan.prompt[:1500]}",
+            f"negative sent: {plan.negative[:1500] or '(none)'}"]
+    return f"{head} [" + "; ".join(bits) + "]\n" + "\n".join(sent)
 
 
 async def run_generation(

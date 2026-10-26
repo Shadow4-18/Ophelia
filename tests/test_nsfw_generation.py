@@ -473,3 +473,10 @@ def test_negatives_and_embeddings_per_family():
     assert sampling_for(RECIPES["realism-il"]) == ("dpm++2m", "karras")
     assert sampling_for(RECIPES["autismmix"]) == ("euler_a", "discrete")
     assert sampling_for(RECIPES["qwen"]) == ("", "")
+
+
+def test_variety_respects_an_alley_setting(tmp_path):
+    p = ("1girl, sitting on a concrete ledge at night, knees up, neon sign glow behind her, "
+         "rain-slick alley, cyan and magenta rim light, dutch angle, from below")
+    _, added = variety.add_variety(_settings(tmp_path), p, natural=False, rng=random.Random(3))
+    assert not any(a in variety._BANKS["setting"][1] for a in added)  # no "onsen" on top
