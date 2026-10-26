@@ -161,3 +161,31 @@ async def test_telegram_logs_is_owner_only():
     reply.assert_not_awaited()
     await gw.cmd_logs(update(1), SimpleNamespace(args=["5"]))
     assert "hello world" in reply.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_telegram_logs_file_and_image_ledger(tmp_path):
+    from ophelia import log_tap
+    from ophelia.channels.session import ChannelSession  # noqa: F401
+    from ophelia.channels.telegram_bot import TelegramGateway
+
+    gw = TelegramGateway.__new__(TelegramGateway)
+    gw.settings = MagicMock()
+    gw.settings.is_owner_channel = lambda ch: ch == "telegram:1"
+    gw.settings.data_dir = tmp_path
+    log_tap.add(20, "18:30:00 info civitai.submit model=lustify")
+    doc = AsyncMock()
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=1),
+                             message=SimpleNamespace(reply_text=AsyncMock(), reply_document=doc))
+    await gw.cmd_logs(update, SimpleNamespace(args=["file"]))
+    sent = doc.await_args.kwargs["document"]
+    assert sent.filename.startswith("ophelia-log-") and sent.filename.endswith(".txt")
+    assert b"civitai.submit model=lustify" in sent.input_file_content
+    ledger = tmp_path / "logs" / "image_generations.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"provider": "civitai", "auth": "Bearer supersecretkeyvalue99"}\n')
+    log_tap.register_secrets(["supersecretkeyvalue99"])
+    await gw.cmd_logs(update, SimpleNamespace(args=["images"]))
+    sent = doc.await_args.kwargs["document"]
+    assert sent.filename.endswith(".jsonl") and b"civitai" in sent.input_file_content
+    assert b"supersecretkeyvalue99" not in sent.input_file_content

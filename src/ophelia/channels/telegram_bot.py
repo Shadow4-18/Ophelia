@@ -662,12 +662,26 @@ class TelegramGateway:
         from ophelia import log_tap
 
         log_tap.register_settings_secrets(self.settings)
-        n, level = 25, "info"
+        n, level, as_file, images = 25, "info", False, False
         for arg in context.args or []:
             if arg.isdigit():
                 n = max(1, min(200, int(arg)))
+            elif arg.lower() in ("file", "all", "download"):
+                as_file = True
+            elif arg.lower() in ("images", "image", "ledger"):
+                images = True
             else:
                 level = arg
+        if images:
+            await self._send_log_file(update, *self._image_ledger_file())
+            return
+        if as_file:
+            # Everything still in the buffer (since she started, up to 1500
+            # lines) as a .txt: too long to scroll or copy in Termux.
+            lines = log_tap.tail(100_000, min_level=log_tap.level_number(level))
+            await self._send_log_file(update, "\n".join(lines) + "\n",
+                                      f"ophelia-log-{time.strftime('%Y%m%d-%H%M')}.txt")
+            return
         lines = log_tap.tail(n, min_level=log_tap.level_number(level))
         if not lines:
             await self._reply_text(update, "No log lines yet.")
@@ -676,6 +690,30 @@ class TelegramGateway:
         for i in range(0, len(text), 3900):
             # Plain text: log lines are full of characters Markdown would eat.
             await update.message.reply_text(text[i:i + 3900])
+
+    def _image_ledger_file(self) -> tuple[str, str]:
+        """The last 200 image generations (what was sent to which backend
+        and what came back), secrets redacted."""
+        from ophelia import log_tap
+        from ophelia.providers.civitai.pipeline import ledger_path
+
+        try:
+            lines = ledger_path(self.settings).read_text(encoding="utf-8").splitlines()[-200:]
+        except Exception:
+            lines = []
+        text = log_tap.redact("\n".join(lines)) + ("\n" if lines else "")
+        return text, f"ophelia-images-{time.strftime('%Y%m%d-%H%M')}.jsonl"
+
+    async def _send_log_file(self, update: Update, text: str, name: str) -> None:
+        if not text.strip():
+            await self._reply_text(update, "Nothing logged yet.")
+            return
+        import io
+
+        data = io.BytesIO(text.encode("utf-8"))
+        await update.message.reply_document(
+            document=InputFile(data, filename=name),
+            caption=f"{text.count(chr(10))} lines (secrets redacted)")
 
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Stop whatever she's doing right now: the reply she's working on,
@@ -1569,7 +1607,7 @@ class TelegramGateway:
     MENU_COMMANDS: tuple[tuple[str, str], ...] = (
         ("stop", "stop what she's doing right now"),
         ("status", "what's on / running / pending"),
-        ("logs", "her latest terminal lines (/logs 50, /logs warn)"),
+        ("logs", "her terminal (/logs 50, /logs warn, /logs file, /logs images)"),
         ("pause", "pause autonomous outreach"),
         ("resume", "resume autonomous outreach"),
         ("continue", "resume an unfinished task"),
