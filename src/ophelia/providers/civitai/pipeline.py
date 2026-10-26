@@ -21,7 +21,8 @@ from typing import Any
 import structlog
 
 from ophelia.config import Settings
-from ophelia.providers.civitai import site
+from ophelia.providers.civitai import loras as auto_loras
+from ophelia.providers.civitai import selection, site, variety
 from ophelia.providers.civitai.air import (
     air_kind,
     base_family,
@@ -56,6 +57,7 @@ from ophelia.providers.civitai.orchestration import (
 from ophelia.providers.civitai.prompting import (
     detect_style_with_reason,
     format_prompt,
+    minor_terms,
     negative_for,
 )
 
@@ -102,6 +104,24 @@ class Plan:
     notes: list[str] = field(default_factory=list)
     lora_triggers: list[str] = field(default_factory=list)
     error: str = ""
+    fallback: Recipe | None = None  # the pool's head, if a rotated-in model is refused
+    added: list[str] = field(default_factory=list)  # variety fill-ins
+    auto_loras: list[str] = field(default_factory=list)  # LoRAs auto mode added
+    raw_prompt: str = ""  # before shaping for the model
+    aspect: str = "1:1"
+    nsfw: bool = False
+    custom_negative: bool = False
+
+    def retarget(self, recipe: Recipe) -> None:
+        """Shape this plan for another model (the pool head after a refusal)."""
+        if recipe.family != self.recipe.family:
+            for air in self.auto_loras:
+                self.loras.pop(air, None)
+        self.recipe = recipe
+        self.prompt = format_prompt(recipe, self.raw_prompt, nsfw=self.nsfw)
+        if not self.custom_negative:
+            self.negative = negative_for(recipe, nsfw=self.nsfw) if recipe.negative else ""
+        self.width, self.height, self.steps = render_settings(recipe, self.quality, self.aspect)
 
     @property
     def est_buzz(self) -> float:
@@ -135,6 +155,9 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     from ophelia.providers.media import normalize_aspect_ratio
 
     notes: list[str] = []
+    if req.nsfw and (bad := minor_terms(req.prompt)):
+        return _refusal("explicit images are of adults only; the prompt describes a minor ("
+                        + ", ".join(bad) + "). Rewrite it with adult characters.")
     loras = {sanitize_air(k): v for k, v in parse_loras(req.loras).items() if sanitize_air(k)}
     pin = sanitize_air((req.model or "").strip())
     if pin.lower() in ("auto", "pick", "dynamic", "flux"):
@@ -153,6 +176,7 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
             lora_base[air] = meta.base_model or ""
             triggers.extend(t for t in meta.trained_words[:3] if t)
 
+    fallback: Recipe | None = None
     if pin and is_air(pin):
         meta = await _meta(settings, pin)
         recipe = recipe_for_air(pin, meta.base_model if meta else "")
@@ -165,18 +189,37 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
         recipe = named
         notes.append(f"recipe {recipe.key}")
     else:
-        recipe = _auto_recipe(settings, req, loras, lora_base, notes)
+        recipe, fallback = _auto_recipe(settings, req, loras, lora_base, notes)
 
     if req.image and not recipe.img2img:
         if pin:
             return _refusal(f"{recipe.label} can't edit an image (text-to-image only). "
                             "Pick an SDXL model (illustrious, pony, lustify) for img2img.")
-        fallback = RECIPES["lustify" if recipe.style == "realistic" else "illustrious"]
-        notes.append(f"{recipe.key} has no img2img, using {fallback.key}")
-        recipe = fallback
+        swap = RECIPES["lustify" if recipe.style == "realistic" else "illustrious"]
+        notes.append(f"{recipe.key} has no img2img, using {swap.key}")
+        recipe, fallback = swap, None
 
     if loras and not recipe.loras:
         return _refusal(f"{recipe.label} doesn't take LoRAs.")
+
+    prompt = req.prompt
+    found: dict[str, float] = {}
+    if not loras and not pin and req.nsfw and not req.image:
+        found, trig, lora_notes = await auto_loras.pick_loras(settings, recipe, prompt)
+        if found:
+            loras.update(found)
+            lora_base.update({a: recipe.base_model for a in found})
+            low = prompt.lower()
+            fresh = [t for t in trig if t.lower() not in low]
+            if fresh:
+                prompt = ", ".join(fresh) + ", " + prompt
+        notes.extend(lora_notes)
+    added: list[str] = []
+    if not req.image and variety.enabled(settings):
+        prompt, added = variety.add_variety(settings, prompt,
+                                            natural=recipe.prompt_style == "natural")
+        if added:
+            notes.append("variety: " + ", ".join(added))
     ck_air = recipe.model if is_air(recipe.model) else ""
     mismatches = [
         err for air in loras
@@ -195,21 +238,25 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     quality = (req.quality or getattr(settings, "civitai_quality", "") or "standard").lower()
     if quality not in QUALITIES:
         quality = "standard"
-    width, height, steps = render_settings(recipe, quality, normalize_aspect_ratio(req.aspect_ratio))
+    aspect = normalize_aspect_ratio(req.aspect_ratio)
+    width, height, steps = render_settings(recipe, quality, aspect)
     max_count = max(1, int(getattr(settings, "civitai_max_count", 4) or 1))
     quantity = max(1, min(int(req.count or 1), recipe.max_quantity, max_count))
     try:
         strength = min(1.0, max(0.05, float(req.strength)))
     except (TypeError, ValueError):
         strength = 0.7
-    negative = (req.negative_prompt or "").strip() or negative_for(recipe, nsfw=req.nsfw)
+    custom_negative = (req.negative_prompt or "").strip()
+    negative = custom_negative or negative_for(recipe, nsfw=req.nsfw)
     return Plan(
         recipe=recipe,
-        prompt=format_prompt(recipe, req.prompt, nsfw=req.nsfw),
+        prompt=format_prompt(recipe, prompt, nsfw=req.nsfw),
         negative=negative if recipe.negative else "",
         width=width, height=height, steps=steps, quality=quality,
         loras=loras, quantity=quantity, strength=strength,
-        notes=notes, lora_triggers=triggers,
+        notes=notes, lora_triggers=triggers, fallback=fallback, added=added,
+        auto_loras=list(found), raw_prompt=prompt, aspect=aspect, nsfw=req.nsfw,
+        custom_negative=bool(custom_negative),
     )
 
 
@@ -219,7 +266,8 @@ def _auto_recipe(
     loras: dict[str, float],
     lora_base: dict[str, str],
     notes: list[str],
-) -> Recipe:
+) -> tuple[Recipe, Recipe | None]:
+    """(recipe, the pool head to fall back to if a rotated-in one is refused)."""
     # LoRAs decide the model family (a Pony LoRA gets the Pony checkpoint).
     ecos = {ecosystem_from_air_or_base(a) for a in loras}
     fams = {base_family(b) for b in lora_base.values() if b}
@@ -228,27 +276,45 @@ def _auto_recipe(
         key = _LORA_ECO_RECIPE[next(iter(ecos))]
     elif len(fams) == 1 and next(iter(fams)) in _LORA_FAMILY_RECIPE:
         key = _LORA_FAMILY_RECIPE[next(iter(fams))]
+    family = ""
     if key:
         notes.append(f"{key} (follows the LoRA family)")
         style = RECIPES[key].style
+        family = RECIPES[key].family
     else:
         style, matched = detect_style_with_reason(req.prompt)
         if style == "sdxl":
-            style = (getattr(settings, "civitai_default_style", "") or "anime").lower()
+            style = _default_style(settings)
             matched = ""
         key = AUTO_RECIPE.get(style, "illustrious")
         notes.append(
             f"{key} (style={style}, " + (f"matched {matched!r})" if matched else "default)")
         )
     recipe = RECIPES[key]
+    head: Recipe | None = None
     override = _checkpoint_overrides(settings).get(recipe.style) or \
         _checkpoint_overrides(settings).get(style)
     if override and recipe.ecosystem == "sdxl":
         recipe = replace(recipe, model=override, key=f"{recipe.key}*", label=override)
         notes.append(f"checkpoint override {override}")
+    elif recipe.pool:
+        picked, why = selection.pick(settings, recipe.pool, recipe, family=family)
+        if why:
+            head, recipe = recipe, picked
+            notes.append(f"{picked.key} ({why})")
     log.info("civitai.auto_pick", recipe=recipe.key, model=recipe.model or recipe.ecosystem,
              loras=list(loras) or None, note=notes[-1])
-    return recipe
+    return recipe, head
+
+
+def _default_style(settings: Settings) -> str:
+    """Style for a prompt with no style words: the setting, or "mix" for
+    anime or realistic by turns."""
+    style = (getattr(settings, "civitai_default_style", "") or "anime")
+    style = str(style).strip().lower()
+    if style in ("mix", "mixed", "random", "any"):
+        return random.choices(("anime", "realistic"), weights=(3, 2))[0]
+    return style
 
 
 def _refusal(msg: str, recipe: Recipe | None = None) -> Plan:
@@ -349,6 +415,7 @@ async def run_generation(
         "prompt": plan.prompt or req.prompt,
         "nsfw": req.nsfw,
         "pick": "; ".join(plan.notes) or None,
+        "variety": plan.added or None,
     }
     if plan.error:
         msg = f"Refused: {plan.error}"
@@ -416,6 +483,20 @@ async def run_generation(
             record["model"] = recipe.model
             body = body_for(recipe, seed)
             r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
+    if r.status_code in (400, 404, 422) and plan.fallback is not None \
+            and "buzz" not in r.text.lower():
+        # A rotated-in checkpoint Civitai won't run: bench it, use the pool's head.
+        selection.bench(settings, recipe.model, f"HTTP {r.status_code}: {r.text[:200]}")
+        plan.notes.append(f"{recipe.key} refused (HTTP {r.status_code}), "
+                          f"used {plan.fallback.key}")
+        recipe = plan.fallback
+        plan.retarget(recipe)
+        record.update(recipe=recipe.key, model=recipe.model, cfg=recipe.cfg,
+                      loras=dict(plan.loras), prompt=plan.prompt, steps=plan.steps,
+                      width=plan.width, height=plan.height, est_buzz=plan.est_buzz,
+                      negative_prompt=plan.negative or None)
+        body = body_for(recipe, seed)
+        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
     if r.status_code >= 400:
         return fail(f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}")
 

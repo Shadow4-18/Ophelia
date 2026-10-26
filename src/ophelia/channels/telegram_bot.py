@@ -161,13 +161,26 @@ class _RecordingBot(ExtBot):
 
     __slots__ = ()
     on_sent = None  # set on the class by the gateway: callable(Message)
+    on_sent_photo = None  # callable(Message, file name) for photos
 
     async def _send_message(self, *args, **kwargs):
         msg = await super()._send_message(*args, **kwargs)
+        if msg is None or isinstance(msg, bool):
+            return msg
         hook = type(self).on_sent
-        if hook is not None and msg is not None and not isinstance(msg, bool):
+        if hook is not None:
             try:
                 hook(msg)
+            except Exception:
+                pass
+        photo_hook = type(self).on_sent_photo
+        if photo_hook is not None:
+            try:
+                data = kwargs.get("data") if "data" in kwargs else (args[1] if len(args) > 1
+                                                                     else None)
+                name = getattr((data or {}).get("photo"), "filename", None)
+                if name:
+                    photo_hook(msg, name)
             except Exception:
                 pass
         return msg
@@ -486,6 +499,15 @@ class TelegramGateway:
         if chat_id is not None:
             self._index.add(chat_id, msg.message_id, "her", _describe(msg))
 
+    def _record_sent_photo(self, msg, filename: str) -> None:
+        """Remember which generated image went out as which message, so his
+        reaction to it can teach auto mode what he likes."""
+        from ophelia.providers.civitai import feedback
+
+        chat = getattr(msg, "chat", None)
+        feedback.remember_sent(self.settings, getattr(chat, "id", chat), msg.message_id,
+                               filename)
+
     def _record_received(self, update: Update) -> None:
         msg = getattr(update, "message", None)
         if msg is not None and getattr(update, "effective_chat", None) is not None:
@@ -581,7 +603,15 @@ class TelegramGateway:
             return  # removed a reaction, or a custom emoji we can't read
         target = self._index.get(mr.chat.id, mr.message_id)
         emoji = " ".join(added)
-        await self.session.note_reaction(channel, reaction_note(emoji, target), emoji)
+        note = reaction_note(emoji, target)
+        try:
+            from ophelia.providers.civitai import feedback
+
+            if feedback.record_reaction(self.settings, mr.chat.id, mr.message_id, emoji):
+                note += " (one of your generated images; it counts toward which models you use)"
+        except Exception as e:
+            log.debug("telegram.image_feedback_failed", error=str(e))
+        await self.session.note_reaction(channel, note, emoji)
 
     def _in_background(self, handler):
         """Run a message handler as a tracked background task so a long turn
@@ -1468,6 +1498,7 @@ class TelegramGateway:
             # Note every message she sends (for reactions/replies to it).
             object.__setattr__(app.bot, "__class__", _RecordingBot)
             _RecordingBot.on_sent = staticmethod(self._record_sent)
+            _RecordingBot.on_sent_photo = staticmethod(self._record_sent_photo)
         except Exception as e:
             log.warning("telegram.recording_bot_unavailable", error=str(e))
         app.add_error_handler(self._on_error)

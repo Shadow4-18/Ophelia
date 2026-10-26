@@ -16,6 +16,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ledger_in_tmp(tmp_path, monkeypatch):
+    """MagicMock settings have a MagicMock data_dir; keep the image ledger it
+    turns into a relative path out of the repo."""
+    monkeypatch.chdir(tmp_path)
+
+
 # --- Thread awareness -------------------------------------------------------
 
 

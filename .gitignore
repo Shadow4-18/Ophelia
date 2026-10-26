@@ -62,3 +62,6 @@ scripts/play_ambient.py
 # Tool caches / local Python version pins created on the phone
 .wrangler/
 .python-version
+
+# MagicMock settings in tests turn data_dir into this
+MagicMock/

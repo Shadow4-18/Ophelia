@@ -15,6 +15,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _ledger_in_tmp(tmp_path, monkeypatch):
+    """MagicMock settings have a MagicMock data_dir; keep the image ledger it
+    turns into a relative path out of the repo."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_image_result_includes_backend(tmp_path, monkeypatch):
     """The generate_image result should annotate which backend/model ran."""

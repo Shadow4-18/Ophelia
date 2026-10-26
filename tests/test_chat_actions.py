@@ -160,3 +160,25 @@ async def test_note_reaction_goes_in_history_without_a_reply():
     await session.note_reaction("telegram:1", "[He reacted ❤ to your message: \"hi\"]", "❤")
     assert memory.append_message.await_args.kwargs["metadata"] == {"type": "reaction_received"}
     humor.note_sticker_reaction.assert_awaited_once_with("❤")
+
+
+@pytest.mark.asyncio
+async def test_photos_she_sends_are_remembered_by_file(monkeypatch):
+    from telegram import Bot, InputFile
+    from telegram.ext import Application
+
+    sent = SimpleNamespace(message_id=56, chat=SimpleNamespace(id=1), text=None, caption=None,
+                           photo=[1])
+    monkeypatch.setattr(Bot, "_send_message", AsyncMock(return_value=sent))
+    app = Application.builder().token("1:x").build()
+    object.__setattr__(app.bot, "__class__", _RecordingBot)
+    seen = []
+    _RecordingBot.on_sent_photo = staticmethod(lambda msg, name: seen.append((msg.message_id,
+                                                                              name)))
+    try:
+        photo = InputFile(b"\x89PNG....", filename="civitai_1_2_0.png")
+        await app.bot._send_message("sendPhoto", {"photo": photo})
+        await app.bot._send_message("sendMessage", {"text": "hi"})
+    finally:
+        _RecordingBot.on_sent_photo = None
+    assert seen == [(56, "civitai_1_2_0.png")]
