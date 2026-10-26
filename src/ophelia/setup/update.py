@@ -179,6 +179,11 @@ def _working_tree_dirty(repo: Path) -> bool:
     return rc == 0 and bool(out.strip())
 
 
+def _dirty_files(repo: Path) -> list[str]:
+    rc, out = _git(repo, "diff", "--name-only", "HEAD")
+    return [ln.strip() for ln in out.splitlines() if ln.strip()] if rc == 0 else []
+
+
 def _pip_install(repo: Path) -> tuple[int, str]:
     pip = shutil.which("pip") or shutil.which("pip3")
     if not pip:
@@ -276,9 +281,12 @@ def run_update(
 
     dirty = _working_tree_dirty(repo)
     if dirty and not allow_dirty:
+        files = _dirty_files(repo)
+        shown = ", ".join(files[:8]) + (f" (+{len(files) - 8} more)" if len(files) > 8 else "")
         result.error = (
-            "Working tree has uncommitted changes. "
-            "Commit/stash them, or pass --allow-dirty / `/update dirty`."
+            f"Uncommitted local changes in: {shown or 'tracked files'}. "
+            "`/update dirty` updates anyway (if they clash, the update wins and "
+            "your changes are kept in `git stash list`)."
         )
         result.steps.append("git status: dirty")
         return result
