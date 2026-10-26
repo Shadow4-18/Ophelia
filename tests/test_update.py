@@ -216,3 +216,16 @@ def test_update_refuses_to_restart_into_broken_code(tmp_path):
     (bad / "x.py").write_text("<<<<<<< Updated upstream\n")
     ok, _ = update._compiles(tmp_path)
     assert not ok
+
+
+def test_dirty_update_names_the_files(tmp_path):
+    remote, phone = tmp_path / "remote.git", tmp_path / "phone"
+    _sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(remote))
+    _sh(tmp_path, "git", "clone", "-q", str(remote), str(phone))
+    (phone / "a.py").write_text("x = 1\n")
+    _sh(phone, "git", "add", "-A")
+    _sh(phone, "git", "commit", "-qm", "one")
+    (phone / "a.py").write_text("x = 2\n")
+    with patch("ophelia.setup.update.find_repo_root", return_value=phone):
+        r = run_update()
+    assert not r.ok and "a.py" in r.error and "/update dirty" in r.error
