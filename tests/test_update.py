@@ -163,3 +163,56 @@ async def test_session_cmd_update_parses_args(monkeypatch):
     assert captured["allow_dirty"] is True
     assert captured["restart"] is False
     assert any("Update" in r or "up to date" in r.lower() or "Updating" in r for r in replies)
+
+
+def _sh(cwd, *args):
+    import subprocess
+
+    subprocess.run(list(args), cwd=cwd, check=True, capture_output=True,
+                   env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t",
+                        "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                        "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def test_autostash_conflict_keeps_upstream_and_never_leaves_markers(tmp_path):
+    """The phone had a local edit to a file the update also changed: the
+    autostash pop conflicted, git still exited 0, and she crashed on start
+    with '<<<<<<< Updated upstream' in prompting.py."""
+    remote, phone, dev = tmp_path / "remote.git", tmp_path / "phone", tmp_path / "dev"
+    _sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(remote))
+    _sh(tmp_path, "git", "clone", "-q", str(remote), str(dev))
+    mod = Path("src/ophelia/prompting.py")
+    (dev / mod).parent.mkdir(parents=True)
+    (dev / mod).write_text("X = 1\n")
+    _sh(dev, "git", "add", "-A")
+    _sh(dev, "git", "commit", "-qm", "one")
+    _sh(dev, "git", "push", "-q", "origin", "HEAD:main")
+    _sh(tmp_path, "git", "clone", "-q", "-b", "main", str(remote), str(phone))
+    (dev / mod).write_text("X = 2\n")
+    _sh(dev, "git", "commit", "-qam", "two")
+    _sh(dev, "git", "push", "-q", "origin", "HEAD:main")
+    (phone / mod).write_text("X = 3  # local edit\n")
+
+    with patch("ophelia.setup.update.find_repo_root", return_value=phone), \
+            patch("ophelia.setup.update._pip_install", return_value=(0, "")), \
+            patch.dict("os.environ", {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                      "GIT_COMMITTER_NAME": "t",
+                                      "GIT_COMMITTER_EMAIL": "t@t"}):
+        r = run_update(allow_dirty=True)
+    assert r.ok, r.error
+    assert (phone / mod).read_text() == "X = 2\n"  # the update, no conflict markers
+    assert any("git stash list" in s for s in r.steps)
+    import subprocess
+
+    stash = subprocess.run(["git", "stash", "list"], cwd=phone, capture_output=True, text=True)
+    assert stash.stdout.strip()  # the local edit isn't lost
+
+
+def test_update_refuses_to_restart_into_broken_code(tmp_path):
+    from ophelia.setup import update
+
+    bad = tmp_path / "src" / "ophelia"
+    bad.mkdir(parents=True)
+    (bad / "x.py").write_text("<<<<<<< Updated upstream\n")
+    ok, _ = update._compiles(tmp_path)
+    assert not ok
