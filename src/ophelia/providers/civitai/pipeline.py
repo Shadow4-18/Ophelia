@@ -36,6 +36,7 @@ from ophelia.providers.civitai.air import (
 )
 from ophelia.providers.civitai.catalog import (
     AUTO_RECIPE,
+    negative_embeddings,
     QUALITIES,
     RECIPES,
     Recipe,
@@ -58,7 +59,9 @@ from ophelia.providers.civitai.prompting import (
     detect_style_with_reason,
     format_prompt,
     minor_terms,
+    merge_negatives,
     negative_for,
+    split_negatives,
 )
 
 log = structlog.get_logger()
@@ -110,7 +113,9 @@ class Plan:
     raw_prompt: str = ""  # before shaping for the model
     aspect: str = "1:1"
     nsfw: bool = False
-    custom_negative: bool = False
+    extra_negative: str = ""  # hers + what was moved out of the prompt
+    embeddings: list[str] = field(default_factory=list)  # negative embedding AIRs
+    use_embeddings: bool = True
 
     def retarget(self, recipe: Recipe) -> None:
         """Shape this plan for another model (the pool head after a refusal)."""
@@ -119,8 +124,8 @@ class Plan:
                 self.loras.pop(air, None)
         self.recipe = recipe
         self.prompt = format_prompt(recipe, self.raw_prompt, nsfw=self.nsfw)
-        if not self.custom_negative:
-            self.negative = negative_for(recipe, nsfw=self.nsfw) if recipe.negative else ""
+        self.negative, self.embeddings = build_negative(
+            recipe, nsfw=self.nsfw, extra=self.extra_negative, embeddings=self.use_embeddings)
         self.width, self.height, self.steps = render_settings(recipe, self.quality, self.aspect)
 
     @property
@@ -204,7 +209,11 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     if loras and not recipe.loras:
         return _refusal(f"{recipe.label} doesn't take LoRAs.")
 
-    prompt = req.prompt
+    # Negative-only words she put in the prompt ("no extra limbs", "bad
+    # anatomy") draw exactly those things there: move them to the negative.
+    prompt, moved = split_negatives(req.prompt)
+    if moved:
+        notes.append("moved to negative: " + ", ".join(moved[:8]))
     found: dict[str, float] = {}
     if not loras and not pin and req.nsfw and not req.image:
         found, trig, lora_notes = await auto_loras.pick_loras(settings, recipe, prompt)
@@ -248,17 +257,19 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
         strength = min(1.0, max(0.05, float(req.strength)))
     except (TypeError, ValueError):
         strength = 0.7
-    custom_negative = (req.negative_prompt or "").strip()
-    negative = custom_negative or negative_for(recipe, nsfw=req.nsfw)
+    use_emb = getattr(settings, "civitai_negative_embeddings", True) is not False
+    extra_negative = merge_negatives(req.negative_prompt or "", ", ".join(moved))
+    negative, embeddings = build_negative(recipe, nsfw=req.nsfw, extra=extra_negative,
+                                          embeddings=use_emb)
     return Plan(
         recipe=recipe,
         prompt=format_prompt(recipe, prompt, nsfw=req.nsfw),
-        negative=negative if recipe.negative else "",
+        negative=negative,
         width=width, height=height, steps=steps, quality=quality,
         loras=loras, quantity=quantity, strength=strength,
         notes=notes, lora_triggers=triggers, fallback=fallback, added=added,
         auto_loras=list(found), raw_prompt=prompt, aspect=aspect, nsfw=req.nsfw,
-        custom_negative=bool(custom_negative),
+        extra_negative=extra_negative, embeddings=embeddings, use_embeddings=use_emb,
     )
 
 
@@ -318,6 +329,18 @@ def _default_style(settings: Settings) -> str:
     if style in ("mix", "mixed", "random", "any"):
         return random.choices(("anime", "realistic"), weights=(3, 2))[0]
     return style
+
+
+def build_negative(recipe: Recipe, *, nsfw: bool, extra: str = "",
+                   embeddings: bool = True) -> tuple[str, list[str]]:
+    """(negative prompt, embedding AIRs): negative embedding trigger words,
+    the model's tuned negatives, then hers. Hers adds to the defaults; it
+    never replaces them (that dropped the anatomy terms)."""
+    if not recipe.negative:
+        return "", []
+    emb = negative_embeddings(recipe) if embeddings else []
+    neg = merge_negatives(", ".join(t for _, t in emb), negative_for(recipe, nsfw=nsfw), extra)
+    return neg, [air for air, _ in emb]
 
 
 def _refusal(msg: str, recipe: Recipe | None = None) -> Plan:
@@ -445,20 +468,28 @@ async def run_generation(
         inp = build_input(
             r, prompt=plan.prompt, width=plan.width, height=plan.height, steps=plan.steps,
             negative=plan.negative, loras=plan.loras or None, quantity=plan.quantity,
+            embeddings=plan.embeddings or None,
             seed=s, image_url=image_url, strength=plan.strength,
         )
+        for key in dropped:
+            inp.pop(key, None)
         body: dict[str, Any] = {"steps": [{"$type": "imageGen", "input": inp}]}
         if req.nsfw:
             # Mature content forces yellow Buzz, so only explicit requests ask.
             body["allowMatureContent"] = True
         return body
 
+    dropped: set[str] = set()
     body = body_for(recipe, seed)
     inp = body["steps"][0]["input"]
+    record.update(
+        sampler=f"{inp['sampleMethod']}/{inp['schedule']}" if "sampleMethod" in inp else None,
+    )
     record.update(
         operation=inp.get("operation"), width=plan.width, height=plan.height,
         steps=plan.steps, cfg=recipe.cfg, quality=plan.quality, quantity=plan.quantity,
         negative_prompt=plan.negative or None, seed=seed, est_buzz=plan.est_buzz,
+        embeddings=plan.embeddings or None,
     )
     client = CivitaiClient(settings)
     wait_total = max(30, int(getattr(settings, "civitai_wait_seconds", 180) or 180))
@@ -476,6 +507,21 @@ async def run_generation(
         seed = None
         record["seed"] = None
         body = body_for(recipe, None)
+        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
+    low = r.text.lower() if r.status_code == 400 else ""
+    if low and ("embedding" in low or "samplemethod" in low or "schedule" in low):
+        # Civitai refused the embeddings or sampler: plain request instead.
+        if "embedding" in low and plan.embeddings:
+            plan.use_embeddings = False
+            plan.retarget(recipe)
+            plan.notes.append("negative embeddings refused, sent without")
+        if "samplemethod" in low or "schedule" in low:
+            dropped.update(("sampleMethod", "schedule"))
+            plan.notes.append("sampler refused, used Civitai's default")
+        record.update(negative_prompt=plan.negative or None,
+                      embeddings=plan.embeddings or None)
+        log.warning("civitai.input_refused", error=r.text[:300])
+        body = body_for(recipe, seed)
         r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
     if r.status_code in (400, 404) and is_air(recipe.model) and \
             any(h in r.text.lower() for h in _STALE_HINTS):
@@ -500,7 +546,8 @@ async def run_generation(
                       label=recipe.label, base_model=recipe.base_model or None,
                       loras=dict(plan.loras), prompt=plan.prompt, steps=plan.steps,
                       width=plan.width, height=plan.height, est_buzz=plan.est_buzz,
-                      negative_prompt=plan.negative or None)
+                      negative_prompt=plan.negative or None,
+                      embeddings=plan.embeddings or None)
         body = body_for(recipe, seed)
         r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
     if r.status_code >= 400:

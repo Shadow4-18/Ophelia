@@ -72,6 +72,8 @@ def fake(tmp_path, monkeypatch):
                 return httpx.Response(400, text='{"errors": {"seed": ["unknown property"]}}')
             if calls["stale"] and inp.get("model") == ILLUSTRIOUS:
                 return httpx.Response(400, text="Model version not found")
+            if calls.get("reject_embeddings") and "embeddings" in inp:
+                return httpx.Response(400, text='{"errors": {"embeddings[0]": ["not found"]}}')
             if inp.get("model") and inp.get("model") == calls.get("reject_model"):
                 return httpx.Response(400, text="Model is not available for generation")
             calls["quantity"] = inp.get("quantity", 1)
@@ -615,3 +617,48 @@ async def test_rotated_in_checkpoint_refused_falls_back_to_the_head(fake, monkey
     assert hassaku.model in selection.benched(fake["settings"])
     entry = _ledger(fake)[-1]
     assert entry["recipe"] == "illustrious" and entry["model"] == ILLUSTRIOUS
+
+
+@pytest.mark.asyncio
+async def test_realistic_request_fields(fake):
+    out = await _gen(fake, "photo of a woman, nude on a bed, no extra limbs, bad anatomy",
+                     negative_prompt="tattoos")
+    inp = _input(fake)
+    assert inp["model"] == civ.LUSTIFY_AIR
+    assert inp["sampleMethod"] == "dpm++2m" and inp["schedule"] == "karras"
+    assert "clipSkip" not in inp  # 400s on SDXL
+    assert inp["embeddings"] == ["urn:air:sdxl:embedding:civitai:407448@454217",
+                                 "urn:air:sdxl:embedding:civitai:583583@651084"]
+    neg = inp["negativePrompt"]
+    assert neg.startswith("DeepNegative_xl_v1, NEGATIVE_HANDS, ")
+    for term in ("extra limbs", "fused fingers", "bad anatomy", "tattoos", "underage"):
+        assert term in neg  # hers adds to the tuned negative instead of replacing it
+    assert "extra limbs" not in inp["prompt"] and "bad anatomy" not in inp["prompt"]
+    assert "moved to negative: extra limbs, bad anatomy" in out
+    entry = _ledger(fake)[-1]
+    assert entry["sampler"] == "dpm++2m/karras" and len(entry["embeddings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_anime_uses_euler_a_and_lazy_embeddings(fake):
+    await _gen(fake, "anime, 1girl, nude")
+    inp = _input(fake)
+    assert (inp["sampleMethod"], inp["schedule"]) == ("euler_a", "discrete")
+    assert inp["negativePrompt"].startswith("lazyneg, lazyhand, ")
+
+
+@pytest.mark.asyncio
+async def test_refused_embeddings_retry_without(fake):
+    fake["reject_embeddings"] = True
+    out = await _gen(fake, "anime, 1girl, nude")
+    assert "embeddings" in _input(fake, 0) and "embeddings" not in _input(fake)
+    assert "lazyneg" not in _input(fake)["negativePrompt"]
+    assert out.startswith("Image saved to") and "negative embeddings refused" in out
+
+
+@pytest.mark.asyncio
+async def test_no_negatives_for_models_without_them(fake):
+    await _gen(fake, "a woman on a beach, no extra fingers", model="zimage-turbo")
+    inp = _input(fake)
+    assert "negativePrompt" not in inp and "embeddings" not in inp
+    assert "sampleMethod" not in inp and "extra fingers" not in inp["prompt"]

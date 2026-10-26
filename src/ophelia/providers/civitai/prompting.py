@@ -162,6 +162,89 @@ def ensure_subject(text: str) -> str:
     return ", ".join(tags) + ", " + text
 
 
+# --- negatives that ended up in the prompt -----------------------------------
+
+# Words that only belong in a negative prompt. In the positive prompt they do
+# the opposite of what was meant: "no extra limbs" or "bad anatomy" puts
+# limbs and bad anatomy into the picture (the model reads the nouns).
+_DEFECT = (
+    r"(?:extra|missing|fused|bad|poorly drawn|malformed|mutated|mutilated|deformed|"
+    r"disfigured|distorted|broken|twisted|duplicate|cloned|floating|disconnected|"
+    r"too many|wrong|weird|ugly|blurry|cropped)"
+)
+_BODY = (
+    r"(?:limbs?|arms?|legs?|fingers?|hands?|feet|foot|toes?|digits?|anatomy|proportions|"
+    r"body|bodies|face|faces|eyes|heads?|neck|joints?|nipples?|breasts?|torso|limb)"
+)
+_DEFECT_TAG = re.compile(
+    rf"^(?:{_DEFECT}\s+(?:\w+\s+)?{_BODY}|(?:worst|low|lowest|normal|bad)[ _]quality|lowres|"
+    r"low res|jpeg artifacts|watermarks?|signature|username|artist name|mutation|mutations|"
+    r"mutated|deformed|disfigured|malformed|extra limbs|missing limbs|long neck|"
+    r"bad anatomy|bad hands|out of frame|poorly drawn|ugly|duplicate|"
+    r"easynegative|negative_hand|negativexl\w*|unaestheticxl\w*)$"
+)
+# "no X" / "without X" / "avoid X" where X is a defect, not a clothing tag
+# like "no bra" or "no panties" (those are wanted).
+_NO_PREFIX = re.compile(r"^(?:no|without|avoid|avoiding|never|not|don't|dont|zero)\s+(.+)$")
+_INLINE_NO = re.compile(
+    rf"\b(?:with\s+)?(?:no|without|avoiding|avoid)\s+((?:{_DEFECT}\s+)?(?:\w+\s+)?"
+    rf"(?:{_BODY}|quality|artifacts|watermarks?|text|logos?|blur))\b",
+    re.IGNORECASE,
+)
+_NEG_SECTION = re.compile(r"(?:^|[\s,.;])(?:negative(?:\s+prompt)?|neg)\s*[:=]\s*(.+)$",
+                          re.IGNORECASE | re.DOTALL)
+
+
+def _core(tag: str) -> str:
+    """A tag without weights/brackets: "(extra limbs:1.3)" -> "extra limbs"."""
+    t = tag.strip().strip("()[]{}").strip()
+    t = re.sub(r":\s*[\d.]+$", "", t).strip().strip("()[]{}").strip()
+    return re.sub(r"\s+", " ", t.lower().replace("_", " "))
+
+
+def is_defect(text: str) -> bool:
+    return bool(_DEFECT_TAG.match(_core(text)))
+
+
+def split_negatives(prompt: str) -> tuple[str, list[str]]:
+    """(prompt without negative-only words, the words to move to the negative).
+
+    Catches a "Negative prompt: ..." section, tags like "bad anatomy" or
+    "(worst quality:1.4)", "no extra fingers" style tags, and "with no
+    extra limbs" inside a sentence."""
+    text = (prompt or "").strip()
+    moved: list[str] = []
+    m = _NEG_SECTION.search(text)
+    if m:
+        moved.extend(split_tags(m.group(1)))
+        text = text[: m.start()].rstrip(" ,.;")
+    keep: list[str] = []
+    for tag in split_tags(text):
+        core = _core(tag)
+        no = _NO_PREFIX.match(core)
+        if no and is_defect(no.group(1)):
+            moved.append(no.group(1))
+        elif is_defect(core):
+            moved.append(core)
+        else:
+            keep.append(tag)
+    text = ", ".join(keep)
+
+    def _inline(mt: re.Match) -> str:
+        moved.append(mt.group(1).lower())
+        return ""
+
+    text = _INLINE_NO.sub(_inline, text)
+    text = re.sub(r"\s{2,}", " ", re.sub(r"\s+([,.;])", r"\1", text))
+    text = re.sub(r"(?:,\s*){2,}", ", ", text).strip(" ,;")
+    return text, [t.strip() for t in moved if t.strip()]
+
+
+def merge_negatives(*parts: str) -> str:
+    """Join negative prompts, dropping repeated terms."""
+    return tidy_tags(", ".join(p for p in parts if p and p.strip()))
+
+
 def _prefix_missing(text: str, tags: list[str]) -> str:
     low = text.lower()
     missing = [t for t in tags if t.lower() not in low]
@@ -216,8 +299,11 @@ _NEGATIVES: dict[str, str] = {
         "watermark, text, logo"
     ),
     "realistic": (
-        "worst quality, low quality, blurry, deformed, bad anatomy, bad hands, "
-        "watermark, text, cartoon, anime, 3d render"
+        "worst quality, low quality, blurry, deformed, disfigured, bad anatomy, "
+        "bad proportions, extra limbs, extra arms, extra legs, missing limbs, "
+        "extra fingers, missing fingers, fused fingers, mutated hands, poorly drawn hands, "
+        "malformed limbs, long neck, duplicate, watermark, text, cartoon, anime, 3d render, "
+        "plastic skin"
     ),
     "sd1": (
         "worst quality, low quality, normal quality, blurry, jpeg artifacts, "

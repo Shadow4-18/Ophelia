@@ -1243,6 +1243,8 @@ def _section_image_backends() -> None:
                          ("off", "off — main checkpoint, prompt as written")]),
             Opt("OPHELIA_CIVITAI_DISCOVER", "Add Civitai's top checkpoints weekly",
                 help="Auto mode also rotates through this month's highest rated models"),
+            Opt("OPHELIA_CIVITAI_NEGATIVE_EMBEDDINGS", "Negative embeddings",
+                help="Anatomy/quality fixes per model family (hands, extra limbs)"),
             Opt("OPHELIA_CIVITAI_AUTO_LORAS", "Auto concept LoRAs",
                 help="Add a matching LoRA for x-ray, positions, ahegao... on explicit prompts"),
             Opt("OPHELIA_CIVITAI_CHECKPOINTS", "Checkpoint overrides",

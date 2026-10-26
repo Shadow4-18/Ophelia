@@ -21,6 +21,7 @@ from ophelia.providers.civitai.catalog import (
     WAI_ILLUSTRIOUS_AIR,
     Recipe,
     recipe_for_air,
+    sampling_for,
 )
 
 log = structlog.get_logger()
@@ -43,8 +44,11 @@ def build_input(
     seed: int | None = None,
     image_url: str | None = None,
     strength: float = 0.7,
+    embeddings: list[str] | None = None,
 ) -> dict[str, Any]:
-    """The imageGen ``input`` object for one request."""
+    """The imageGen ``input`` object for one request. ``embeddings`` are
+    textual-inversion AIRs (SDXL/SD1 only), referenced by name in the
+    negative prompt."""
     variant = bool(image_url)
     op = "createVariant" if variant else "createImage"
     q = max(1, min(int(quantity), recipe.max_quantity))
@@ -80,6 +84,12 @@ def build_input(
     step["cfgScale"] = recipe.cfg
     step["steps"] = steps
     step["quantity"] = q
+    sampler, schedule = sampling_for(recipe)
+    if sampler:
+        step["sampleMethod"] = sampler
+        step["schedule"] = schedule
+    if embeddings and recipe.ecosystem in ("sdxl", "sd1") and recipe.engine != "flux2":
+        step["embeddings"] = list(embeddings)
     if loras:
         step["loras"] = loras
     if seed is not None:
