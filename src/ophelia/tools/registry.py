@@ -655,10 +655,13 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 
     async def _search_civitai_models(
         self,
-        query: str,
+        query: str = "",
         type: str = "Checkpoint",
         limit: int = 5,
         nsfw: bool = True,
+        base_model: str = "",
+        sort: str = "",
+        period: str = "",
     ) -> str:
         if not self.settings.civitai_api_key:
             return (
@@ -672,6 +675,9 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             kind = "LORA"
         else:
             kind = "Checkpoint"
+        if not (query or "").strip() and not base_model and not period:
+            return ("Give a query, or browse with base_model and/or period (e.g. "
+                    "base_model='Illustrious', sort='Highest Rated', period='Week').")
         try:
             results = await civ.search_models(
                 self.settings,
@@ -679,11 +685,17 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
                 types=kind,
                 limit=max(1, min(int(limit or 5), 10)),
                 nsfw=bool(nsfw),
+                sort=sort or "Most Downloaded",
+                base_model=base_model or None,
+                period=period or None,
             )
         except Exception as e:
             return f"Civitai search failed: {e}"
+        what = repr(query) if (query or "").strip() else "browse"
+        filters = ", ".join(x for x in (base_model, sort, period) if x)
         header = (
-            f"# Civitai {kind} results for {query!r}\n"
+            f"# Civitai {kind} results for {what}" + (f" ({filters})" if filters else "")
+            + "\n"
             f"(Use air values with generate_image model=/loras=. "
             f"Match baseModel family. Write trigger_words into your own prompt — "
             f"auto_pick will not inject them.)"

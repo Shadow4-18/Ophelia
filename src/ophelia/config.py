@@ -317,6 +317,14 @@ class Settings(BaseSettings):
             "as written."
         ),
     )
+    civitai_discover: bool = Field(
+        default=True,
+        alias="OPHELIA_CIVITAI_DISCOVER",
+        description=(
+            "Weekly, add the month's highest rated Civitai checkpoints (Illustrious, "
+            "Pony, SDXL) to auto mode's rotation."
+        ),
+    )
     civitai_auto_loras: bool = Field(
         default=True,
         alias="OPHELIA_CIVITAI_AUTO_LORAS",

@@ -17,7 +17,7 @@ from typing import Any
 
 import structlog
 
-from ophelia.providers.civitai import feedback
+from ophelia.providers.civitai import discovery, feedback
 from ophelia.providers.civitai.catalog import Recipe, pool
 
 log = structlog.get_logger()
@@ -75,7 +75,8 @@ def _recent_models(settings: Any, pool_airs: set[str], n: int = 4) -> list[str]:
 
 
 def weights(settings: Any, style: str, family: str = "") -> list[tuple[Recipe, float]]:
-    members = [r for r in pool(style) if not family or r.family == family]
+    members = [r for r in pool(style) + discovery.extra_pool(settings, style)
+               if not family or r.family == family]
     off = benched(settings)
     members = [r for r in members if r.model not in off] or members[:1]
     recent = _recent_models(settings, {r.model for r in members})

@@ -303,3 +303,132 @@ def test_retarget_reshapes_for_the_fallback_model():
     assert "score_9" not in plan.prompt and plan.loras == {}  # Pony LoRA can't go on LUSTIFY
     assert plan.steps == RECIPES["lustify"].steps and plan.height > plan.width
     assert "score_6" not in plan.negative and plan.negative.endswith("child, loli, underage")
+
+
+# --- discovery from Civitai's API ---------------------------------------------------
+
+
+def _ck(name, mid, base, dl=50000, nsfw=True, avail="Public", newest=None):
+    r = site.CivitaiResource(name=name, type="Checkpoint", model_id=mid, version_id=mid * 10,
+                             version_name="1", air=f"urn:air:sdxl:checkpoint:civitai:{mid}@{mid * 10}",
+                             base_model=base, nsfw=nsfw, download_count=dl,
+                             availability=avail, newest_base_model=newest or base)
+    return r
+
+
+@pytest.mark.asyncio
+async def test_discovery_adds_this_months_top_checkpoints(tmp_path, monkeypatch):
+    from ophelia.providers.civitai import discovery
+
+    calls = []
+
+    async def browse(settings, query, **kw):
+        calls.append((query, kw))
+        return [
+            _ck("Dreamy Anime", 1, "Illustrious"),
+            _ck("Skin RealMix", 2, "Illustrious"),  # realism words: realistic pool
+            _ck("Pony Photo Real", 3, "Pony"),
+            _ck("Pony Toon", 4, "Pony"),
+            _ck("Krea Thing", 5, "Krea 2 Turbo"),  # base we can't run on sdcpp sdxl
+            _ck("Legacy Mix", 6, "Pony", newest="Qwen"),  # moved on to another base
+            _ck("Early", 7, "Illustrious", avail="EarlyAccess"),
+            _ck("Tiny", 8, "Illustrious", dl=10),
+            _ck("Furry Noob", 9, "NoobAI"),
+            _ck("WAI again", 827184, "Illustrious"),  # already curated
+            _ck("SDXL Anime", 10, "SDXL 1.0"),  # plain SDXL anime: skipped
+            _ck("SDXL Real", 11, "SDXL 1.0"),
+        ]
+
+    monkeypatch.setattr(site, "search_models", browse)
+    s = _settings(tmp_path, civitai_discover=True)
+    assert discovery.stale(s)
+    assert await discovery.refresh(s) == 5
+    assert calls[0][0] == "" and calls[0][1]["period"] == "Month" and "base_model" not in calls[0][1]
+    assert [r.label for r in discovery.discovered(s, "anime")] == ["Dreamy Anime"]
+    assert [r.label for r in discovery.discovered(s, "pony")] == ["Pony Toon"]
+    real = {r.label: r for r in discovery.discovered(s, "realistic")}
+    assert set(real) == {"Skin RealMix", "Pony Photo Real", "SDXL Real"}
+    assert real["Pony Photo Real"].pony_source == "photo, realistic"
+    assert not discovery.stale(s)
+    keys = {r.key for r, _ in selection.weights(s, "anime")}
+    assert "found-dreamy-anime" in keys and "illustrious" in keys
+    assert discovery.discovered(_settings(tmp_path), "anime") == []  # off unless enabled
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_waits_before_retrying(tmp_path, monkeypatch):
+    from ophelia.providers.civitai import discovery
+
+    async def down(settings, query, **kw):
+        raise RuntimeError("HTTP 503")
+
+    monkeypatch.setattr(site, "search_models", down)
+    s = _settings(tmp_path, civitai_discover=True)
+    assert await discovery.refresh(s) == 0
+    assert not discovery.stale(s)  # retries in a few hours, not every image
+
+
+def test_pinned_checkpoint_he_liked_joins_rotation(tmp_path):
+    from ophelia.providers.civitai import discovery
+
+    s = _settings(tmp_path)
+    air = "urn:air:sdxl:checkpoint:civitai:4242@4343"
+    _ledger(tmp_path, {"recipe": "custom", "model": air, "label": "Velvet Anime XL",
+                       "base_model": "Illustrious", "paths": [str(tmp_path / "a.png")]})
+    feedback.remember_sent(s, 1, 1, "a.png")
+    feedback.record_reaction(s, 1, 1, "❤")
+    assert discovery.favorites(s, "anime") == []  # one ❤ isn't enough yet
+    feedback.record_reaction(s, 1, 1, "🔥")
+    favs = discovery.favorites(s, "anime")
+    assert [(r.key, r.label, r.family) for r in favs] == [
+        ("fav-4242", "Velvet Anime XL", "illustrious")]
+    assert "fav-4242" in {r.key for r, _ in selection.weights(s, "anime")}
+
+
+@pytest.mark.asyncio
+async def test_site_search_browses_and_picks_the_filtered_base(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def handler(request):
+        seen.update(dict(request.url.params))
+        return httpx.Response(200, json={"items": [{
+            "id": 897413, "name": "Big Love", "type": "Checkpoint", "nsfw": True,
+            "stats": {"downloadCount": 9},
+            "modelVersions": [
+                {"id": 3, "name": "Qwen", "baseModel": "Qwen", "availability": "Public"},
+                {"id": 2, "name": "Pony", "baseModel": "Pony", "availability": "Public"},
+            ]}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        lambda *a, **k: real(*a, **{**k, "transport": httpx.MockTransport(handler)}))
+    s = SimpleNamespace(civitai_api_key="")
+    out = await site.search_models(s, "", base_model="Pony", sort="Highest Rated", period="Week")
+    assert "query" not in seen and seen["period"] == "Week" and seen["baseModels"] == "Pony"
+    assert out[0].version_id == 2 and out[0].base_model == "Pony"
+    assert out[0].newest_base_model == "Qwen" and out[0].availability == "Public"
+    assert await site.search_models(s, "") == []  # nothing to search or browse by
+
+
+@pytest.mark.asyncio
+async def test_search_tool_browse(monkeypatch):
+    from ophelia.providers import civitai as civ
+    from ophelia.tools.registry import ToolRegistry
+
+    got = {}
+
+    async def fake(settings, query, **kw):
+        got.update(kw, query=query)
+        return []
+
+    monkeypatch.setattr(civ, "search_models", fake)
+    reg = ToolRegistry.__new__(ToolRegistry)
+    reg.settings = SimpleNamespace(civitai_api_key="k")
+    assert "Give a query" in await reg._search_civitai_models()
+    out = await reg._search_civitai_models(base_model="Illustrious", sort="Highest Rated",
+                                           period="Week")
+    assert got == {"query": "", "types": "Checkpoint", "limit": 5, "nsfw": True,
+                   "sort": "Highest Rated", "base_model": "Illustrious", "period": "Week"}
+    assert "browse (Illustrious, Highest Rated, Week)" in out

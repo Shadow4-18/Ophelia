@@ -22,7 +22,7 @@ import structlog
 
 from ophelia.config import Settings
 from ophelia.providers.civitai import loras as auto_loras
-from ophelia.providers.civitai import selection, site, variety
+from ophelia.providers.civitai import discovery, selection, site, variety
 from ophelia.providers.civitai.air import (
     air_kind,
     base_family,
@@ -180,6 +180,8 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     if pin and is_air(pin):
         meta = await _meta(settings, pin)
         recipe = recipe_for_air(pin, meta.base_model if meta else "")
+        if meta and meta.name and recipe.key == "custom":
+            recipe = replace(recipe, label=meta.name[:60])
         notes.append(f"pinned {recipe.label}")
     elif pin:
         named = recipe_by_name(pin)
@@ -298,6 +300,7 @@ def _auto_recipe(
         recipe = replace(recipe, model=override, key=f"{recipe.key}*", label=override)
         notes.append(f"checkpoint override {override}")
     elif recipe.pool:
+        discovery.refresh_in_background(settings)
         picked, why = selection.pick(settings, recipe.pool, recipe, family=family)
         if why:
             head, recipe = recipe, picked
@@ -411,6 +414,8 @@ async def run_generation(
         "provider": "civitai",
         "recipe": plan.recipe.key,
         "model": plan.recipe.model or plan.recipe.ecosystem,
+        "label": plan.recipe.label,
+        "base_model": plan.recipe.base_model or None,
         "loras": dict(plan.loras),
         "prompt": plan.prompt or req.prompt,
         "nsfw": req.nsfw,
@@ -492,6 +497,7 @@ async def run_generation(
         recipe = plan.fallback
         plan.retarget(recipe)
         record.update(recipe=recipe.key, model=recipe.model, cfg=recipe.cfg,
+                      label=recipe.label, base_model=recipe.base_model or None,
                       loras=dict(plan.loras), prompt=plan.prompt, steps=plan.steps,
                       width=plan.width, height=plan.height, est_buzz=plan.est_buzz,
                       negative_prompt=plan.negative or None)
