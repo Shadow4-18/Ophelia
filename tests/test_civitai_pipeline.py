@@ -621,6 +621,7 @@ async def test_rotated_in_checkpoint_refused_falls_back_to_the_head(fake, monkey
 
 @pytest.mark.asyncio
 async def test_realistic_request_fields(fake):
+    fake["settings"].civitai_negative_embeddings = True
     out = await _gen(fake, "photo of a woman, nude on a bed, no extra limbs, bad anatomy",
                      negative_prompt="tattoos")
     inp = _input(fake)
@@ -640,15 +641,23 @@ async def test_realistic_request_fields(fake):
 
 
 @pytest.mark.asyncio
-async def test_anime_uses_euler_a_and_lazy_embeddings(fake):
-    await _gen(fake, "anime, 1girl, nude")
+async def test_anime_uses_euler_a_and_no_embeddings_by_default(fake):
+    """Negative embeddings drew Patreon watermarks and censor bars on
+    Civitai (applied to the positive side), so they're opt-in."""
+    out = await _gen(fake, "anime, 1girl, nude")
     inp = _input(fake)
     assert (inp["sampleMethod"], inp["schedule"]) == ("euler_a", "discrete")
-    assert inp["negativePrompt"].startswith("lazyneg, lazyhand, ")
+    assert "embeddings" not in inp and "lazyneg" not in inp["negativePrompt"]
+    assert "watermark" not in inp["prompt"] and "censor" not in inp["prompt"]
+    assert "watermark" in inp["negativePrompt"]
+    # She can read back exactly what was sent.
+    assert f"prompt sent: {inp['prompt']}" in out
+    assert f"negative sent: {inp['negativePrompt']}" in out
 
 
 @pytest.mark.asyncio
 async def test_refused_embeddings_retry_without(fake):
+    fake["settings"].civitai_negative_embeddings = True
     fake["reject_embeddings"] = True
     out = await _gen(fake, "anime, 1girl, nude")
     assert "embeddings" in _input(fake, 0) and "embeddings" not in _input(fake)

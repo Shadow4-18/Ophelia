@@ -326,12 +326,12 @@ class Settings(BaseSettings):
         ),
     )
     civitai_negative_embeddings: bool = Field(
-        default=True,
+        default=False,
         alias="OPHELIA_CIVITAI_NEGATIVE_EMBEDDINGS",
         description=(
-            "Add the family's negative embeddings (lazyneg/lazyhand for Illustrious, "
-            "zPDXL for Pony, DeepNegative + NEGATIVE_HANDS for SDXL photoreal) to "
-            "every Civitai image: fewer extra limbs and broken hands."
+            "Experimental, off: send the family's negative embeddings (lazyneg/"
+            "lazyhand, zPDXL, DeepNegative + NEGATIVE_HANDS). On Civitai they came "
+            "out as watermarks and censor bars, i.e. applied to the positive side."
         ),
     )
     civitai_auto_loras: bool = Field(
