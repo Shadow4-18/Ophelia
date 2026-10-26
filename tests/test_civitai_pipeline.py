@@ -54,7 +54,8 @@ def fake(tmp_path, monkeypatch):
         body = {"id": "wf1", "status": status, "cost": {"total": 10}}
         if status == "succeeded":
             body["steps"] = [{"output": {"images": [
-                {"url": f"https://blob.example/out{i}.png"} for i in range(quantity)
+                {"url": f"https://blob.example/out{i}.png",
+                 "available": calls.get("available", True)} for i in range(quantity)
             ]}}]
         elif status == "failed":
             body["steps"] = [{"status": "failed", "reason": "blocked",
@@ -84,6 +85,9 @@ def fake(tmp_path, monkeypatch):
             calls["uploads"] += 1
             return httpx.Response(200, json={"url": "https://blob.example/src.png"})
         if request.url.host == "blob.example":
+            if not calls.get("available", True) or calls.get("blob_404", 0) > 0:
+                calls["blob_404"] = max(0, calls.get("blob_404", 0) - 1)
+                return httpx.Response(404, text="BlobNotFound" * 13)
             return httpx.Response(200, content=PNG)
         return httpx.Response(404, text="unexpected " + str(request.url))
 
@@ -671,3 +675,56 @@ async def test_no_negatives_for_models_without_them(fake):
     inp = _input(fake)
     assert "negativePrompt" not in inp and "embeddings" not in inp
     assert "sampleMethod" not in inp and "extra fingers" not in inp["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_late_job_waits_for_available_images_and_never_drops_them(fake):
+    """The irl set: Civitai finished, URLs were there but not uploaded yet
+    ("available": false), every download 404'd and the paid job was dropped."""
+    fake["status"] = fake["poll_status"] = "processing"
+    await _gen(fake, "photo, woman", deliver_to="telegram:42", count=2)
+    delivered = []
+
+    async def deliver(paths, caption, channel):
+        delivered.append(paths)
+        return True
+
+    loop = PendingLoop(fake["settings"], deliver_media=deliver)
+    fake["poll_status"], fake["available"] = "succeeded", False
+    assert await loop.check_once() == 0  # URLs present but not ready: wait
+    fake["available"] = True
+    fake["blob_404"] = 10  # still 404 for a while: stays parked, retried
+    assert await loop.check_once() == 0
+    assert PendingStore(fake["settings"]).load()[0]["download_tries"] == 1
+    fake["blob_404"] = 0
+    assert await loop.check_once() == 1
+    assert len(delivered[0]) == 2
+
+
+@pytest.mark.asyncio
+async def test_dropped_late_jobs_are_recovered_on_start(fake):
+    import time as _t
+
+    ledger = fake["ledger"]
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a") as f:
+        f.write(json.dumps({"ts": _t.time() - 600, "workflow_id": "wf1", "seed": 7,
+                            "prompt": "photo", "error": "download 1 failed HTTP 404 (162 bytes)"})
+                + "\n")
+        f.write(json.dumps({"ts": _t.time() - 600, "workflow_id": "old", "seed": 7,
+                            "error": "download 1 failed HTTP 404 (162 bytes)", "paths": ["x"]})
+                + "\n")
+    loop = PendingLoop(fake["settings"])
+    assert loop.recover_failed_downloads() == 1
+    assert loop.recover_failed_downloads() == 0  # not parked twice
+    item, = PendingStore(fake["settings"]).load()
+    assert item["workflow_id"] == "wf1" and item["artifacts_dir"].endswith("artifacts")
+    delivered = []
+
+    async def deliver(paths, caption, channel):
+        delivered.append((paths, channel))
+        return True
+
+    loop.deliver_media = deliver
+    assert await loop.check_once() == 1
+    assert delivered[0][1] == "" and delivered[0][0][0].is_file()  # "" = the owner

@@ -49,6 +49,7 @@ from ophelia.providers.civitai.orchestration import (
     build_input,
     cost_of,
     failure_reason,
+    images_ready,
     output_images,
     resolve_image_url,
     status_of,
@@ -389,15 +390,26 @@ async def collect_images(
     settings: Settings, client: CivitaiClient, wf: dict, artifacts_dir: Path, seed: Any
 ) -> tuple[list[Path], int, str]:
     """Download every finished image. (paths, total bytes, error)."""
-    images = output_images(wf)
-    urls = [img["url"] for img in images if isinstance(img.get("url"), str) and img["url"]]
+    def urls_of(w: dict) -> list[str]:
+        return [img["url"] for img in output_images(w)
+                if isinstance(img.get("url"), str) and img["url"] and not img.get("blockedReason")]
+
+    urls = urls_of(wf)
     if not urls:
         return [], 0, f"Civitai finished but returned no image URL: {failure_reason(wf)}"
     paths: list[Path] = []
     total = 0
     errors: list[str] = []
-    for i, url in enumerate(urls):
-        dl = await client.download(url)
+    for i in range(len(urls)):
+        dl = await client.download(urls[i])
+        if dl.status_code in (403, 404) and (wf.get("id") or wf.get("workflowId")):
+            # Not uploaded yet, or the signed URL expired: ask again for a
+            # fresh one, once, after a short wait.
+            await asyncio.sleep(5)
+            fresh = await client.get(wf.get("id") or wf.get("workflowId"))
+            fresh_urls = urls_of(fresh) if fresh else []
+            if i < len(fresh_urls):
+                dl = await client.download(fresh_urls[i])
         if dl.status_code >= 400 or len(dl.content or b"") < 100:
             errors.append(f"download {i + 1} failed HTTP {dl.status_code} ({len(dl.content or b'')} bytes)")
             continue
@@ -570,7 +582,7 @@ async def run_generation(
         if status in TERMINAL_BAD:
             record["cost"] = cost_of(wf)
             return fail(f"Civitai workflow {status}: {failure_reason(wf)}")
-        if status in TERMINAL_OK and any(img.get("url") for img in output_images(wf)):
+        if images_ready(wf):
             break
         remaining = wait_total - (_now() - started)
         if remaining <= 0 or not wf_id:
@@ -583,11 +595,12 @@ async def run_generation(
             wf = fresh
             status = status_of(wf)
 
-    if not (status in TERMINAL_OK and any(img.get("url") for img in output_images(wf))):
+    if not images_ready(wf):
         if not wf_id:
             return fail(f"Civitai returned no workflow id: {str(wf)[:300]}")
         from ophelia.providers.civitai.pending import PendingStore
 
+        record.update(deliver_to=req.deliver_to or "", artifacts_dir=str(artifacts_dir))
         PendingStore(settings).add(
             workflow_id=wf_id, record=record, deliver_to=req.deliver_to,
             artifacts_dir=str(artifacts_dir), summary=_summary(plan, record, []),
