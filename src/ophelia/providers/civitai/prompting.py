@@ -10,20 +10,34 @@ import re
 
 from ophelia.providers.civitai.catalog import Recipe
 
-# Explicit style → recipe rules for auto mode (first match wins). Keywords
-# match whole words only, so "anthropic" isn't "anthro".
+# Style words for auto mode, with weights. Every match scores; the style
+# with the most points wins (ties: pony, then illustrious, then realistic).
+# Keywords match whole words only, so "anthropic" isn't "anthro".
+STYLE_WORDS: list[tuple[str, tuple[tuple[str, int], ...]]] = [
+    ("pony", (
+        ("score_9", 3), ("score_8_up", 3), ("pony", 3), ("furry", 3), ("anthro", 3),
+        ("source_pony", 3), ("source_furry", 3), ("feral", 2), ("kemono", 2),
+    )),
+    ("illustrious", (
+        ("anime", 3), ("hentai", 3), ("illustrious", 3), ("anime style", 3),
+        ("manga", 2), ("waifu", 2), ("danbooru", 2), ("2d", 2), ("vtuber", 2),
+        ("chibi", 2), ("cel shading", 2), ("doujin", 2), ("genshin", 2),
+        ("1girl", 1), ("1boy", 1), ("2girls", 1), ("illustration", 1), ("cartoon", 1),
+        ("drawing", 1),
+    )),
+    ("realistic", (
+        ("photo", 3), ("photos", 3), ("photograph", 3), ("photoreal", 3),
+        ("photorealistic", 3), ("realistic", 3), ("raw photo", 3), ("real life", 3),
+        ("irl", 3), ("dslr", 3), ("real woman", 3), ("real person", 3),
+        ("selfie", 2), ("amateur", 2), ("instagram", 2), ("onlyfans", 2), ("polaroid", 2),
+        ("35mm", 2), ("lifelike", 2), ("realism", 2), ("skin texture", 2),
+        ("film grain", 1), ("candid", 1), ("cosplay", 1), ("bokeh", 1),
+    )),
+]
+
+# The old first-match table, kept for callers that read it.
 STYLE_RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("pony", ("pony", "score_9", "score_8_up", "furry", "anthro")),
-    (
-        "illustrious",
-        ("anime", "waifu", "1girl", "1boy", "manga", "illustrious", "danbooru", "2d",
-         "vtuber", "hentai", "chibi"),
-    ),
-    (
-        "realistic",
-        ("photo", "photos", "photograph", "photoreal", "photorealistic", "realistic",
-         "raw photo", "real life", "irl", "dslr"),
-    ),
+    (style, tuple(w for w, _ in words)) for style, words in STYLE_WORDS
 ]
 
 
@@ -31,18 +45,121 @@ def _has_word(low: str, word: str) -> bool:
     return bool(re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", low))
 
 
+def style_scores(intent: str) -> dict[str, tuple[int, str]]:
+    """{style: (points, strongest keyword)} for every style that matched."""
+    low = (intent or "").lower()
+    out: dict[str, tuple[int, str]] = {}
+    for style, words in STYLE_WORDS:
+        points, best, best_w = 0, "", -1
+        for w, weight in words:
+            if _has_word(low, w):
+                points += weight
+                if weight > best_w:
+                    best, best_w = w, weight
+        if best:
+            out[style] = (points, best)
+    return out
+
+
 def detect_style_with_reason(intent: str) -> tuple[str, str]:
     """(style, keyword that decided it); style "sdxl" means no keyword matched."""
-    low = (intent or "").lower()
-    for style, words in STYLE_RULES:
-        for w in words:
-            if _has_word(low, w):
-                return style, w
-    return "sdxl", ""
+    scores = style_scores(intent)
+    if not scores:
+        return "sdxl", ""
+    order = [s for s, _ in STYLE_WORDS]
+    style = max(scores, key=lambda s: (scores[s][0], -order.index(s)))
+    return style, scores[style][1]
 
 
 def detect_style(intent: str) -> str:
     return detect_style_with_reason(intent)[0]
+
+
+# --- adults only -------------------------------------------------------------
+
+# Explicit images are of adults. An explicit request with any of these words
+# is refused, and explicit negatives steer away from them too.
+_MINOR_RE = re.compile(
+    r"(?<![a-z0-9])(?:loli|lolis|lolicon|shota|shotas|shotacon|child|children|kid|kids|"
+    r"underage|under-age|minor|minors|preteen|pre-teen|tween|toddler|infant|"
+    r"little girl|little boy|young girl|young boy|elementary school(?:er)?|"
+    r"middle school(?:er)?|junior high|grade school(?:er)?|"
+    r"(?:[1-9]|1[0-7])\s*(?:yo|y/o|y\.o\.|years? old|year-old))(?![a-z0-9])"
+)
+
+_ADULT_NEGATIVE = "child, loli, underage"
+
+
+def minor_terms(text: str) -> list[str]:
+    """Words describing a minor in ``text`` (lowercase, no repeats)."""
+    seen: list[str] = []
+    for m in _MINOR_RE.finditer((text or "").lower()):
+        if m.group(0) not in seen:
+            seen.append(m.group(0))
+    return seen
+
+
+# --- tag hygiene -------------------------------------------------------------
+
+
+def split_tags(text: str) -> list[str]:
+    """Comma-separated tags, keeping (weighted:1.2, groups) together."""
+    out: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text or "":
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append("".join(buf))
+    return [t.strip() for t in out if t.strip()]
+
+
+def _tag_key(tag: str) -> str:
+    return re.sub(r"\s+", " ", tag.lower().replace("_", " ")).strip()
+
+
+def tidy_tags(text: str) -> str:
+    """Drop empty and repeated tags ("long hair, long_hair", 1girl twice)."""
+    seen: set[str] = set()
+    keep: list[str] = []
+    for tag in split_tags(text):
+        key = _tag_key(tag)
+        if key not in seen:
+            seen.add(key)
+            keep.append(re.sub(r"\s+", " ", tag))
+    return ", ".join(keep)
+
+
+_COUNT_TAG = re.compile(r"(?<![a-z0-9])(?:\d\+?(?:girls?|boys?|others?)|solo|multiple "
+                        r"(?:girls|boys)|no humans)(?![a-z0-9])")
+_FEMALE = ("woman", "girl", "her", "she", "lady", "female", "waifu", "milf", "wife",
+           "girlfriend", "ophelia")
+_PARTNER = ("1boy", "man", "men", "boy", "boyfriend", "husband", "penis", "sex", "couple",
+            "hetero", "fellatio", "blowjob", "handjob", "paizuri", "futa", "futanari",
+            "yuri", "2girls", "threesome", "group", "pov hands", "cowgirl position",
+            "missionary", "doggystyle", "straddling", "kissing")
+
+
+def is_solo(text: str) -> bool:
+    low = (text or "").lower()
+    return not any(_has_word(low, w) for w in _PARTNER)
+
+
+def ensure_subject(text: str) -> str:
+    """Danbooru models anchor on 1girl/solo: add them when the prompt says
+    "her" or "a woman" but has no count tag."""
+    low = text.lower()
+    if _COUNT_TAG.search(low) or not any(_has_word(low, w) for w in _FEMALE):
+        return text
+    tags = ["1girl"] + (["solo"] if is_solo(low) else [])
+    return ", ".join(tags) + ", " + text
 
 
 def _prefix_missing(text: str, tags: list[str]) -> str:
@@ -61,12 +178,16 @@ def format_prompt(recipe: Recipe, prompt: str, *, nsfw: bool) -> str:
     """The prompt as this model likes it. Light touch: WAI's author warns
     that piling on quality tags makes images blurrier."""
     text = (prompt or "").strip()
-    low = text.lower()
     style = recipe.prompt_style
+    if style in ("danbooru", "pony"):
+        text = ensure_subject(tidy_tags(text))
+    low = text.lower()
     if style == "pony":
         if "score_9" not in low:
             text = "score_9, score_8_up, score_7_up, " + text
-        if "source_" not in low:
+        if recipe.pony_source:
+            text = _append_missing(text, split_tags(recipe.pony_source))
+        elif "source_" not in low:
             src = "source_furry" if _has_word(low, "furry") or _has_word(low, "anthro") \
                 else "source_anime"
             text = _append_missing(text, [src])
@@ -119,6 +240,10 @@ def negative_for(recipe: Recipe, *, nsfw: bool) -> str:
         neg = _NEGATIVES.get(recipe.family, "")
     if nsfw and recipe.family in ("illustrious", "pony", "anima") and neg:
         neg = f"{neg}, {_UNCENSOR}"
+    if recipe.style == "realistic" and recipe.prompt_style != "mixed" and neg:
+        neg = f"{neg}, anime, cartoon, 3d render"  # realistic Pony/IL merges drift to 2D
+    if nsfw and neg:
+        neg = f"{neg}, {_ADULT_NEGATIVE}"
     return neg
 
 

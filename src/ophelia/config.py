@@ -302,7 +302,29 @@ class Settings(BaseSettings):
     civitai_default_style: str = Field(
         default="anime",
         alias="OPHELIA_CIVITAI_DEFAULT_STYLE",
-        description="Style when a prompt names none: anime | pony | realistic.",
+        description=(
+            "Style when a prompt names none: anime | pony | realistic, or mix "
+            "(anime or realistic by turns)."
+        ),
+    )
+    civitai_variety: str = Field(
+        default="on",
+        alias="OPHELIA_CIVITAI_VARIETY",
+        description=(
+            "on: auto mode rotates through each style's top checkpoints (favoring the "
+            "ones you react well to) and fills in camera, lighting, setting, expression "
+            "and pose the prompt leaves open. off: always the main checkpoint, prompt "
+            "as written."
+        ),
+    )
+    civitai_auto_loras: bool = Field(
+        default=True,
+        alias="OPHELIA_CIVITAI_AUTO_LORAS",
+        description=(
+            "Explicit prompts naming a concept base models draw badly (x-ray, ahegao, "
+            "positions, tentacles...) get the most downloaded matching LoRA for the "
+            "checkpoint's family, unless she picked LoRAs herself."
+        ),
     )
     civitai_checkpoints: str = Field(
         default="",

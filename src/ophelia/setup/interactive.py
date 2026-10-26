@@ -1220,7 +1220,8 @@ def _show_image_routing() -> None:
 
 
 def _section_image_backends() -> None:
-    styles = [("anime", "anime (Illustrious)"), ("pony", "pony"), ("realistic", "realistic")]
+    styles = [("anime", "anime (Illustrious)"), ("pony", "pony"), ("realistic", "realistic"),
+              ("mix", "mix — anime or realistic by turns")]
     settings_screen(
         "Images",
         [
@@ -1237,6 +1238,11 @@ def _section_image_backends() -> None:
                 choices=[("standard", "standard — each model's recommended settings"),
                          ("high", "high — more steps, bigger"), ("max", "max — most Buzz")]),
             Opt("OPHELIA_CIVITAI_DEFAULT_STYLE", "Style when none is named", choices=styles),
+            Opt("OPHELIA_CIVITAI_VARIETY", "Variety (auto mode)",
+                choices=[("on", "on — rotate top checkpoints, fill in camera/light/pose"),
+                         ("off", "off — main checkpoint, prompt as written")]),
+            Opt("OPHELIA_CIVITAI_AUTO_LORAS", "Auto concept LoRAs",
+                help="Add a matching LoRA for x-ray, positions, ahegao... on explicit prompts"),
             Opt("OPHELIA_CIVITAI_CHECKPOINTS", "Checkpoint overrides",
                 help="Optional, per style: anime=urn:air:...,realistic=urn:air:..."),
             Opt("OPHELIA_CIVITAI_MAX_COUNT", "Most images per request"),

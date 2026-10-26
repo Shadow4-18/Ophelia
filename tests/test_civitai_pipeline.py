@@ -72,6 +72,8 @@ def fake(tmp_path, monkeypatch):
                 return httpx.Response(400, text='{"errors": {"seed": ["unknown property"]}}')
             if calls["stale"] and inp.get("model") == ILLUSTRIOUS:
                 return httpx.Response(400, text="Model version not found")
+            if inp.get("model") and inp.get("model") == calls.get("reject_model"):
+                return httpx.Response(400, text="Model is not available for generation")
             calls["quantity"] = inp.get("quantity", 1)
             return httpx.Response(200, json=wf(calls["status"], calls["quantity"]))
         if path.startswith("/v2/consumer/workflows/") and request.method == "GET":
@@ -110,6 +112,8 @@ def fake(tmp_path, monkeypatch):
         civitai_max_count=4,
         civitai_wait_seconds=180,
         civitai_pending_hours=6,
+        civitai_variety="off",  # fixed picks here; rotation has its own tests
+        civitai_auto_loras=False,
         image_nsfw_allowed=True,
         data_dir=tmp_path / "data",
     )
@@ -594,3 +598,20 @@ async def test_site_api_retries_when_bearer_key_gets_403(monkeypatch, tmp_path):
     monkeypatch.setattr(site.httpx, "AsyncClient", client)
     assert await site.latest_version_air(s, 1) == "urn:air:sdxl:checkpoint:civitai:1@9"
     assert seen == [("Bearer realkey123", None), (None, "realkey123")]
+
+
+@pytest.mark.asyncio
+async def test_rotated_in_checkpoint_refused_falls_back_to_the_head(fake, monkeypatch):
+    from ophelia.providers.civitai import selection
+
+    hassaku = civ.RECIPES["hassaku"]
+    fake["settings"].civitai_variety = "on"
+    fake["reject_model"] = hassaku.model
+    monkeypatch.setattr(selection, "pick", lambda *a, **k: (hassaku, "rotated in"))
+    out = await _gen(fake, "anime, 1girl, nude")
+    assert [st["steps"][0]["input"]["model"] for st in fake["submitted"]] == \
+        [hassaku.model, ILLUSTRIOUS]
+    assert out.startswith("Image saved to") and "hassaku refused (HTTP 400)" in out
+    assert hassaku.model in selection.benched(fake["settings"])
+    entry = _ledger(fake)[-1]
+    assert entry["recipe"] == "illustrious" and entry["model"] == ILLUSTRIOUS

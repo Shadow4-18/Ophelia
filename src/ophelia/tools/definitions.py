@@ -141,16 +141,25 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "for: that goes to Civitai (uncensored). If Grok refuses something, it "
                 "falls back to Civitai and the result says so.\n\n"
                 "Civitai, how to get the best result:\n"
-                "- Leave model empty: the best-value model for the style is picked "
-                "(anime/vtuber→illustrious, pony/furry→pony, photo→lustify; no style "
-                "word→anime). Or name one: model=<recipe> or a checkpoint AIR from "
+                "- Leave model empty (auto, usually best): the style is read from the "
+                "prompt (anime/hentai/vtuber→anime, pony/furry→pony, photo/selfie/"
+                "amateur→realistic; none→the default style) and one of that style's top "
+                "checkpoints is picked, rotating for variety and favoring the ones the "
+                "owner reacted ❤/🔥 to. Auto also fills in camera, lighting, setting, "
+                "expression and pose your prompt leaves open (name them to control "
+                "them), and adds a concept LoRA for things base models draw badly "
+                "(x-ray, ahegao, positions, tentacles...). The result's 'picked:' says "
+                "what it chose. Or name one: model=<recipe> or a checkpoint AIR from "
                 "search_civitai_models. Recipes:\n"
                 + _civitai_catalog() + "\n"
                 "- Prompt: write it yourself for the model. illustrious/pony/anima: "
                 "danbooru tags (1girl, solo, hair, eyes, outfit or nudity, pose, "
                 "expression, camera angle, setting, lighting); quality, rating and "
-                "anti-censor tags are added for you. lustify: tags or a short "
-                "description. zimage/qwen/flux: plain sentences.\n"
+                "anti-censor tags are added for you, and 1girl/solo if you forget. "
+                "lustify/pornmaster/biglove: tags or a short description. "
+                "zimage/qwen/flux: plain sentences. Be specific: body, hair, outfit "
+                "or what's exposed, the act, expression, where. Explicit images are of "
+                "adults only: prompts describing minors are refused.\n"
                 "- quality=high|max costs ~1.5-2x / ~2-3x Buzz (more steps, bigger "
                 "canvas): only when the owner asks for better quality.\n"
                 "- count=2-4 makes several in one go (Buzz x count).\n"
@@ -184,9 +193,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "model": {
                         "type": "string",
                         "description": (
-                            "Civitai only, optional: a recipe name (illustrious, pony, "
-                            "lustify, anima, zimage-turbo, zimage-base, qwen, flux1, "
-                            "flux2-klein, sdxl) or a checkpoint AIR. Empty = auto."
+                            "Civitai only, optional: a recipe name from the list above "
+                            "or a checkpoint AIR. Empty = auto (recommended)."
                         ),
                     },
                     "quality": {

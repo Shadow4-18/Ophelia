@@ -31,6 +31,20 @@ LUSTIFY_AIR = "urn:air:sdxl:checkpoint:civitai:573152@3045803"  # ZENITH (V9), S
 SDXL_BASE_AIR = "urn:air:sdxl:checkpoint:civitai:101055@128078"
 FLUX1_DEV_DIFFUSER = "urn:air:flux1:diffuser:civitai:618692@691639"
 
+# More of the most downloaded / highest rated NSFW-capable checkpoints per
+# family (site API, 2026-10). They rotate in auto mode for variety.
+HASSAKU_IL_AIR = "urn:air:sdxl:checkpoint:civitai:140272@2615702"  # v3.4
+NOVA_ANIME_AIR = "urn:air:sdxl:checkpoint:civitai:376130@2940478"  # IL v19.0
+PREFECT_IL_AIR = "urn:air:sdxl:checkpoint:civitai:1224788@2864868"  # v8
+ONE_OBSESSION_AIR = "urn:air:sdxl:checkpoint:civitai:1318945@3218603"  # v24
+AUTISMMIX_AIR = "urn:air:sdxl:checkpoint:civitai:288584@324619"
+PREFECT_PONY_AIR = "urn:air:sdxl:checkpoint:civitai:439889@2114187"  # v6
+WAI_ANI_PONY_AIR = "urn:air:sdxl:checkpoint:civitai:404154@1767402"  # v14.0
+CYBERREALISTIC_PONY_AIR = "urn:air:sdxl:checkpoint:civitai:443821@2884631"  # v18.0
+PORNMASTER_AIR = "urn:air:sdxl:checkpoint:civitai:82543@2551619"  # Pro-SDXL-V8
+BIG_LOVE_AIR = "urn:air:sdxl:checkpoint:civitai:897413@2867688"  # Ultra5
+REALISM_IL_AIR = "urn:air:sdxl:checkpoint:civitai:974693@2831949"  # v5.5
+
 QUALITIES = ("standard", "high", "max")
 STYLES = ("anime", "pony", "realistic", "general")
 
@@ -62,6 +76,9 @@ class Recipe:
     base_model: str = ""  # site-API baseModel, for LoRA checks
     cost: str = "sdxl"  # cost formula key
     notes: str = ""
+    pool: str = ""  # auto-mode rotation pool (anime|pony|realistic), "" = not pooled
+    weight: float = 1.0  # share of its pool before feedback
+    pony_source: str = ""  # tags in place of source_anime (realistic Pony merges)
 
     def estimate_buzz(self, width: int, height: int, steps: int, quantity: int) -> float:
         px = width * height
@@ -92,22 +109,100 @@ RECIPES: dict[str, Recipe] = {
             key="illustrious", label="WAI-Illustrious v17 (anime, SDXL)",
             ecosystem="sdxl", family="illustrious", style="anime",
             model=WAI_ILLUSTRIOUS_AIR, steps=20, cfg=6.0, prompt_style="danbooru",
-            base_model="Illustrious",
+            base_model="Illustrious", pool="anime", weight=3.0,
             notes="Best anime/hentai checkpoint for the money. Danbooru tags.",
+        ),
+        Recipe(
+            key="hassaku", label="Hassaku XL Illustrious v3.4 (anime)",
+            ecosystem="sdxl", family="illustrious", style="anime",
+            model=HASSAKU_IL_AIR, steps=25, cfg=5.5, prompt_style="danbooru",
+            base_model="Illustrious", pool="anime", weight=2.0,
+            notes="Hentai-focused Illustrious merge; softer colors.",
+        ),
+        Recipe(
+            key="nova-anime", label="Nova Anime XL IL v19 (anime)",
+            ecosystem="sdxl", family="illustrious", style="anime",
+            model=NOVA_ANIME_AIR, steps=25, cfg=5.0, prompt_style="danbooru",
+            base_model="Illustrious", pool="anime", weight=2.0,
+            notes="Bright, clean modern anime look.",
+        ),
+        Recipe(
+            key="prefect-il", label="Prefect Illustrious XL v8 (anime)",
+            ecosystem="sdxl", family="illustrious", style="anime",
+            model=PREFECT_IL_AIR, steps=25, cfg=5.0, prompt_style="danbooru",
+            base_model="Illustrious", pool="anime", weight=1.5,
+            notes="Detailed, semi-glossy anime; strong anatomy.",
+        ),
+        Recipe(
+            key="one-obsession", label="One Obsession v24 (anime)",
+            ecosystem="sdxl", family="illustrious", style="anime",
+            model=ONE_OBSESSION_AIR, steps=25, cfg=5.0, prompt_style="danbooru",
+            base_model="Illustrious", pool="anime", weight=1.0,
+            notes="Stylised, painterly Illustrious merge.",
         ),
         Recipe(
             key="pony", label="Pony Diffusion V6 XL (anime/furry, SDXL)",
             ecosystem="sdxl", family="pony", style="pony",
             model=PONY_V6_AIR, steps=25, cfg=7.0, prompt_style="pony",
-            base_model="Pony",
+            base_model="Pony", pool="pony", weight=2.0,
             notes="Huge LoRA library. Needs score_* and source_* tags.",
+        ),
+        Recipe(
+            key="autismmix", label="AutismMix SDXL (Pony merge)",
+            ecosystem="sdxl", family="pony", style="pony",
+            model=AUTISMMIX_AIR, steps=25, cfg=7.0, prompt_style="pony",
+            base_model="Pony", pool="pony", weight=2.0,
+            notes="Pony merge with steadier anatomy; Pony LoRAs work.",
+        ),
+        Recipe(
+            key="prefect-pony", label="Prefect Pony XL v6",
+            ecosystem="sdxl", family="pony", style="pony",
+            model=PREFECT_PONY_AIR, steps=25, cfg=6.0, prompt_style="pony",
+            base_model="Pony", pool="pony", weight=1.5,
+            notes="Polished, detailed Pony merge.",
+        ),
+        Recipe(
+            key="wai-pony", label="WAI-ANI-PONYXL v14",
+            ecosystem="sdxl", family="pony", style="pony",
+            model=WAI_ANI_PONY_AIR, steps=25, cfg=7.0, prompt_style="pony",
+            base_model="Pony", pool="pony", weight=1.5,
+            notes="Clean anime Pony merge.",
         ),
         Recipe(
             key="lustify", label="LUSTIFY ZENITH V9 (photoreal NSFW, SDXL)",
             ecosystem="sdxl", family="sdxl", style="realistic",
             model=LUSTIFY_AIR, steps=25, cfg=4.5, prompt_style="mixed",
-            base_model="SDXL 1.0",
+            base_model="SDXL 1.0", pool="realistic", weight=3.0,
             notes="Photoreal, explicit-capable. Tags or natural language.",
+        ),
+        Recipe(
+            key="pornmaster", label="PornMaster Pro SDXL v8 (photoreal NSFW)",
+            ecosystem="sdxl", family="sdxl", style="realistic",
+            model=PORNMASTER_AIR, steps=30, cfg=5.0, prompt_style="mixed",
+            base_model="SDXL 1.0", pool="realistic", weight=2.0,
+            notes="Explicit photoreal specialist.",
+        ),
+        Recipe(
+            key="biglove", label="Big Love Ultra5 (photoreal NSFW)",
+            ecosystem="sdxl", family="sdxl", style="realistic",
+            model=BIG_LOVE_AIR, steps=30, cfg=4.5, prompt_style="mixed",
+            base_model="SDXL 1.0", pool="realistic", weight=1.5,
+            notes="Amateur-photo look, natural skin.",
+        ),
+        Recipe(
+            key="cyberrealistic-pony", label="CyberRealistic Pony v18 (photoreal, Pony)",
+            ecosystem="sdxl", family="pony", style="realistic",
+            model=CYBERREALISTIC_PONY_AIR, steps=30, cfg=4.5, prompt_style="pony",
+            base_model="Pony", pool="realistic", weight=1.5,
+            pony_source="photo, realistic",
+            notes="Photoreal with Pony's pose range and LoRAs.",
+        ),
+        Recipe(
+            key="realism-il", label="Realism Illustrious v5.5 (photoreal, Illustrious)",
+            ecosystem="sdxl", family="illustrious", style="realistic",
+            model=REALISM_IL_AIR, steps=25, cfg=5.0, prompt_style="danbooru",
+            base_model="Illustrious", pool="realistic", weight=1.0,
+            notes="Photoreal that reads danbooru tags; Illustrious LoRAs work.",
         ),
         Recipe(
             key="sdxl", label="SDXL 1.0 base (general)",
@@ -164,7 +259,8 @@ RECIPES: dict[str, Recipe] = {
 }
 
 # Auto-pick: style → recipe for explicit requests (all NSFW-strong SDXL
-# fine-tunes; tested on the phone 2026-10-20).
+# fine-tunes; tested on the phone 2026-10-20). Each is the head of its
+# pool; the others in the pool rotate in (see selection.py).
 AUTO_RECIPE: dict[str, str] = {
     "anime": "illustrious",
     "illustrious": "illustrious",
@@ -193,7 +289,18 @@ _ALIASES = {
     "sdxl": "sdxl",
     "zimage": "zimage-turbo", "z-image": "zimage-turbo",
     "flux": "flux1", "flux1": "flux1", "flux2": "flux2-klein", "klein": "flux2-klein",
+    "hassakuxl": "hassaku", "nova": "nova-anime", "novaanime": "nova-anime",
+    "novaanimexl": "nova-anime", "prefect": "prefect-il", "prefectillustrious": "prefect-il",
+    "oneobsession": "one-obsession", "autism": "autismmix", "autismmixsdxl": "autismmix",
+    "prefectpony": "prefect-pony", "waipony": "wai-pony", "wai-ani-ponyxl": "wai-pony",
+    "cyberrealistic": "cyberrealistic-pony", "cyberrealisticpony": "cyberrealistic-pony",
+    "big-love": "biglove", "porn-master": "pornmaster", "realismillustrious": "realism-il",
 }
+
+
+def pool(style: str) -> list[Recipe]:
+    """Recipes that take turns for a style in auto mode."""
+    return [r for r in RECIPES.values() if r.pool == style]
 
 
 def recipe_by_name(name: str) -> Recipe | None:
