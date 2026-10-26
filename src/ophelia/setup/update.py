@@ -138,6 +138,40 @@ def _current_branch(repo: Path) -> str | None:
     return None if not name or name == "HEAD" else name
 
 
+def _conflicted_files(repo: Path) -> list[str]:
+    """Tracked files left mid-merge (unmerged, or with conflict markers).
+
+    ``git pull --rebase --autostash`` exits 0 even when putting the local
+    edits back conflicts: it leaves "<<<<<<< Updated upstream" in the file
+    and keeps the edits in the stash. Code like that can't even import."""
+    found: list[str] = []
+    rc, out = _git(repo, "diff", "--name-only", "--diff-filter=U")
+    if rc == 0:
+        found.extend(x.strip() for x in out.splitlines() if x.strip())
+    rc, out = _git(repo, "grep", "-l", "-E", "^(<<<<<<< |>>>>>>> )(Updated upstream|Stashed changes)")
+    if rc == 0:
+        found.extend(x.strip() for x in out.splitlines() if x.strip())
+    return sorted(set(found))
+
+
+def _restore_upstream(repo: Path, files: list[str]) -> bool:
+    """Put the pulled version of conflicted files back. The local edits stay
+    in the stash (``git stash list``)."""
+    _git(repo, "reset", "-q", "--", *files)
+    rc, _ = _git(repo, "checkout", "HEAD", "--", *files)
+    return rc == 0 and not _conflicted_files(repo)
+
+
+def _compiles(repo: Path) -> tuple[bool, str]:
+    """Byte-compile the package so a broken tree never gets restarted into."""
+    src = repo / "src" / "ophelia"
+    if not src.is_dir():
+        return True, ""
+    rc, out = _run([sys.executable, "-m", "compileall", "-q", str(src)], cwd=repo,
+                   timeout=300.0)
+    return rc == 0, out
+
+
 def _working_tree_dirty(repo: Path) -> bool:
     # Only edits to tracked files block an update. New untracked files (her
     # own creations, tool caches like .wrangler/) don't stop `git pull`.
@@ -288,6 +322,26 @@ def run_update(
     result.steps.append(f"git {' '.join(pull_args)}: {snippet}")
     if rc != 0:
         result.error = f"git pull failed: {out[:500]}"
+        return result
+
+    conflicted = _conflicted_files(repo)
+    if conflicted:
+        names = ", ".join(conflicted[:6])
+        if _restore_upstream(repo, conflicted):
+            result.steps.append(
+                f"local edits clashed with the update in {names}: kept the updated "
+                "files; your edits are saved in `git stash list`"
+            )
+            log.warning("update.autostash_conflict", files=conflicted)
+        else:
+            result.error = (f"Update left merge conflicts in {names}. Fix with: "
+                            "git reset --hard (your edits are in `git stash list`)")
+            return result
+
+    ok, out = _compiles(repo)
+    if not ok:
+        result.error = f"Updated code doesn't compile, not restarting: {out[-500:]}"
+        result.steps.append("compile check: failed")
         return result
 
     result.after_sha = _head_sha(repo)
