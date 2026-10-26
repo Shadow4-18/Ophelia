@@ -26,6 +26,7 @@ The checklist:
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import time
@@ -159,39 +160,66 @@ def apply_harden(settings: Settings) -> HardenReport:
     return check_harden_status(settings)
 
 
+def _android_shell(command: str, *, timeout: float = 15) -> str | None:
+    """Run a shell command with Android-shell rights: plain (when dumpsys is
+    on PATH), then rish (Shizuku), then su. stdout+stderr of the first one
+    that works, or None when none can."""
+    for cmd in (
+        ["sh", "-c", command] if shutil.which(command.split()[0]) else None,
+        ["rish", "-c", command],
+        ["su", "-c", command],
+    ):
+        if not cmd or not shutil.which(cmd[0]):
+            continue
+        env = None
+        if cmd[0] == "rish":
+            env = dict(os.environ)
+            # rish refuses to run at all without this, so it can never be
+            # left unset; the daemon lives in the Termux app.
+            env["RISH_APPLICATION_ID"] = env.get("RISH_APPLICATION_ID") or "com.termux"
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        except Exception:
+            continue
+        # rish relays the remote stdout through its stderr, so the real
+        # payload can arrive on either stream. Read both.
+        out = (r.stdout or "") + ("\n" + r.stderr if (r.stderr or "").strip() else "")
+        if r.returncode == 0 and out.strip():
+            return out
+    return None
+
+
 def _check_battery_optimization() -> tuple[bool, str]:
     """Best-effort: query `dumpsys deviceidle whitelist` for termux."""
-    dumpsys = shutil.which("dumpsys")
-    if not dumpsys:
-        return True, "dumpsys unavailable — assuming OK"
-    try:
-        out = subprocess.run(
-            [dumpsys, "deviceidle", "whitelist"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-    except Exception:
-        return True, "dumpsys query failed — assuming OK"
+    out = _android_shell("dumpsys deviceidle whitelist")
+    if out is None:
+        return True, "no dumpsys (android shell unavailable) — assuming OK"
     if "com.termux" in out.lower():
         return True, "Termux on battery whitelist"
     return False, "Termux NOT on battery whitelist — likely being killed"
 
 
+_WAKE_LOCK_NAME = "termux:service-wakelock"
+
+
+def _query_wake_locks() -> str | None:
+    """The real Android power state (`dumpsys power`), or None.
+
+    `termux-wake-lock` is not a process, so grepping `ps` never finds it. The
+    lock is held by TermuxService as a PARTIAL_WAKE_LOCK named
+    `termux:service-wakelock`; the honest source is `dumpsys power`, which
+    needs shell (rish / shizuku) on an unrooted phone."""
+    return _android_shell("dumpsys power", timeout=20)
+
+
 def _check_wake_lock() -> tuple[bool, str]:
-    """Check if a Termux wake-lock is held by looking for the lock file."""
-    lock_file = Path("/data/data/com.termux/files/home/.termux/lock")
-    # termux-wake-lock doesn't expose a clean query; the presence of any
-    # ophelia process is a decent proxy. Best-effort.
-    try:
-        ps = subprocess.run(
-            ["ps", "-ef"], capture_output=True, text=True, timeout=5
-        ).stdout
-        if "ophelia" in ps and "termux-wake-lock" in ps:
-            return True, "wake-lock held"
-        if "ophelia" in ps:
-            return False, "ophelia running but NO wake-lock — at risk"
-        return False, "ophelia not running"
-    except Exception:
-        return True, "ps unavailable — assuming OK"
+    """Is Termux's wake-lock held? Read from `dumpsys power`."""
+    out = _query_wake_locks()
+    if out is None:
+        return True, "can't read wake locks (no dumpsys/rish/su) — assuming OK"
+    if _WAKE_LOCK_NAME in out:
+        return True, "wake-lock held"
+    return False, "NO Termux wake-lock — at risk of being killed (run termux-wake-lock)"
 
 
 def _check_tmux_session() -> tuple[bool, str]:
