@@ -298,13 +298,23 @@ _NEGATIVES: dict[str, str] = {
         "worst quality, low quality, blurry, jpeg artifacts, bad anatomy, bad hands, "
         "watermark, text, logo"
     ),
-    "realistic": (
-        "worst quality, low quality, blurry, deformed, disfigured, bad anatomy, "
-        "bad proportions, extra limbs, extra arms, extra legs, missing limbs, "
-        "extra fingers, missing fingers, fused fingers, mutated hands, poorly drawn hands, "
-        "malformed limbs, long neck, duplicate, watermark, text, cartoon, anime, 3d render, "
-        "plastic skin"
+    # Anatomy first: SDXL realism fails on hands/fingers/limbs far more
+    # than on style. Keep it explicit about digits, extra limbs, joined
+    # bodies, and the usual swapped face.
+    "anatomy": (
+        "worst quality, low quality, blurry, jpeg artifacts, deformed, "
+        "bad anatomy, bad proportions, disfigured, mutated, malformed limbs, "
+        "extra limbs, extra arms, extra legs, missing limbs, missing arms, missing legs, "
+        "bad hands, deformed hands, mutated hands, poorly drawn hands, malformed hands, "
+        "extra fingers, fused fingers, missing fingers, too many fingers, six fingers, "
+        "bad feet, deformed feet, extra toes, missing toes, "
+        "asymmetrical eyes, crossed eyes, bad face, deformed face, "
+        "extra nipples, third nipple, extra breasts, malformed breasts, "
+        "twisted torso, disproportionate body, stacked torso, merged body, "
+        "conjoined, duplicate body, long neck, "
+        "watermark, signature, text, logo, username"
     ),
+    "realistic": "cartoon, anime, 3d render, doll, plastic skin",
     "sd1": (
         "worst quality, low quality, normal quality, blurry, jpeg artifacts, "
         "bad anatomy, bad hands, missing fingers, extra digits, watermark, text"
@@ -321,7 +331,11 @@ def negative_for(recipe: Recipe, *, nsfw: bool) -> str:
     if not recipe.negative:
         return ""
     if recipe.family == "sdxl" and recipe.style == "realistic":
-        neg = _NEGATIVES["realistic"]
+        neg = f"{_NEGATIVES['anatomy']}, {_NEGATIVES['realistic']}"
+    elif recipe.family == "sdxl":
+        # Every SDXL checkpoint (base included) gets the anatomy list; only
+        # photoreal ones also push away from cartoon looks.
+        neg = _NEGATIVES["anatomy"]
     else:
         neg = _NEGATIVES.get(recipe.family, "")
     if nsfw and recipe.family in ("illustrious", "pony", "anima") and neg:

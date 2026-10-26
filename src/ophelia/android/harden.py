@@ -292,11 +292,26 @@ class HealthCheckLoop:
         *,
         interval_seconds: int = 600,
         auto_repair: bool = True,
+        unrepairable: tuple[str, ...] = (
+            "termux_boot_addon",
+            "battery_optimization",
+        ),
     ) -> None:
         self.settings = settings
         self.signals = signals
         self.interval = max(60, int(interval_seconds))
         self.auto_repair = auto_repair
+        # Checks that can never be repaired from inside the process: report
+        # them once with their hint, then stop counting them as failures so
+        # the loop doesn't scream the same line every interval forever.
+        self.unrepairable = tuple(unrepairable)
+        # Persisted so a restart (which happens a lot) doesn't re-scream a
+        # check we already told the operator about.
+        try:
+            self._state_path: Path | None = Path(settings.data_dir) / "harden_state.json"
+        except Exception:  # pragma: no cover - settings without data_dir
+            self._state_path = None
+        self._reported_unrepairable: set[str] = self._load_reported()
         self._running = False
         self._last_report: HardenReport | None = None
 
@@ -309,17 +324,47 @@ class HealthCheckLoop:
             try:
                 report = check_harden_status(self.settings)
                 self._last_report = report
-                if not report.overall_ok:
-                    log.warning("health_check.failed", checks=[
-                        c.name for c in report.checks if not c.ok
-                    ])
+                failing = [c for c in report.checks if not c.ok]
+                new_bad = [c for c in failing if c.name not in self.unrepairable]
+                for c in failing:
+                    if c.name in self.unrepairable and c.name not in self._reported_unrepairable:
+                        log.info("health_check.manual", check=c.name, detail=c.detail,
+                                 fix=c.fix_hint, note="manual step required; not retried.")
+                        self._reported_unrepairable.add(c.name)
+                        self._save_reported()
+                if new_bad:
+                    log.warning("health_check.failed", checks=[c.name for c in new_bad])
                     if self.auto_repair:
                         apply_harden(self.settings)
-                else:
+                elif not failing:
                     log.debug("health_check.ok")
+                # else: only known-unrepairable checks are down, already reported.
             except Exception as e:
                 log.warning("health_check.error", error=str(e))
             await asyncio.sleep(self.interval)
+
+    def _load_reported(self) -> set[str]:
+        if not self._state_path:
+            return set()
+        try:
+            import json
+
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            return {str(x) for x in data if isinstance(x, str)}
+        except Exception:
+            return set()
+
+    def _save_reported(self) -> None:
+        if not self._state_path:
+            return
+        try:
+            import json
+
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(sorted(self._reported_unrepairable)), encoding="utf-8")
+        except Exception as e:  # pragma: no cover - best effort
+            log.debug("health_check.state_save_failed", error=str(e))
 
     def stop(self) -> None:
         self._running = False
