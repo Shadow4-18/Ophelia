@@ -21,6 +21,8 @@ from ophelia.config import Settings
 
 log = structlog.get_logger()
 
+_DOWNLOAD_TRIES = 10  # rounds (30 s apart) before a finished job's download is given up
+
 DeliverMedia = Callable[[list[Path], str, str], Awaitable[bool]]
 DeliverText = Callable[[str, str], Awaitable[Any]]
 
@@ -49,6 +51,13 @@ class PendingStore:
             "workflow_id": workflow_id, "created": time.time(), "record": record,
             "deliver_to": deliver_to or "", "artifacts_dir": artifacts_dir, "summary": summary,
         })
+        self._save(items)
+
+    def update(self, workflow_id: str, **fields: Any) -> None:
+        items = self.load()
+        for i in items:
+            if i.get("workflow_id") == workflow_id:
+                i.update(fields)
         self._save(items)
 
     def remove(self, workflow_id: str) -> None:
@@ -84,7 +93,7 @@ class PendingLoop:
             CivitaiClient,
             cost_of,
             failure_reason,
-            output_images,
+            images_ready,
             status_of,
         )
         from ophelia.providers.civitai.pipeline import collect_images, write_ledger
@@ -112,11 +121,20 @@ class PendingLoop:
                 msg = f"Civitai workflow {status}: {failure_reason(wf)}"
                 write_ledger(self.settings, {**record, "cost": cost_of(wf), "error": msg})
                 await self._text(f"That slow image didn't make it ({prompt}): {msg}", channel)
-            elif wf and any(img.get("url") for img in output_images(wf)):
+            elif wf and images_ready(wf):
                 paths, total, err = await collect_images(
                     self.settings, client, wf, Path(item["artifacts_dir"]), record.get("seed")
                 )
                 if not paths:
+                    # Paid for: keep it parked and try again next round
+                    # rather than dropping it on one failed download.
+                    tries = int(item.get("download_tries") or 0) + 1
+                    if tries < _DOWNLOAD_TRIES and \
+                            time.time() - float(item.get("created") or 0) <= max_age:
+                        self.store.update(wf_id, download_tries=tries)
+                        log.info("civitai.pending_download_retry", workflow_id=wf_id,
+                                 tries=tries, error=err[:200])
+                        continue
                     write_ledger(self.settings, {**record, "error": err})
                     await self._text(f"That slow image finished but {err}", channel)
                 else:
@@ -148,7 +166,53 @@ class PendingLoop:
             except Exception as e:
                 log.debug("civitai.pending_text_failed", error=str(e))
 
+    def recover_failed_downloads(self, *, within_hours: float = 24.0) -> int:
+        """Re-park finished jobs whose download failed (they used to be dropped
+        on the first 404: Civitai hands out the URL before the file exists).
+        Civitai keeps the images, so they can still be fetched and sent."""
+        from ophelia.providers.civitai.pipeline import ledger_path
+
+        try:
+            lines = ledger_path(self.settings).read_text(encoding="utf-8").splitlines()[-400:]
+        except Exception:
+            return 0
+        recs = []
+        for line in lines:
+            try:
+                recs.append(json.loads(line))
+            except Exception:
+                continue
+        delivered = {r.get("workflow_id") for r in recs if r.get("paths")}
+        parked = {i.get("workflow_id") for i in self.store.load()}
+        cutoff = time.time() - within_hours * 3600
+        found = 0
+        for r in recs:
+            wf_id = r.get("workflow_id")
+            err = str(r.get("error") or "")
+            if not wf_id or wf_id in delivered or wf_id in parked or r.get("recovered"):
+                continue
+            if "download" not in err or "failed HTTP" not in err or float(r.get("ts") or 0) < cutoff:
+                continue
+            record = {k: v for k, v in r.items() if k not in ("error", "ts")}
+            record["recovered"] = True
+            self.store.add(
+                workflow_id=wf_id, record=record, deliver_to=str(r.get("deliver_to") or ""),
+                artifacts_dir=str(r.get("artifacts_dir")
+                                  or Path(self.settings.data_dir) / "artifacts"),
+                summary="",
+            )
+            parked.add(wf_id)
+            found += 1
+        if found:
+            log.info("civitai.pending_recovered", count=found)
+        return found
+
     async def run(self) -> None:
+        try:
+            if not self.ui:
+                self.recover_failed_downloads()
+        except Exception as e:
+            log.debug("civitai.pending_recover_failed", error=str(e))
         while not self._stop:
             try:
                 await self.check_once()

@@ -150,6 +150,19 @@ def output_images(wf: dict) -> list[dict]:
     return out
 
 
+def images_ready(wf: dict) -> bool:
+    """Succeeded, and every image that isn't blocked has a URL marked
+    available. Civitai assigns the URL before the file exists ("available":
+    false), and fetching it then is a 404."""
+    if status_of(wf) not in TERMINAL_OK:
+        return False
+    every = output_images(wf)
+    imgs = [i for i in every if not i.get("blockedReason")]
+    if every and not imgs:
+        return True  # all blocked: done, and collect_images says why
+    return bool(imgs) and all(i.get("url") and i.get("available") is not False for i in imgs)
+
+
 def failure_reason(wf: dict) -> str:
     """Why a workflow failed, as specifically as the response says."""
     parts: list[str] = []
@@ -312,6 +325,6 @@ async def resolve_image_url(settings: Settings, image: str) -> str:
 
 __all__ = [
     "RECIPES", "CivitaiClient", "build_input", "build_step_input", "cost_of",
-    "failure_reason", "output_images", "resolve_image_url", "status_of",
+    "failure_reason", "images_ready", "output_images", "resolve_image_url", "status_of",
     "upload_local_image",
 ]
