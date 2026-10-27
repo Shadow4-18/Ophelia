@@ -58,6 +58,7 @@ class AmbientCommentaryLoop:
         self._last_at = 0.0
         # (when, what the screen looked like, what she said), newest last.
         self._recent: deque[tuple[float, str, str]] = deque(maxlen=8)
+        self._screen_state = ""
 
     async def run(self) -> None:
         if not self.vision or not self.settings.ambient_commentary_enabled:
@@ -75,7 +76,26 @@ class AmbientCommentaryLoop:
                 continue
             await self._maybe_comment()
 
+    async def _screen_is_viewable(self) -> bool:
+        """Skip the glance (a vision call and a chat turn) while the phone is
+        asleep or locked: the capture is then a stale frame or the AOD clock,
+        which she kept reading as a clock frozen at 5."""
+        android = getattr(self.vision, "android", None)
+        check = getattr(android, "screen_state", None)
+        if check is None:
+            return True
+        try:
+            state = await check()
+        except Exception:
+            return True
+        if state != self._screen_state:
+            log.info("ambient_commentary.screen", state=state)
+            self._screen_state = state
+        return state not in ("off", "locked")
+
     async def _maybe_comment(self) -> None:
+        if not await self._screen_is_viewable():
+            return
         try:
             seen = await self.vision.explore_cycle("ambient glance — what's on screen?")
         except Exception as e:
