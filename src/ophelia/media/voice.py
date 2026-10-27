@@ -44,6 +44,28 @@ def split_pauses(text: str) -> list[tuple[str, float]]:
     return out
 
 
+_MAX_SPLITS = 3  # each split is another call to the phone's TTS server
+_MIN_SPLIT_S = 0.5  # shorter beats: a comma does it
+
+
+def merge_pauses(segments: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Keep only the longest few real pauses as silences; the rest join
+    their neighbours with a comma (Kokoro breathes there anyway)."""
+    keep = sorted((p for _, p in segments[:-1] if p >= _MIN_SPLIT_S), reverse=True)[:_MAX_SPLITS]
+    out: list[tuple[str, float]] = []
+    buf = ""
+    for seg, pause in segments:
+        buf = f"{buf.rstrip(' ,')}, {seg}" if buf and not buf.endswith((".", "!", "?", "…")) \
+            else (f"{buf} {seg}" if buf else seg)
+        if pause in keep:
+            keep.remove(pause)
+            out.append((buf, pause))
+            buf = ""
+    if buf:
+        out.append((buf, 0.0))
+    return out
+
+
 def strip_pauses(text: str, replacement: str = " ") -> str:
     """Pause tags out of the text (for engines that can't take them). After
     punctuation the punctuation already makes the beat, so the tag just goes."""
@@ -351,7 +373,7 @@ async def _synthesize_with_pauses(
     None when the clips can't be joined (the caller then speaks the text
     without the tags)."""
     provider = resolve_tts_provider(settings)
-    segments = split_pauses(text)
+    segments = merge_pauses(split_pauses(text))
     if not segments:
         return None
     args = _openai_tts_args(provider, settings, voice, speed)

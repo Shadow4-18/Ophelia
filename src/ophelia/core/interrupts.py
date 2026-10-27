@@ -15,12 +15,33 @@ import structlog
 log = structlog.get_logger()
 
 _running: dict[asyncio.Task, str] = {}
+_yields: set[asyncio.Task] = set()  # her own turns that give way when he writes
 
 
-def track(task: asyncio.Task, label: str) -> asyncio.Task:
+def track(task: asyncio.Task, label: str, *, yields_to_owner: bool = False) -> asyncio.Task:
     _running[task] = label
-    task.add_done_callback(lambda t: _running.pop(t, None))
+    if yields_to_owner:
+        _yields.add(task)
+
+    def done(t: asyncio.Task) -> None:
+        _running.pop(t, None)
+        _yields.discard(t)
+
+    task.add_done_callback(done)
     return task
+
+
+def yield_to_owner() -> list[str]:
+    """He just wrote: stop what she started on her own (a thought, a voice
+    note nobody asked for) so his conversation isn't run over by it."""
+    stopped = []
+    for task in list(_yields):
+        if not task.done():
+            task.cancel()
+            stopped.append(_running.get(task, "own turn"))
+    if stopped:
+        log.info("interrupts.yielded_to_owner", what=stopped)
+    return stopped
 
 
 def running() -> list[str]:

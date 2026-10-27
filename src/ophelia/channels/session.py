@@ -278,6 +278,7 @@ class ChannelSession:
             return False
         if not settings.is_owner_channel(channel) or text.strip().startswith("/"):
             return False
+        self._owner_spoke()
         if not interjections.accepting(channel):
             return False
         self.signals.last_user_message_at = time.time()
@@ -289,6 +290,13 @@ class ChannelSession:
             return False
         await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
         return True
+
+    def _owner_spoke(self) -> None:
+        """His message comes first: something she started on her own (a
+        voice note, a thought) stops instead of landing on top of her reply."""
+        from ophelia.core import interrupts
+
+        interrupts.yield_to_owner()
 
     async def _side_reply(
         self, channel: str, text: str, reply: ReplyFn, *, log_context: dict | None
@@ -392,6 +400,7 @@ class ChannelSession:
                         else "Nothing was running.")
             return
         if is_owner:
+            self._owner_spoke()
             from ophelia.mind import quiet
 
             q = quiet.active(channel)
