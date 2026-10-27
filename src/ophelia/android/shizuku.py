@@ -22,6 +22,20 @@ def _no_output(err: str) -> str:
     return err if err else "(finished, no output)"
 
 
+def parse_screen_state(power: str, keyguard: str = "") -> str:
+    """Screen state from `dumpsys power` and `dumpsys window` excerpts."""
+    p = power or ""
+    if re.search(r"mWakefulness=(Asleep|Dozing|Dreaming)", p) or \
+            re.search(r"Display Power: state=(OFF|DOZE|DOZE_SUSPEND)", p):
+        return "off"
+    if "mWakefulness=Awake" not in p and "Display Power: state=ON" not in p:
+        return "unknown"
+    if re.search(r"(mDreamingLockscreen|mShowingLockscreen|mKeyguardShowing|isKeyguardShowing)"
+                 r"\s*[=:]\s*true", keyguard or ""):
+        return "locked"
+    return "on"
+
+
 class AndroidBody:
     """Execute phone actions via Shizuku (Termux) or ADB (PC → phone)."""
 
@@ -350,6 +364,26 @@ class AndroidBody:
                 f"Missing: {hint}. Run: bash scripts/termux-shizuku-setup.sh"
             )
         return f"Phone body: {mode} (Shizuku=rish, OpenClaw-style=phone_control.sh)"
+
+    async def screen_state(self) -> str:
+        """"on", "off" (asleep / always-on display), "locked" (awake on the
+        lock screen) or "unknown". A screenshot of an off or locked screen is
+        a stale frame or the AOD clock: nothing worth looking at."""
+        try:
+            power = await self.shell(
+                "dumpsys power 2>&1 | grep -E 'mWakefulness=|Display Power: state='")
+        except Exception as e:
+            log.debug("screen_state.power_failed", error=str(e))
+            return "unknown"
+        return parse_screen_state(power, await self._keyguard_dump())
+
+    async def _keyguard_dump(self) -> str:
+        try:
+            return await self.shell(
+                "dumpsys window 2>&1 | grep -E 'mDreamingLockscreen=|mShowingLockscreen="
+                "|mKeyguardShowing=|isKeyguardShowing'")
+        except Exception:
+            return ""
 
     async def display_size(self) -> tuple[int, int] | None:
         """Native display resolution in pixels, cached. `input tap` coordinates
