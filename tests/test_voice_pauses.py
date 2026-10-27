@@ -110,3 +110,12 @@ def test_wav_join(tmp_path):
 def test_silent_mp3_frames_parse_as_the_same_format():
     assert voice._mp3_format(_clip(1.0)) == _FMT
     assert len(voice._silent_mp3(_FMT, 1.0)) == 42 * 24  # 42 frames x 24 bytes
+
+
+def test_only_the_longest_pauses_split_the_audio():
+    segs = voice.split_pauses("a [pause:0.3s] b [pause:1.0s] c [pause:0.6s] d [pause:1.5s] "
+                              "e [pause:0.8s] f [pause:0.7s] g")
+    merged = voice.merge_pauses(segs)
+    assert merged == [("a, b", 1.0), ("c, d", 1.5), ("e", 0.8), ("f, g", 0.0)]
+    assert len(merged) <= voice._MAX_SPLITS + 1
+    assert voice.merge_pauses([("Hm.", 0.2), ("Sure.", 0.0)]) == [("Hm. Sure.", 0.0)]

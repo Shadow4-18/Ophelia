@@ -135,3 +135,74 @@ def _wire(loop, agent, store, notify):
     loop._nudge_idx = 0
     loop._pending_dream_ref = None
     loop._feedback = None
+
+
+@pytest.mark.asyncio
+async def test_no_initiative_mid_conversation(store):
+    """A due goal fired 30 s after his message and dropped a voice note on
+    top of the conversation. Mid-conversation, the director's "not now"
+    stands; once he's been quiet, the goal can still override it."""
+    from ophelia.mind.consciousness import ConsciousnessLoop
+
+    loop = ConsciousnessLoop.__new__(ConsciousnessLoop)
+    agent = _agent(store)
+    agent.run_turn = AsyncMock(return_value="")
+    agent.run_consciousness_tick = AsyncMock(return_value=json.dumps(
+        {"action": "act", "internal_thought": "voice check", "tool_intent": "say good morning"}
+    ))
+    agent.pending_resume_for = MagicMock(return_value=None)
+    agent.tools = MagicMock()
+    agent.tools.consume_pending_artifacts = MagicMock(return_value=[])
+    _wire(loop, agent, store, AsyncMock())
+    loop.goals.pick_for_tick.return_value = MagicMock(id="self-reflect", description="reflect")
+    seen = {}
+
+    async def decide(**kw):
+        seen.update(kw)
+        from ophelia.mind.director import DirectorDecision
+
+        return DirectorDecision(action="defer", reason="he's right here")
+
+    loop.director = SimpleNamespace(available=lambda: True, decide=decide)
+
+    await loop._tick(idle_seconds=30)
+    assert seen["owner_active"] is True
+    agent.run_turn.assert_not_awaited()
+
+    await loop._tick(idle_seconds=4000)  # he's gone quiet: the due goal may act
+    assert seen["owner_active"] is False
+    agent.run_turn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_his_message_stops_her_own_turn_but_not_a_game():
+    import asyncio
+
+    from ophelia.core import interrupts
+
+    async def forever():
+        await asyncio.sleep(60)
+
+    own = interrupts.track(asyncio.create_task(forever()), "voice note", yields_to_owner=True)
+    game = interrupts.track(asyncio.create_task(forever()), "balatro")
+    assert interrupts.yield_to_owner() == ["voice note"]
+    await asyncio.sleep(0)
+    assert own.cancelled() and not game.done()
+    game.cancel()
+
+
+@pytest.mark.asyncio
+async def test_owner_message_yields_before_interjecting(monkeypatch):
+    from ophelia.channels.session import ChannelSession
+    from ophelia.core import interrupts
+
+    calls = []
+    monkeypatch.setattr(interrupts, "yield_to_owner", lambda: calls.append(1) or [])
+    session = ChannelSession.__new__(ChannelSession)
+    session.agent = SimpleNamespace(settings=SimpleNamespace(
+        interjection_mode_resolved=lambda: "parallel", interjections_enabled=True,
+        is_owner_channel=lambda c: c == "telegram:1"))
+    assert await session.try_interject("telegram:1", "no response?") is False  # nothing open
+    assert calls == [1]
+    await session.try_interject("telegram:2", "hi")  # a guest doesn't stop her
+    assert calls == [1]

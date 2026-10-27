@@ -84,7 +84,9 @@ You're in the middle of something and you're still doing it while you chat:
 Your owner just messaged you. Reply like you would while still busy with it,
 without stopping. Talk about what you're doing if it fits. You can't use tools
 in this reply; if he asks for something that needs them, or to stop or switch,
-just say so naturally. You'll see his message and act on it right after."""
+just say so naturally. You'll see his message and act on it right after.
+Keep it short: one or two lines, a single message. Don't repeat what you're
+already sending him (a voice note or message on its way says itself)."""
 # Extra steps granted per interjection so answering doesn't eat the task's budget.
 _INTERJECTION_BONUS_ROUNDS = 2
 

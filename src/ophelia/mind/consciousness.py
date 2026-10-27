@@ -84,6 +84,10 @@ def satiation_threshold_delta(
 
 
 class ConsciousnessLoop:
+    # Her own initiatives wait this long after his last message (they're
+    # mid-conversation; chat turns answer him).
+    conversation_grace_s = 180.0
+
     def __init__(
         self,
         agent: AgentLoop,
@@ -330,9 +334,13 @@ class ConsciousnessLoop:
             await self.signals.set_agent_thinking(True)
             from ophelia.core import interrupts
 
+            # Her own turns give way when he writes, except a game she's
+            # playing (that one answers alongside, like a chat task).
+            playing = bool(self.games and self.games.session_active())
             tick = interrupts.track(
                 asyncio.create_task(self._tick(idle, wake_reason=wake)),
                 "something she was doing on her own",
+                yields_to_owner=not playing,
             )
             try:
                 await tick
@@ -419,6 +427,13 @@ class ConsciousnessLoop:
         # all, and at what urgency. When enabled, it replaces the simple
         # pressure-threshold heuristic with a richer speak/react/defer/skip
         # decision and provides pacing that composes with the mood knobs.
+        # He wrote moments ago: they're mid-conversation, and her own
+        # initiatives wait (chat turns answer him; this loop is for silence).
+        conversation_live = idle_seconds < self.conversation_grace_s
+        if conversation_live and (self.director is None or not self.director.available()):
+            self.psyche.relax(60)
+            log.info("consciousness.conversation_live_skip", idle=int(idle_seconds))
+            return
         director_decision = None
         if self.director is not None and self.director.available():
             trigger = (
@@ -439,14 +454,16 @@ class ConsciousnessLoop:
                         f"goal={due_goal.id if due_goal else 'none'}"
                         + (f", wake={wake_reason}" if wake_reason else "")
                     ),
-                    owner_active=False,
+                    owner_active=conversation_live,
                 )
             except Exception as e:
                 log.debug("director.decide_error", error=str(e))
             if director_decision is not None and director_decision.action == "defer":
                 # Soft override: when pressure is already high or a goal is due,
                 # don't let a deferral bias keep her permanently silent.
-                soft_override = (
+                # ...except mid-conversation: a goal can wait until he's quiet
+                # (one fired 30 s after his message and talked over him).
+                soft_override = not conversation_live and (
                     bool(due_goal) or bool(due_loops) or pressure >= effective_threshold
                 )
                 if soft_override:
