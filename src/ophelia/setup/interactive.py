@@ -1319,6 +1319,8 @@ def _section_phone_body(on_phone: bool) -> None:
         rows.append(Opt("OPHELIA_ADB_DEVICE", "ADB device", help="adb connect PHONE_IP:5555 first"))
     rows += [
         Opt("OPHELIA_GAMES", "Plays games"),
+        Opt("OPHELIA_PHONE_FINE_AIM", "Finer aim-by-sight taps",
+            help="One more zoom step per aimed tap: smaller misses, a few seconds slower"),
         Opt("OPHELIA_GAME_SESSION_MINUTES", "Game session length (min)"),
         Opt("OPHELIA_GAME_MAX_TURNS", "Most moves per session"),
         Opt("OPHELIA_AUTO_GAME_BOREDOM", "Boredom before she plays (0-1)"),

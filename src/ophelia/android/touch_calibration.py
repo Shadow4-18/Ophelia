@@ -320,13 +320,18 @@ def save_profile(data_dir: Path | str, profile: dict) -> None:
     path.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
-def correct(data_dir: Path | str, x: int, y: int, w: int, h: int) -> tuple[int, int, str]:
+def correct(data_dir: Path | str, x: int, y: int, w: int, h: int,
+            aim: str = "coarse") -> tuple[int, int, str]:
     """Shift an aimed-by-sight point by her measured error for this screen
     size (orientation included). (x, y, note); unchanged when uncalibrated."""
     prof = load_profiles(data_dir).get(f"{w}x{h}")
     # Older profiles were scored on their own taps (no fair test): unused
     # until calibration is run again.
     if not prof or prof.get("applies") is not True:
+        return x, y, ""
+    # Measured with a different aiming method (coarse vs fine): its lean
+    # doesn't carry over.
+    if prof.get("aim", "coarse") != aim:
         return x, y, ""
     dx, dy = _offset(prof.get("regions") or {}, prof.get("global") or [0, 0], x, y, w, h)
     if math.hypot(dx, dy) < _MIN_SHIFT:
@@ -469,6 +474,8 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
             return _stopped((f"Only {len(samples)} usable rounds (vision couldn't find the target); "
                     "not enough to calibrate. Nothing was changed."))
         profile = fit_profile(samples, w, h)
+        mode = getattr(vision, "aim_mode", None)
+        profile["aim"] = mode() if callable(mode) else "coarse"
         save_profile(data_dir, profile)
         server.show(None, f"Done: off by {profile['mean_error_px']:.0f}px on average")
         await asyncio.sleep(1.0)

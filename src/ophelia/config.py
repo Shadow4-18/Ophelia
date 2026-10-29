@@ -317,6 +317,14 @@ class Settings(BaseSettings):
             "as written."
         ),
     )
+    phone_fine_aim: bool = Field(
+        default=True,
+        alias="OPHELIA_PHONE_FINE_AIM",
+        description=(
+            "Aim-by-sight taps (games) take a third, finer zoom step: about half "
+            "the miss distance for one more vision call per tap."
+        ),
+    )
     civitai_discover: bool = Field(
         default=True,
         alias="OPHELIA_CIVITAI_DISCOVER",

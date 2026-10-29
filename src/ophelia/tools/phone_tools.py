@@ -197,7 +197,9 @@ class PhoneToolsMixin:
                     if grid:
                         from ophelia.android.touch_calibration import correct
 
-                        x, y, fix = correct(self.settings.data_dir, x, y, grid[2], grid[3])
+                        mode = getattr(vision, "aim_mode", None)
+                        x, y, fix = correct(self.settings.data_dir, x, y, grid[2], grid[3],
+                                            aim=mode() if callable(mode) else "coarse")
                         how_note += fix
             except Exception as e:
                 what = target or cell

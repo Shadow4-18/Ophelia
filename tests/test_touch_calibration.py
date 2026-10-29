@@ -246,3 +246,63 @@ def test_scatter_profile_and_old_profiles_are_not_applied(tmp_path):
     # Saved before the fair test existed: unused until she runs it again.
     tc.save_profile(tmp_path, {"size": [1080, 2400], "global": [17.5, 18.5], "regions": {}})
     assert tc.correct(tmp_path, 500, 500, 1080, 2400) == (500, 500, "")
+
+
+# --- finer aim ---------------------------------------------------------------------
+
+
+def _vision(answers, *, fine=True):
+    from ophelia.android.vision import ScreenVision as VisionLoop
+
+    v = VisionLoop.__new__(VisionLoop)
+    v.settings = SimpleNamespace(phone_fine_aim=fine)
+    asked = []
+
+    async def ask(png, prompt):
+        asked.append(prompt)
+        return answers.pop(0)
+
+    v._ask = ask
+    return v, asked
+
+
+def _screen_png():
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (W, H), (20, 20, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_fine_aim_takes_a_third_finer_step():
+    png = _screen_png()
+    box = (270, 600, 405, 750)  # a 135x150 cell
+    v, asked = _vision(["6", "11"])
+    x, y, note = await v._zoom_tap(png, box, W, H, "the 7 of clubs", "C5", 4)
+    assert len(asked) == 2  # zoom + fine (the coarse cell was given)
+    assert "fine square 11" in note
+    # Step two alone: square 6 of a 270x300 window from (202, 525) = (303, 637).
+    v2, _ = _vision(["6"], fine=False)
+    cx, cy, _ = await v2._zoom_tap(png, box, W, H, "the 7 of clubs", "C5", 4)
+    assert (cx, cy) == (303, 637)
+    # The fine step lands inside that square, within a quarter-square grid.
+    assert abs(x - cx) <= 67 and abs(y - cy) <= 75
+    assert (x, y) != (cx, cy)
+
+
+@pytest.mark.asyncio
+async def test_fine_step_unclear_keeps_the_step_two_point():
+    png = _screen_png()
+    v, _ = _vision(["6", "no idea"])
+    x, y, note = await v._zoom_tap(png, (270, 600, 405, 750), W, H, "x", "C5", 4)
+    assert (x, y) == (303, 637) and "fine step unclear" in note
+
+
+def test_correction_only_for_the_aim_it_was_measured_with(tmp_path):
+    tc.save_profile(tmp_path, {"size": [W, H], "global": [30, -12], "regions": {},
+                               "applies": True, "aim": "coarse"})
+    assert tc.correct(tmp_path, 530, 1188, W, H, aim="fine") == (530, 1188, "")
+    assert tc.correct(tmp_path, 530, 1188, W, H, aim="coarse")[:2] == (500, 1200)
