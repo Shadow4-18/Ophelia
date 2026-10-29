@@ -589,9 +589,42 @@ class ScreenVision:
             return (cx1 + cx2) // 2, (cy1 + cy2) // 2, f"aimed at cell {label} (zoom step unclear)"
         k = int(m2.group()) - 1
         sc, sr = k % sub, k // sub
-        x = int(bx1 + (sc + 0.5) * (bx2 - bx1) / sub)
-        y = int(by1 + (sr + 0.5) * (by2 - by1) / sub)
-        return x, y, f"aimed by sight: cell {label}, square {k + 1}"
+        sw, sh = (bx2 - bx1) / sub, (by2 - by1) / sub
+        x = int(bx1 + (sc + 0.5) * sw)
+        y = int(by1 + (sr + 0.5) * sh)
+        note = f"aimed by sight: cell {label}, square {k + 1}"
+        if not self.fine_aim():
+            return x, y, note
+        # Third step: the chosen square plus half a square around it, split
+        # again. Halves the area she picks the centre of (her calibration
+        # showed ~30 px scatter, about half a step-two square).
+        fx1, fy1 = max(0, int(x - sw)), max(0, int(y - sh))
+        fx2, fy2 = min(w, int(x + sw)), min(h, int(y + sh))
+        if fx2 - fx1 < 8 or fy2 - fy1 < 8:
+            return x, y, note
+        scale = max(2.0, 600 / max(fx2 - fx1, fy2 - fy1))
+        fine = _annotate_cells(_crop(png, (fx1, fy1, fx2, fy2), upscale=scale), sub, sub,
+                               labels="numbers")
+        a3 = await self._ask(fine, (
+            f"Closer still: the same spot, magnified and split into numbered squares "
+            f"1-{sub * sub}. Which square is exactly where you'd touch {target}? "
+            "Keep to its visible, uncovered part (not something lying on top of it). "
+            "Reply with only the number."
+        ))
+        m3 = _re.search(r"\d{1,2}", a3)
+        if not m3 or not (1 <= int(m3.group()) <= sub * sub):
+            return x, y, note + " (fine step unclear)"
+        k3 = int(m3.group()) - 1
+        x = int(fx1 + (k3 % sub + 0.5) * (fx2 - fx1) / sub)
+        y = int(fy1 + (k3 // sub + 0.5) * (fy2 - fy1) / sub)
+        return x, y, note + f", fine square {k3 + 1}"
+
+    def fine_aim(self) -> bool:
+        """Third, finer aiming step (OPHELIA_PHONE_FINE_AIM, default on)."""
+        return getattr(getattr(self, "settings", None), "phone_fine_aim", True) is not False
+
+    def aim_mode(self) -> str:
+        return "fine" if self.fine_aim() else "coarse"
 
     async def look_closer(self, cells: str, question: str = "") -> str:
         """Zoomed view of a block of lettered cells (e.g. "F5:L8"), labelled

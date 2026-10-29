@@ -174,6 +174,7 @@ async def test_aim_two_steps(tmp_path):
     shot = tmp_path / "s.png"
     shot.write_bytes(buf.getvalue())
     v = ScreenVision.__new__(ScreenVision)
+    v.settings = SimpleNamespace(phone_fine_aim=False)  # the two-step path
     v.android = SimpleNamespace(learn_display_size=lambda size: None)
     v.capture = AsyncMock(return_value=shot)
     v._ask = AsyncMock(side_effect=["C7", "6"])
@@ -300,8 +301,9 @@ async def test_aim_targets_the_uncovered_part(tmp_path):
     v = ScreenVision.__new__(ScreenVision)
     v.android = SimpleNamespace(learn_display_size=lambda size: None)
     v.capture = AsyncMock(return_value=shot)
-    v._ask = AsyncMock(side_effect=["G6", "5"])
+    v._ask = AsyncMock(side_effect=["G6", "5", "7"])
     await v.aim("7 of clubs")
+    assert v._ask.await_count == 3  # coarse, zoom, fine
     for call in v._ask.await_args_list:
         prompt = call.args[1]
         assert "uncovered" in prompt and "center of" not in prompt
