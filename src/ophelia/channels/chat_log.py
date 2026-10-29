@@ -41,6 +41,9 @@ class ChatLogger:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.media_dir.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
+            from ophelia.memory.store import enable_wal
+
+            await enable_wal(db)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chat_log (

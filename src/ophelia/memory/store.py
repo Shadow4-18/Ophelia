@@ -5,6 +5,9 @@ import time
 from pathlib import Path
 
 import aiosqlite
+import structlog
+
+log = structlog.get_logger()
 
 
 async def _safe_add_column(db: aiosqlite.Connection, table: str, column: str, decl: str) -> None:
@@ -18,6 +21,21 @@ async def _safe_add_column(db: aiosqlite.Connection, table: str, column: str, de
     await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+async def enable_wal(db: aiosqlite.Connection) -> str:
+    """Write-ahead logging: readers and the writer don't block each other,
+    so a long query can't make message saves fail with "database is locked".
+    Persistent in the file; backups (sqlite backup API) and restore (drops
+    stale -wal/-shm) already handle it."""
+    try:
+        cur = await db.execute("PRAGMA journal_mode=WAL")
+        row = await cur.fetchone()
+        await db.execute("PRAGMA synchronous=NORMAL")
+        return str(row[0]) if row else ""
+    except Exception as e:
+        log.debug("sqlite.wal_failed", error=str(e))
+        return ""
+
+
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -27,6 +45,7 @@ class MemoryStore:
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.db_path) as db:
+            await enable_wal(db)
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
