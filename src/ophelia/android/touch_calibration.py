@@ -35,6 +35,7 @@ PORT = 8791
 _REGIONS = 3  # 3x3 screen regions
 _SHRINK = 2.0  # pseudo-samples pulling a region toward the global offset
 _MIN_SHIFT = 6  # px: smaller corrections are noise
+_MIN_GAIN = 0.9  # apply only if it cuts her error by 10%+ (fairly measured)
 _TARGET_R = 30  # CSS px radius of the target circle
 TARGET_DESC = "the red target circle (the calibration dot)"
 
@@ -242,10 +243,9 @@ def _region(x: float, y: float, w: int, h: int) -> str:
     return f"{r},{c}"
 
 
-def fit_profile(samples: list[dict], w: int, h: int) -> dict:
-    """samples: {"tx","ty"} where the target was, {"ax","ay"} where she aimed
-    (screen px). Error = aimed - target; a region's offset is its median error
-    pulled toward the global median when it has few samples."""
+def _fit(samples: list[dict], w: int, h: int) -> tuple[list[float], dict]:
+    """(global offset, per-region offsets): median errors, a region pulled
+    toward the global one when it has few samples."""
     errs = [(s["ax"] - s["tx"], s["ay"] - s["ty"]) for s in samples]
     gx = statistics.median(e[0] for e in errs)
     gy = statistics.median(e[1] for e in errs)
@@ -259,17 +259,38 @@ def fit_profile(samples: list[dict], w: int, h: int) -> dict:
         ry = statistics.median(e[1] for e in es)
         regions[key] = [round((n * rx + _SHRINK * gx) / (n + _SHRINK), 1),
                         round((n * ry + _SHRINK * gy) / (n + _SHRINK), 1), n]
-    before = [math.hypot(*e) for e in errs]
-    after = []
-    for s, e in zip(samples, errs):
-        ox, oy = _offset(regions, [gx, gy], s["tx"], s["ty"], w, h)
-        after.append(math.hypot(e[0] - ox, e[1] - oy))
+    return [round(gx, 1), round(gy, 1)], regions
+
+
+def fit_profile(samples: list[dict], w: int, h: int) -> dict:
+    """samples: {"tx","ty"} where the target was, {"ax","ay"} where she aimed
+    (screen px); error = aimed - target.
+
+    The "after" error is measured honestly: each tap is corrected by a fit
+    made without it (leave-one-out). Scored on the taps it was fitted to, a
+    correction always looks good; on her first real run it claimed 34->24 px
+    where a fair test said 34->35. The correction only applies when the fair
+    test says it helps."""
+    glob, regions = _fit(samples, w, h)
+    before, after = [], []
+    for i, s in enumerate(samples):
+        ex, ey = s["ax"] - s["tx"], s["ay"] - s["ty"]
+        before.append(math.hypot(ex, ey))
+        rest = samples[:i] + samples[i + 1:]
+        g, r = _fit(rest, w, h) if rest else ([0, 0], {})
+        ox, oy = _offset(r, g, s["tx"], s["ty"], w, h)
+        after.append(math.hypot(ex - ox, ey - oy))
+    mean_before = statistics.mean(before)
+    mean_after = statistics.mean(after)
     return {
         "size": [w, h], "ts": round(time.time()), "n": len(samples),
-        "global": [round(gx, 1), round(gy, 1)], "regions": regions,
-        "mean_error_px": round(statistics.mean(before), 1),
-        "mean_error_after_px": round(statistics.mean(after), 1),
+        "global": glob, "regions": regions,
+        "mean_error_px": round(mean_before, 1),
+        "mean_error_after_px": round(mean_after, 1),
+        "applies": mean_after <= mean_before * _MIN_GAIN,
         "hits": sum(1 for s in samples if s.get("hit")),
+        "samples": [{k: round(float(v), 1) if k != "hit" else bool(v) for k, v in s.items()}
+                    for s in samples],
     }
 
 
@@ -303,7 +324,9 @@ def correct(data_dir: Path | str, x: int, y: int, w: int, h: int) -> tuple[int, 
     """Shift an aimed-by-sight point by her measured error for this screen
     size (orientation included). (x, y, note); unchanged when uncalibrated."""
     prof = load_profiles(data_dir).get(f"{w}x{h}")
-    if not prof:
+    # Older profiles were scored on their own taps (no fair test): unused
+    # until calibration is run again.
+    if not prof or prof.get("applies") is not True:
         return x, y, ""
     dx, dy = _offset(prof.get("regions") or {}, prof.get("global") or [0, 0], x, y, w, h)
     if math.hypot(dx, dy) < _MIN_SHIFT:
@@ -341,6 +364,11 @@ def target_points(vw: float, vh: float, rounds: int, rng: random.Random) -> list
 # --- running it on the phone ----------------------------------------------------------
 
 
+def _stopped(msg: str) -> str:
+    log.info("touch_calibration.stopped", reason=msg[:200])
+    return msg
+
+
 async def set_show_taps(android: Any, on: bool) -> str:
     """Android's "Show taps" developer option: a dot wherever a touch lands,
     visible in screenshots."""
@@ -360,13 +388,13 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
     rounds = max(6, min(36, int(rounds)))
     state = await android.screen_state() if hasattr(android, "screen_state") else "unknown"
     if state in ("off", "locked"):
-        return ("The screen is off or locked. Calibration needs it on and unlocked "
+        return _stopped("The screen is off or locked. Calibration needs it on and unlocked "
                 "(ask him to unlock the phone) — then run it again.")
     server = CalibrationServer(port)
     try:
         await server.start()
     except OSError as e:
-        return f"Couldn't start the calibration page on port {port}: {e}"
+        return _stopped(f"Couldn't start the calibration page on port {port}: {e}")
     landscape = orientation.lower().startswith("land")
     restore: dict[str, str] = {}
     try:
@@ -381,15 +409,15 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
         try:
             await asyncio.wait_for(server.state.seen.wait(), 25)
         except asyncio.TimeoutError:
-            return ("The calibration page didn't open (no browser answered "
-                    f"{server.url}). Open it in the phone's browser and try again.")
+            return _stopped(("The calibration page didn't open (no browser answered "
+                    f"{server.url}). Open it in the phone's browser and try again."))
         await asyncio.sleep(settle)
         shot = await vision.capture()
         from ophelia.android.vision import png_size
 
         size = png_size(shot.read_bytes()) if shot else None
         if not size:
-            return "Couldn't take a screenshot to size the screen."
+            return _stopped("Couldn't take a screenshot to size the screen.")
         w, h = size
         if hasattr(android, "learn_display_size"):
             android.learn_display_size(size)
@@ -405,13 +433,14 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
             await android.tap(int(px), int(py))
             tap = await server.next_tap()
             if tap is None:
-                return ("The page didn't register the reference taps; is something "
-                        "covering the browser? Calibration stopped.")
+                return _stopped(("The page didn't register the reference taps; is something "
+                        "covering the browser? Calibration stopped."))
             pairs.append(((int(px), int(py)), (tap["x"], tap["y"])))
         try:
             mapping = fit_mapping(pairs, server.state.viewport.get("dpr") or 0.0)
         except RuntimeError as e:
-            return f"Couldn't line the page up with the screen ({e}). Nothing was changed."
+            return _stopped(f"Couldn't line the page up with the screen ({e}). "
+                            "Nothing was changed.")
         vw = server.state.viewport.get("vw") or w / mapping.sx
         vh = server.state.viewport.get("vh") or h / mapping.sy
 
@@ -437,8 +466,8 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
             log.info("touch_calibration.round", round=i + 1, err_x=round(ax - tx),
                      err_y=round(ay - ty), hit=hit)
         if len(samples) < 4:
-            return (f"Only {len(samples)} usable rounds (vision couldn't find the target); "
-                    "not enough to calibrate. Nothing was changed.")
+            return _stopped((f"Only {len(samples)} usable rounds (vision couldn't find the target); "
+                    "not enough to calibrate. Nothing was changed."))
         profile = fit_profile(samples, w, h)
         save_profile(data_dir, profile)
         server.show(None, f"Done: off by {profile['mean_error_px']:.0f}px on average")
@@ -446,14 +475,19 @@ async def run(android: Any, vision: Any, data_dir: Path | str, *, rounds: int = 
         log.info("touch_calibration.saved", size=f"{w}x{h}", n=profile["n"],
                  mean=profile["mean_error_px"], after=profile["mean_error_after_px"])
         gx, gy = profile["global"]
-        return (
-            f"Calibrated {'landscape' if landscape else 'portrait'} ({w}x{h}): "
-            f"{profile['hits']}/{profile['n']} taps landed on the target; you were off by "
-            f"{profile['mean_error_px']:.0f}px on average, mostly {_describe(gx, gy)}. "
-            f"Aim-by-sight taps are now corrected (estimated "
-            f"{profile['mean_error_after_px']:.0f}px). Run it again any time, or in the "
-            "other orientation for games."
-        )
+        head = (f"Calibrated {'landscape' if landscape else 'portrait'} ({w}x{h}): "
+                f"{profile['hits']}/{profile['n']} taps landed on the target; you were off "
+                f"by {profile['mean_error_px']:.0f}px on average, leaning "
+                f"{_describe(gx, gy)}. ")
+        if profile["applies"]:
+            return head + (
+                f"Aim-by-sight taps are now corrected for that lean (fair estimate: "
+                f"{profile['mean_error_after_px']:.0f}px). Run it again any time, or in "
+                "the other orientation for games.")
+        return head + (
+            "That's mostly random scatter, not a steady lean, so a fixed correction "
+            f"wouldn't help (fair estimate {profile['mean_error_after_px']:.0f}px) and "
+            "none is applied. The misses come from how precisely you pick the spot.")
     finally:
         try:
             await android.shell("input keyevent 4")  # leave full screen
