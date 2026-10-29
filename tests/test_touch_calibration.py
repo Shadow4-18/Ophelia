@@ -166,7 +166,7 @@ def test_mapping_rejects_nonsense():
 
 
 def test_small_errors_are_left_alone(tmp_path):
-    tc.save_profile(tmp_path, {"size": [W, H], "global": [3, -2], "regions": {}})
+    tc.save_profile(tmp_path, {"size": [W, H], "global": [3, -2], "regions": {}, "applies": True})
     assert tc.correct(tmp_path, 500, 500, W, H) == (500, 500, "")
 
 
@@ -174,7 +174,8 @@ def test_small_errors_are_left_alone(tmp_path):
 async def test_phone_tap_target_uses_the_calibration(tmp_path):
     from ophelia.tools.registry import ToolRegistry
 
-    tc.save_profile(tmp_path, {"size": [W, H], "global": [30, -12], "regions": {}})
+    tc.save_profile(tmp_path, {"size": [W, H], "global": [30, -12], "regions": {},
+                               "applies": True})
     reg = ToolRegistry.__new__(ToolRegistry)
     reg.settings = SimpleNamespace(data_dir=tmp_path)
     taps = []
@@ -208,3 +209,40 @@ async def test_phone_tap_target_uses_the_calibration(tmp_path):
         pt._resolve_tap_coords = orig
     assert taps == [(500, 1200)]
     assert "calibrated: moved 30px left and 12px down" in out
+
+
+# Her first real run (2026-10-29), errors as logged: portrait leans right
+# and down; landscape is mostly scatter.
+PORTRAIT = [(0, 16), (19, 8), (20, 21), (43, 23), (11, -5), (11, 31), (54, 36), (16, 49),
+            (35, 16), (60, 16), (40, -10), (21, 40), (-34, 57), (-13, 10), (69, 10),
+            (-13, 35), (-27, 10), (-7, 40)]
+LANDSCAPE = [(24, -15), (1, 21), (45, 38), (-11, 16), (19, 13), (4, 16), (6, 23), (70, -18),
+             (-6, -35), (23, 23), (25, 15), (-30, 42), (-37, 13), (25, -10), (69, -1),
+             (17, 3), (-17, -18), (1, -24)]
+
+
+def _samples(errs, w, h):
+    rng = random.Random(2)
+    out = []
+    for ex, ey in errs:
+        tx, ty = rng.uniform(0, w), rng.uniform(0, h)
+        out.append({"tx": tx, "ty": ty, "ax": tx + ex, "ay": ty + ey, "hit": False})
+    return out
+
+
+def test_a_lean_gets_corrected_but_scatter_does_not():
+    p = tc.fit_profile(_samples(PORTRAIT, 1080, 2400), 1080, 2400)
+    assert p["applies"] and p["global"] == [17.5, 18.5]
+    assert p["mean_error_after_px"] < p["mean_error_px"] * 0.9
+    land = tc.fit_profile(_samples(LANDSCAPE, 2400, 1080), 2400, 1080)
+    assert not land["applies"]  # a fixed shift would make her worse there
+    assert land["mean_error_after_px"] >= land["mean_error_px"] * 0.9
+    assert len(land["samples"]) == 18
+
+
+def test_scatter_profile_and_old_profiles_are_not_applied(tmp_path):
+    tc.save_profile(tmp_path, tc.fit_profile(_samples(LANDSCAPE, 2400, 1080), 2400, 1080))
+    assert tc.correct(tmp_path, 1200, 500, 2400, 1080) == (1200, 500, "")
+    # Saved before the fair test existed: unused until she runs it again.
+    tc.save_profile(tmp_path, {"size": [1080, 2400], "global": [17.5, 18.5], "regions": {}})
+    assert tc.correct(tmp_path, 500, 500, 1080, 2400) == (500, 500, "")
