@@ -266,6 +266,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "phone_ui_dump": self._phone_ui_dump,
             "phone_type": self._phone_type,
             "phone_tap": self._phone_tap,
+            "phone_calibrate_touch": self._phone_calibrate_touch,
+            "phone_show_taps": self._phone_show_taps,
             "phone_open_app": self._phone_open_app,
             "phone_shell": self._phone_shell,
             "phone_swipe": self._phone_swipe,

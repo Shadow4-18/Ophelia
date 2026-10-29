@@ -192,6 +192,13 @@ class PhoneToolsMixin:
                     how_note = f"center of cell {cell.strip().upper()}"
                 else:
                     x, y, how_note = await vision.aim(target or "", cell=cell)
+                    # Her measured aiming error (phone_calibrate_touch), if any.
+                    grid = getattr(vision, "last_grid", None)
+                    if grid:
+                        from ophelia.android.touch_calibration import correct
+
+                        x, y, fix = correct(self.settings.data_dir, x, y, grid[2], grid[3])
+                        how_note += fix
             except Exception as e:
                 what = target or cell
                 return (f"Couldn't aim at {what!r}: {e}. Look again with phone_see_screen "
@@ -210,6 +217,32 @@ class PhoneToolsMixin:
         if not ok:
             return f"{msg} Device said: {result}"
         return msg + await self._after_action()
+
+    async def _phone_calibrate_touch(self, rounds: int = 18,
+                                     orientation: str = "portrait") -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        vision = getattr(self, "vision", None)
+        if vision is None:
+            return "Calibration needs the vision provider (it measures aiming by sight)."
+        from ophelia.android import touch_calibration
+
+        return await touch_calibration.run(self.android, vision, self.settings.data_dir,
+                                           rounds=rounds, orientation=orientation)
+
+    async def _phone_show_taps(self, on: bool = True) -> str:
+        reason = self._phone_unavailable_reason()
+        if reason:
+            return reason
+        from ophelia.android.touch_calibration import set_show_taps
+
+        out = await set_show_taps(self.android, bool(on))
+        if "error" in (out or "").lower():
+            return f"Couldn't change Show taps: {out}"
+        return ("Show taps is on: every screenshot now shows a dot where your last touch "
+                "landed, so you can see if you hit what you meant to." if on
+                else "Show taps is off.")
 
     async def _phone_type(self, text: str, element: int | None = None,
                           enter: bool = False) -> str:

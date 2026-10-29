@@ -80,6 +80,43 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "phone_calibrate_touch",
+            "description": (
+                "Measure and correct how far off your aim-by-sight taps are "
+                "(phone_tap target=/cell+target). Opens a calibration page in the "
+                "phone's browser and taps red targets all over the screen (~2-3 min, "
+                "screen must be on and unlocked). Afterwards aimed taps are shifted by "
+                "your measured error for that screen region. orientation=landscape "
+                "for landscape games like Balatro. Run when he asks, or when your "
+                "taps keep missing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rounds": {"type": "integer", "description": "targets, 6-36 (default 18)"},
+                    "orientation": {"type": "string", "enum": ["portrait", "landscape"]},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "phone_show_taps",
+            "description": (
+                "Turn Android's 'Show taps' on/off: a dot appears wherever a touch "
+                "lands, and it shows up in your screenshots. Turn it on while playing "
+                "a game so you can see whether a tap hit what you meant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"on": {"type": "boolean"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "phone_type",
             "description": (
                 "Type text into a field: element=N taps the field first; enter=true "

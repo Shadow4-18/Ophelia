@@ -108,7 +108,8 @@ _TRIGGERS: dict[str, re.Pattern[str]] = {
         r"landing|cloudflare|post)\b",
         "data": r"\b(sqlite|database|db|sql|table)\b",
         "phone": r"\b(phone|screen|tap|swipe|app|apps|game|games|play|playing|"
-        r"open|scroll|battery|notification|notifications|vibrate|buzz)\b",
+        r"open|scroll|battery|notification|notifications|vibrate|buzz|touch|taps|"
+        r"calibrate|calibration|aim|aiming)\b",
     }.items()
 }
 
