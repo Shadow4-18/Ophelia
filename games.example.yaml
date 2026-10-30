@@ -32,6 +32,11 @@ games:
   #     Tapping a card also shows its info box; that's normal.
   #   max_session_minutes: 30
   #   enabled: true
+  #   # Patched with O.M.G.I. (see docs/games.md#game-link-omgi)? Then she reads the
+  #   # real game state and acts through the game instead of tapping:
+  #   omgi: true
+  #   # omgi_port: 47801     # default for Balatro
+  #   # omgi_token: ""       # only if you patched with --token
   # - id: sudoku
   #   name: Google Sudoku
   #   package: com.google.android.apps.sudoku

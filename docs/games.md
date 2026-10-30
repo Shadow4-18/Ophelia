@@ -30,10 +30,44 @@ pm list packages | grep -i honkai
 |------|-----|
 | `phone_game_open` | Launch + session |
 | `phone_game_look` | Game-tuned vision (counts as session turn) |
+| `phone_game_state` / `phone_game_act` / `phone_game_query` | Game link, for patched games (below) |
 | `phone_tap` / `phone_swipe` / `phone_key` | Act on screen |
 | `phone_see_screen` | Generic (non-game) |
 
 During an active session, consciousness prefers `phone_game_look`.
+
+## Game link (O.M.G.I.)
+
+For supported games she can skip the screen entirely. [O.M.G.I.](https://github.com/Shadow4-18/O.M.G.I.)
+patches a mod into the game that serves its **real state** (cards, money,
+score, shop, blind…) and the **exact actions** available, which she performs
+through the game's own logic. No misreads, no mis-taps, and no vision cost.
+
+| Game | Adapter |
+|------|---------|
+| Balatro | [LÖVE mod](https://github.com/Shadow4-18/O.M.G.I./blob/main/src/omgi/adapters/balatro/README.md) |
+
+```bash
+pip install -e '.[games]'                     # installs the omgi package
+ophelia apk pull com.playstack.balatro.android
+omgi patch balatro ~/.ophelia/apks/com.playstack.balatro.android/<version>/ -o out/balatro
+omgi install out/balatro --uninstall --yes    # replaces the store copy (read its warning)
+```
+
+Then in `~/.ophelia/games.yaml` add `omgi: true` to the game. On Termux it
+connects to the game on 127.0.0.1; with an ADB phone body she runs
+`adb forward` for the game's port herself.
+
+| Tool | Use |
+|------|-----|
+| `phone_game_state` | The game's state as text + the actions possible right now |
+| `phone_game_act` | Do one: `action=play_hand args={"cards":[1,3,4]}`; waits for the game to settle, returns the new state |
+| `phone_game_query` | Read-only questions the game offers (e.g. `hand_info`: what would these cards make?) |
+
+`phone_game_open` says whether the link is up, and `phone_game_look` adds the
+link's state under the vision answer. If the link is down (store build, game
+still loading) she falls back to looking and tapping. Link calls don't count
+toward `OPHELIA_GAME_MAX_TURNS`, which caps vision turns.
 
 ## Env
 

@@ -41,6 +41,12 @@ class GameProfile:
     notes: str = ""
     max_session_minutes: float = 15.0
     enabled: bool = True
+    # O.M.G.I. game link: the patched game serves its real state and actions.
+    omgi: bool = False
+    omgi_adapter: str = ""
+    omgi_host: str = ""
+    omgi_port: int | None = None
+    omgi_token: str = ""
 
     def vision_question(self, intent: str = "") -> str:
         hint = GENRE_HINTS.get(self.genre.lower(), GENRE_HINTS["puzzle"])
@@ -120,6 +126,11 @@ class GameStore:
                         item.get("max_session_minutes", default_session_minutes)
                     ),
                     enabled=bool(item.get("enabled", True)),
+                    omgi=bool(item.get("omgi", False)),
+                    omgi_adapter=str(item.get("omgi_adapter") or ""),
+                    omgi_host=str(item.get("omgi_host") or ""),
+                    omgi_port=int(item["omgi_port"]) if item.get("omgi_port") else None,
+                    omgi_token=str(item.get("omgi_token") or ""),
                 )
             )
         return store
@@ -277,10 +288,17 @@ class GameStore:
             return ""
         lines = ["# Mobile games (phone_game_look, phone_swipe, phone_tap):"]
         for g in enabled[:8]:
-            lines.append(f"- {g.id}: {g.name} ({g.genre}) — {g.notes[:80]}")
+            link = " [game link]" if g.omgi else ""
+            lines.append(f"- {g.id}: {g.name} ({g.genre}){link} — {g.notes[:80]}")
         if self.session_active():
             p = self.active_profile()
-            if p:
+            if p and p.omgi:
+                lines.append(
+                    f"\nACTIVE SESSION: {p.name} — {self.minutes_left():.0f}m remaining. "
+                    "It has a game link: play with phone_game_state and phone_game_act (exact "
+                    "state, no tapping). If the link is down, fall back to phone_game_look + taps."
+                )
+            elif p:
                 lines.append(
                     f"\nACTIVE SESSION: {p.name} — {self.minutes_left():.0f}m remaining. "
                     "Prefer phone_game_look over generic phone_see_screen."
@@ -288,8 +306,69 @@ class GameStore:
         return "\n".join(lines)
 
 
+_GAME_ID_PARAM = {
+    "type": "string",
+    "description": "From games.yaml; uses active session if omitted",
+}
+
+
 def game_tool_definitions() -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "function": {
+                "name": "phone_game_state",
+                "description": (
+                    "Game link (games marked [game link]): the game's real state read from "
+                    "inside it (cards, money, score, shop...) and the exact actions you can "
+                    "take now. Better than looking at the screen for these games."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"game_id": _GAME_ID_PARAM},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "phone_game_act",
+                "description": (
+                    "Game link: do one action from phone_game_state's list, e.g. "
+                    "action=play_hand args={\"cards\": [1, 3, 4]}. Waits for the game to "
+                    "settle and returns the new state. Positions are 1-based, left to right."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "args": {"type": "object", "description": "The action's parameters"},
+                        "game_id": _GAME_ID_PARAM,
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "phone_game_query",
+                "description": (
+                    "Game link: a read-only question listed under Queries in phone_game_state "
+                    "(e.g. query=hand_info args={\"cards\": [1, 2]} to see what a hand would "
+                    "make before playing it)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "args": {"type": "object"},
+                        "game_id": _GAME_ID_PARAM,
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {

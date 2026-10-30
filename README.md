@@ -243,6 +243,14 @@ Only pull apps you have installed, and keep what you pull to yourself:
 studying an app for your own interoperability is one thing, redistributing it
 is another.
 
+### Game link (O.M.G.I.)
+
+For games patched with [O.M.G.I.](https://github.com/Shadow4-18/O.M.G.I.)
+(Ophelia Mobile Game Integration — Balatro first), she plays through the game
+itself: `phone_game_state` reads its real state and `phone_game_act` acts
+through its own logic, no screenshots or taps. Set `omgi: true` on the game in
+`games.yaml` and `pip install -e '.[games]'`; see [docs/games.md](docs/games.md#game-link-omgi).
+
 ## Neuro-like inner life
 
 Continuous consciousness (not Hermes cron isolation):
