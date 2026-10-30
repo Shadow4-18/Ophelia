@@ -6,7 +6,9 @@ android, senders, …). Split out of tools/registry.py."""
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from typing import Any
 
 import structlog
 
@@ -49,6 +51,20 @@ def _phone_shell_blocked_reason(command: str) -> str | None:
                 f"session yourself (after killing the old one)."
             )
     return None
+
+
+def _object_arg(args: Any) -> tuple[dict[str, Any], str]:
+    """Tool args that should be an object; small models sometimes send JSON text."""
+    if args is None or args == "":
+        return {}, ""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            return {}, 'args must be an object, e.g. {"cards": [1, 2]}'
+    if not isinstance(args, dict):
+        return {}, 'args must be an object, e.g. {"cards": [1, 2]}'
+    return args, ""
 
 
 async def _resolve_tap_coords(
@@ -340,24 +356,85 @@ class PhoneToolsMixin:
             return reason
         return await self.android.key(key)
 
-    async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:
-        if not self.vision:
-            return "Vision disabled or no phone body."
+    def _game_profile(self, game_id: str = "") -> tuple[Any, str]:
+        """(profile, "") for the named or active game, else (None, reason)."""
         if not self.games:
-            return "Games layer disabled (OPHELIA_GAMES=false)."
-        profile = None
+            return None, "Games layer disabled (OPHELIA_GAMES=false)."
         if game_id.strip():
             profile = self.games.get(game_id.strip())
             if not profile:
-                return f"Unknown game_id '{game_id}'. {self.games.format_list()}"
-        else:
-            profile = self.games.active_profile()
-            if not profile:
-                return (
-                    "No active game session. Use phone_game_open or /game play <id>. "
-                    + self.games.format_list()
-                )
+                return None, f"Unknown game_id '{game_id}'. {self.games.format_list()}"
+            return profile, ""
+        profile = self.games.active_profile()
+        if not profile:
+            return None, (
+                "No active game session. Use phone_game_open or /game play <id>. "
+                + self.games.format_list()
+            )
+        return profile, ""
+
+    def _game_link(self, profile: Any) -> tuple[Any, str]:
+        """(GameLink, "") for a game with omgi: true, else (None, reason)."""
+        from ophelia.android import game_link
+
+        if not profile.omgi:
+            return None, (
+                f"{profile.name} has no game link (set omgi: true in games.yaml once it's "
+                "patched with O.M.G.I.). Play by sight: phone_game_look, then phone_tap."
+            )
+        if not game_link.omgi_installed():
+            return None, game_link.INSTALL_HINT
+        links = self.__dict__.setdefault("_game_links", {})
+        link = links.get(profile.id)
+        if link is None:
+            link = links[profile.id] = game_link.GameLink(profile, self.android)
+        return link, ""
+
+    async def _phone_game_state(self, game_id: str = "") -> str:
+        profile, err = self._game_profile(game_id)
+        if not profile:
+            return err
+        link, err = self._game_link(profile)
+        if not link:
+            return err
+        return await link.state_text()
+
+    async def _phone_game_act(self, action: str, args: Any = None, game_id: str = "") -> str:
+        profile, err = self._game_profile(game_id)
+        if not profile:
+            return err
+        link, err = self._game_link(profile)
+        if not link:
+            return err
+        parsed, err = _object_arg(args)
+        if err:
+            return err
+        return await link.act(action.strip(), parsed)
+
+    async def _phone_game_query(self, query: str, args: Any = None, game_id: str = "") -> str:
+        profile, err = self._game_profile(game_id)
+        if not profile:
+            return err
+        link, err = self._game_link(profile)
+        if not link:
+            return err
+        parsed, err = _object_arg(args)
+        if err:
+            return err
+        return await link.query(query.strip(), parsed)
+
+    async def _phone_game_look(self, game_id: str = "", intent: str = "") -> str:
+        if not self.vision:
+            return "Vision disabled or no phone body."
+        profile, err = self._game_profile(game_id)
+        if not profile:
+            return err
         result = await self.vision.see_for_game(profile, intent)
+        if profile.omgi:
+            link, _ = self._game_link(profile)
+            if link and await link.up():
+                result += ("\n\nGame link (exact state; act with phone_game_act):\n"
+                           + await link.state_text(wait=False))
         from ophelia.android.apk_extract import read_notes
 
         session = self.games.active_session()
@@ -372,11 +449,22 @@ class PhoneToolsMixin:
     async def _phone_game_open(self, game_id: str, minutes: float | None = None) -> str:
         if not self.games:
             return "Games layer disabled."
-        return await self.games.start_session(
+        out = await self.games.start_session(
             game_id,
             minutes=minutes,
             android=self.android,
         )
+        profile = self.games.get(game_id)
+        if profile and profile.omgi and self.games.active_session():
+            link, err = self._game_link(profile)
+            if not link:
+                return f"{out}\n{err}"
+            if await link.wait_up(15.0):
+                return (f"{out}\nGame link is up: play with phone_game_state and phone_game_act "
+                        "instead of looking and tapping.")
+            return (f"{out}\nGame link isn't answering yet (still loading, or not the patched "
+                    "build). Try phone_game_state in a moment; meanwhile phone_game_look works.")
+        return out
 
     async def _phone_vibrate(self, duration_ms: int = 200) -> str:
         """Buzz the phone — Termux:API first, then shell vibrator service.

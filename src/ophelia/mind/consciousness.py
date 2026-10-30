@@ -527,11 +527,16 @@ class ConsciousnessLoop:
         if self.games and self.games.session_active():
             profile = self.games.active_profile()
             if profile:
+                how = (
+                    "It has a game link: phone_game_state, then phone_game_act. "
+                    if profile.omgi
+                    else "Use phone_game_look then phone_tap/phone_swipe. "
+                )
                 game_hint = (
                     f"\n\nACTIVE GAME: {profile.name} ({profile.id}) — "
                     f"{self.games.minutes_left():.0f}m left. "
-                    "Use phone_game_look then phone_tap/phone_swipe. "
-                    "Short play-by-play if messaging user."
+                    + how
+                    + "Short play-by-play if messaging user."
                 )
 
         # Contextual nudge: "you were working on X; goal Y is Nh overdue."
@@ -838,7 +843,8 @@ class ConsciousnessLoop:
                     channel,
                     f"{prefix}[Autonomous {action}] {intent}",
                     system_extra=(
-                        "You initiated this. Use phone_game_look during active game sessions; "
+                        "You initiated this. Use phone_game_look during active game sessions "
+                        "(phone_game_state / phone_game_act for games with a game link); "
                         "else phone_see_screen. Then phone_tap / phone_swipe / phone_key. "
                         "You may also create media (images/video/voice) proactively when inspired — "
                         "use generate_image / generate_video / text_to_speech and it will be sent."
