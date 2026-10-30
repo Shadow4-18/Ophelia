@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/search"
+        android:actionViewClass="android.widget.SearchView"
+        android:icon="@android:drawable/ic_menu_search"
+        android:showAsAction="always|collapseActionView"
+        android:title="@string/search" />
+    <item
+        android:id="@+id/show_system"
+        android:checkable="true"
+        android:title="@string/show_system" />
+    <item
+        android:id="@+id/choose_folder"
+        android:title="@string/choose_folder" />
+    <item
+        android:id="@+id/refresh"
+        android:title="@string/refresh" />
+    <item
+        android:id="@+id/about"
+        android:title="@string/about" />
+</menu>

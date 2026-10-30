@@ -81,9 +81,10 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
         {"list_guests", "send_message_to_guest", "set_guest_rapport", "recall_guest_chat"}
     ),
     "data": frozenset({"sqlite_list_databases", "sqlite_exec"}),
-    # site_* and phone_* are matched by prefix (see group_of).
+    # site_*, phone_* and apk_* are matched by prefix (see group_of).
     "site": frozenset(),
     "phone": frozenset(),
+    "apps": frozenset(),
 }
 
 GROUP_DESCRIPTIONS: dict[str, str] = {
@@ -93,6 +94,7 @@ GROUP_DESCRIPTIONS: dict[str, str] = {
     "site": "your public website: pages, assets, files, preview, deploy",
     "data": "SQLite databases",
     "phone": "phone body: screen, tap, swipe, apps, games, battery, notifications, vibrate",
+    "apps": "app library: pull installed apps off the phone, look inside them (engine, code, assets, manifest), decompile, keep notes on how they work",
 }
 
 _TRIGGERS: dict[str, re.Pattern[str]] = {
@@ -110,6 +112,8 @@ _TRIGGERS: dict[str, re.Pattern[str]] = {
         "phone": r"\b(phone|screen|tap|swipe|app|apps|game|games|play|playing|"
         r"open|scroll|battery|notification|notifications|vibrate|buzz|touch|taps|"
         r"calibrate|calibration|aim|aiming)\b",
+        "apps": r"\b(apk|apks|xapk|extract|decompile|decompiled|jadx|reverse[- ]engineer\w*|"
+        r"manifest|dex|unity|il2cpp|godot|source code|app library|how .{0,20} works)\b",
     }.items()
 }
 
@@ -121,6 +125,8 @@ def group_of(tool_name: str) -> str:
         return "site"
     if tool_name.startswith("phone_"):
         return "phone"
+    if tool_name.startswith("apk_"):
+        return "apps"
     for name, members in TOOL_GROUPS.items():
         if tool_name in members:
             return name

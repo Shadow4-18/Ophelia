@@ -12,6 +12,7 @@ from ophelia.android.games import game_tool_definitions
 from ophelia.config import Settings
 from ophelia.providers.router import build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
+from ophelia.tools.apk_tools import APK_TOOL_DEFINITIONS
 
 
 def _civitai_catalog() -> str:
@@ -1612,6 +1613,7 @@ def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
         skip.add("generate_video")
     if skip:
         tools = [t for t in tools if t.get("function", {}).get("name") not in skip]
+    tools.extend(APK_TOOL_DEFINITIONS)
     if settings.android_enabled:
         tools.extend(ANDROID_TOOL_DEFINITIONS)
         if settings.games_enabled:

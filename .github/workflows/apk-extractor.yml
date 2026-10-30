@@ -1,0 +1,37 @@
+name: App Extractor (Android)
+
+# Builds the standalone App Extractor app. The installable APK is attached to
+# each run as the "app-extractor-apk" artifact (Actions tab -> run -> Artifacts).
+on:
+  pull_request:
+    paths: ["android/apk-extractor/**", ".github/workflows/apk-extractor.yml"]
+  push:
+    branches: [main]
+    paths: ["android/apk-extractor/**", ".github/workflows/apk-extractor.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: apk-extractor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: android/apk-extractor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test, lint, build
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-extractor-apk
+          path: android/apk-extractor/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

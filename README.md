@@ -207,6 +207,42 @@ center so — with **Developer Options → Pointer location** enabled on the pho
 you can see exactly where each tap lands. If the crosshair matches the label,
 calibration is correct.
 
+### App library (extract + look inside apps)
+
+Where vision isn't enough (games drawn by an engine, menus with no elements),
+she can learn how an app actually works from the app itself. `ophelia apk`
+copies installed apps off the phone over the same body she already uses (ADB
+from a PC, or Shizuku/rish on the phone; no root), and reads them in pure Python:
+no Android SDK needed.
+
+```bash
+ophelia apk list --phone balatro      # installed apps matching "balatro"
+ophelia apk pull com.playstack.balatro.android [--obb]
+ophelia apk import ~/Downloads/some.apks   # .apk / .apks / .xapk files you have
+ophelia apk inspect <package>         # engine, SDKs, obfuscation, screens, permissions
+ophelia apk files <package> --pattern '*.lua'
+ophelia apk read <package> assets/game.love!/main.lua   # nested archives with !/
+ophelia apk search <package> 'score|chips'
+ophelia apk decompile <package>       # Java sources via jadx, if installed
+```
+
+Everything lands in `~/.ophelia/apks/<package>/<version>/` (base + split APKs,
+`info.json` with sha256s). She has the same abilities as tools (`apk_list`,
+`apk_extract`, `apk_inspect`, `apk_files`, `apk_read`, `apk_search`,
+`apk_decompile`, `apk_notes`; owner-only), and keeps a notebook per app with
+`apk_notes`. When she plays a game she has notes on, they're shown to her with
+the screen. Engines are recognised from their files: Unity (IL2CPP/Mono), Unreal, Godot, LÖVE
+(whose `game.love` is plain Lua source), Flutter, React Native, Cocos2d-x,
+GameMaker, Defold, Xamarin, Cordova, Ren'Py and more.
+
+No PC handy? The standalone **App Extractor** Android app
+([`android/apk-extractor`](android/apk-extractor/README.md)) saves installed apps
+as `.apk`/`.apks` on the phone itself; `ophelia apk import <folder>` takes them in.
+
+Only pull apps you have installed, and keep what you pull to yourself:
+studying an app for your own interoperability is one thing, redistributing it
+is another.
+
 ## Neuro-like inner life
 
 Continuous consciousness (not Hermes cron isolation):
@@ -630,6 +666,7 @@ grep -rli hermes ~/.ophelia/memories/       # find tainted memory files
 | `ophelia transfer *` | Phone ↔ PC data move |
 | `ophelia phone calibrate` | Diagnose + calibrate touch input (grid + live tap test) |
 | `ophelia phone harden` | Check/apply Android kill-switch (battery opt, boot, wake-lock, tmux) |
+| `ophelia apk *` | App library: pull installed apps (APKs) off the phone, inspect/read/search/decompile them |
 | `ophelia logs` | View the universal chat log (messages + media, with filters) |
 | `ophelia cleanup` | Free space: vision screenshots past `OPHELIA_SCREENSHOT_KEEP_HOURS` (24h, also automatic daily) and, if you choose, chat-log media older than `--chat-media-days N`. `--dry-run` previews |
 | `ophelia backup` | Back up her identity, memories and databases now; `list`; `restore <archive>` (stop her first). Runs daily on its own — see `OPHELIA_BACKUP_*` |

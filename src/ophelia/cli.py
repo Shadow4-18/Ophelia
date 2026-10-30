@@ -1235,6 +1235,68 @@ def cmd_phone_calibrate(_: argparse.Namespace) -> int:
     return asyncio.run(_run())
 
 
+def cmd_apk(args: argparse.Namespace) -> int:
+    """App library: pull installed apps off the phone and look inside them
+    (the same library and code Ophelia's apk_* tools use)."""
+    import asyncio
+    from pathlib import Path
+
+    from ophelia.android import apk_extract, apk_inspect
+
+    action = args.apk_cmd
+
+    def version_dir() -> Path | None:
+        d = apk_extract.resolve(args.package, args.version or "")
+        if d is None:
+            print(f"{args.package} isn't in the library. Pull it: ophelia apk pull {args.package}")
+        return d
+
+    if action == "list" and not args.phone:
+        print(apk_extract.library_text())
+        return 0
+    if action == "import":
+        msg = apk_extract.import_path(Path(args.file))
+        print(msg)
+        return 0 if "Imported" in msg else 1
+    if action in ("list", "pull"):
+        from ophelia.android.factory import build_android_body
+
+        android = build_android_body(Settings())
+        if not android:
+            print("Phone body is off. Set OPHELIA_ANDROID_ENABLED=true (and OPHELIA_ADB_DEVICE "
+                  "on a PC), then check with: ophelia phone status")
+            return 1
+        if action == "list":
+            apps = asyncio.run(apk_extract.list_installed(android, args.query or "", args.system))
+            for a in apps:
+                print(a.package)
+            print(f"({len(apps)} apps)")
+            return 0
+        msg = asyncio.run(apk_extract.extract_app(android, args.package, include_obb=args.obb))
+        print(msg)
+        return 0 if msg.startswith("Extracted") else 1
+    d = version_dir()
+    if d is None:
+        return 1
+    if action == "inspect":
+        print(apk_inspect.analyze(d).to_text())
+    elif action == "files":
+        print(apk_inspect.list_files(d, args.under or "", args.pattern or "", limit=10_000))
+    elif action == "read":
+        try:
+            print(apk_inspect.read_file(d, args.path, args.offset, apk_inspect.MAX_READ_BYTES))
+        except FileNotFoundError as e:
+            print(e)
+            return 1
+    elif action == "search":
+        print(apk_inspect.search(d, args.query, limit=500))
+    elif action == "decompile":
+        print(asyncio.run(apk_extract.decompile(d)))
+    elif action == "path":
+        print(d)
+    return 0
+
+
 def cmd_tts_voices(_: argparse.Namespace) -> int:
     """List Kokoro voices from the configured local server."""
     import asyncio
@@ -1771,6 +1833,43 @@ def main(argv: list[str] | None = None) -> int:
         "harden",
         help="Tier C #12: check/apply Android kill-switch (battery opt, boot, wake-lock, tmux).",
     ).set_defaults(func=cmd_phone_harden)
+
+    apk = sub.add_parser(
+        "apk",
+        help="App library: extract installed apps off the phone (APKs) and look inside them",
+    )
+    apk_sub = apk.add_subparsers(dest="apk_cmd", required=True)
+    a = apk_sub.add_parser("list", help="Pulled apps (default) or, with --phone, installed ones")
+    a.add_argument("query", nargs="?", default="")
+    a.add_argument("--phone", action="store_true", help="List apps installed on the phone")
+    a.add_argument("--system", action="store_true", help="--phone: include system apps")
+    a = apk_sub.add_parser("pull", help="Extract an installed app (base + split APKs)")
+    a.add_argument("package")
+    a.add_argument("--obb", action="store_true", help="Also copy its OBB game-data files")
+    a = apk_sub.add_parser(
+        "import", help="Add a local .apk/.apks/.xapk file (or a folder of them) to the library"
+    )
+    a.add_argument("file")
+    for name, helptext in (
+        ("inspect", "Engine, SDKs, code size, activities, permissions"),
+        ("files", "List files inside the app"),
+        ("read", "Print a file inside the app (manifest decoded; nested a.love!/b.lua)"),
+        ("search", "Regex search names, manifest, code strings, text assets"),
+        ("decompile", "Decompile to Java sources with jadx (if installed)"),
+        ("path", "Print the folder holding the pulled APKs"),
+    ):
+        a = apk_sub.add_parser(name, help=helptext)
+        a.add_argument("package")
+        if name == "read":
+            a.add_argument("path")
+            a.add_argument("--offset", type=int, default=0)
+        if name == "search":
+            a.add_argument("query")
+        if name == "files":
+            a.add_argument("--under", default="")
+            a.add_argument("--pattern", default="")
+        a.add_argument("--version", default="", help="Pulled version (default newest)")
+    apk.set_defaults(func=cmd_apk)
 
     p_logs = sub.add_parser(
         "logs", help="View the universal chat log (messages + media sent to/from her)"

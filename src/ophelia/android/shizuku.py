@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -342,6 +343,39 @@ class AndroidBody:
         if pull_code == 0 and dest.is_file():
             return str(dest)
         return f"screenshot pull failed (captured at {remote})"
+
+    async def pull_file(self, remote: str, dest: Path) -> str | None:
+        """Copy a file from the phone to `dest`; None on success.
+
+        ADB: `adb pull`. On the phone: read it directly (installed APKs are
+        world-readable), else have the shell copy it to shared storage, which
+        Termux can read once `termux-setup-storage` has been run."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if self._use_adb():
+            await self.ensure_ready()
+            assert self._adb_path
+            return await adb_util.adb_pull(self._adb_path, self.adb_device, remote, dest)
+        try:
+            await asyncio.to_thread(shutil.copyfile, remote, dest)
+            return None
+        except OSError as e:
+            direct_err = str(e)
+        stage = f"/sdcard/Download/.ophelia_stage/{dest.name}"
+        out = await self.shell(
+            f"mkdir -p /sdcard/Download/.ophelia_stage && "
+            f"cp {shlex.quote(remote)} {shlex.quote(stage)} && echo staged"
+        )
+        if "staged" not in (out or ""):
+            return f"direct read failed ({direct_err}); shell copy failed: {out}"
+        try:
+            local_stage = Path("/storage/emulated/0") / stage[len("/sdcard/"):]
+            await asyncio.to_thread(shutil.copyfile, local_stage, dest)
+        except OSError as e:
+            return (f"staged at {stage} but Termux can't read it ({e}). "
+                    f"Run termux-setup-storage once, then try again.")
+        finally:
+            await self.shell(f"rm -f {shlex.quote(stage)}")
+        return None
 
     def status_line(self) -> str:
         if self._use_adb():
