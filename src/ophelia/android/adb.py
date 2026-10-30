@@ -79,3 +79,16 @@ async def screencap_pull(adb: str, device: str | None, dest: Path) -> str | None
     if code != 0 or not dest.is_file() or dest.stat().st_size < 100:
         return err or "screencap failed"
     return None
+
+
+async def adb_pull(adb: str, device: str | None, remote: str, dest: Path,
+                   timeout: float = 1800.0) -> str | None:
+    """Copy a file off the phone. Big games are gigabytes, hence the timeout."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    code, out, err = await adb_run(
+        adb_base(adb, device) + ["pull", remote, str(dest)],
+        timeout=timeout,
+    )
+    if code != 0 or not dest.is_file():
+        return err or out or f"adb pull failed ({code})"
+    return None

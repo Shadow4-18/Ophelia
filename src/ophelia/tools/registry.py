@@ -16,6 +16,7 @@ from ophelia.config import Settings
 from ophelia.providers.media import generate_image, generate_video
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
+from ophelia.tools.apk_tools import APK_TOOL_DEFINITIONS, ApkToolsMixin
 from ophelia.tools.sqlite_tools import list_ophelia_databases, run_sqlite
 from ophelia.tools.web_search import fetch_url, search_web
 from ophelia.tools.mcp_bridge import MCPBridge, load_mcp_config
@@ -126,7 +127,7 @@ def _turn_state(key: str) -> property:
     return property(_get, _set)
 
 
-class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
+class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMixin):
     _is_owner = _turn_state("is_owner")
     # The channel of the user who sent the current turn (e.g. "telegram:111").
     # Set by ChannelSession before dispatching tool calls so guests can be
@@ -289,6 +290,14 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
             "phone_vibrate": self._phone_vibrate,
             "phone_notifications": self._phone_notifications,
             "phone_battery": self._phone_battery,
+            "apk_list": self._apk_list,
+            "apk_extract": self._apk_extract,
+            "apk_inspect": self._apk_inspect,
+            "apk_files": self._apk_files,
+            "apk_read": self._apk_read,
+            "apk_search": self._apk_search,
+            "apk_decompile": self._apk_decompile,
+            "apk_notes": self._apk_notes,
             "follow_up": self._follow_up,
             "follow_up_done": self._follow_up_done,
             "remember_person": self._remember_person,
@@ -1402,6 +1411,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin):
 def _all_known_tool_names() -> set[str]:
     names = {t["function"]["name"] for t in TOOL_DEFINITIONS}
     names |= {t["function"]["name"] for t in ANDROID_TOOL_DEFINITIONS}
+    names |= {t["function"]["name"] for t in APK_TOOL_DEFINITIONS}
     names |= {t["function"]["name"] for t in game_tool_definitions()}
     return names
 

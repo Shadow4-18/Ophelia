@@ -358,6 +358,13 @@ class PhoneToolsMixin:
                     + self.games.format_list()
                 )
         result = await self.vision.see_for_game(profile, intent)
+        from ophelia.android.apk_extract import read_notes
+
+        session = self.games.active_session()
+        notes = read_notes(profile.package)
+        # first look of a session, then a refresher every 10 turns
+        if notes and (session is None or session.turns % 10 == 0):
+            result += "\n\nYour notes on this game's internals (apk_notes):\n" + notes[-1500:]
         self.games.record_turn()
         left = self.games.minutes_left()
         return f"{result}\n\n[session: {profile.id}, ~{left:.0f}m left]"

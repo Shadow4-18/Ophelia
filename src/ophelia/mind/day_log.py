@@ -231,6 +231,12 @@ def note_tool(settings: Any, name: str, args: dict, result: str, *,
     elif name == "phone_game_open":
         record(settings, "game", "played a game on the phone",
                detail=_short(args.get("game") or args.get("name"), 30), autonomous=autonomous)
+    elif name == "apk_extract" and low.startswith(("extracted", "imported")):
+        record(settings, "apps", "pulled an app apart to see how it works",
+               detail=_short(args.get("package") or args.get("path"), 40), autonomous=autonomous)
+    elif name == "apk_notes" and args.get("text"):
+        record(settings, "apps", "worked out how an app works",
+               detail=_short(args.get("package"), 40), autonomous=autonomous)
     elif name == "evolve_self":
         record(settings, "growth", "noted something about who you're becoming",
                detail=_short(args.get("note") or args.get("text"), 60), autonomous=autonomous)

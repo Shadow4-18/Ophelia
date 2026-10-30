@@ -1045,6 +1045,8 @@ _IDLE_MODES = {
     "curiosity": [
         "Your mind keeps drifting to something you don't know yet.",
         "There's a question you could chase, if you felt like it.",
+        "There's an app on the phone you've never looked inside. You could pull "
+        "it apart and see how it really works.",
     ],
     "boredom": [
         "Nothing's happening and it's getting old.",
