@@ -235,6 +235,10 @@ the screen. Engines are recognised from their files: Unity (IL2CPP/Mono), Unreal
 (whose `game.love` is plain Lua source), Flutter, React Native, Cocos2d-x,
 GameMaker, Defold, Xamarin, Cordova, Ren'Py and more.
 
+No PC handy? The standalone **App Extractor** Android app
+([`android/apk-extractor`](android/apk-extractor/README.md)) saves installed apps
+as `.apk`/`.apks` on the phone itself; `ophelia apk import <folder>` takes them in.
+
 Only pull apps you have installed, and keep what you pull to yourself:
 studying an app for your own interoperability is one thing, redistributing it
 is another.

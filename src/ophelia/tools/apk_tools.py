@@ -49,7 +49,7 @@ APK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "properties": {
                     "package": _PKG,
                     "include_obb": {"type": "boolean"},
-                    "path": {"type": "string", "description": "Local .apk/.apks/.xapk file to import"},
+                    "path": {"type": "string", "description": "Local .apk/.apks/.xapk file, or a folder of them, to import"},
                 },
             },
         },
@@ -206,7 +206,7 @@ class ApkToolsMixin:
     async def _apk_extract(self, package: str = "", include_obb: bool = False,
                            path: str = "") -> str:
         if path:
-            return await asyncio.to_thread(apk_extract.import_file, Path(path))
+            return await asyncio.to_thread(apk_extract.import_path, Path(path))
         if not package:
             return "Say which app: package=... (apk_list source=phone lists them) or path=."
         reason = self._phone_unavailable_reason()

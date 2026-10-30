@@ -251,6 +251,21 @@ def import_file(src: Path, root: Path | None = None) -> str:
     return f"Imported {m.package} {m.version_name} ({len(files)} apk file(s)) to {dest}"
 
 
+IMPORTABLE_EXT = (".apk", ".apks", ".xapk")
+
+
+def import_path(src: Path, root: Path | None = None) -> str:
+    """import_file for one file, or every .apk/.apks/.xapk in a folder (such
+    as the one the App Extractor app saves into)."""
+    src = src.expanduser()
+    if not src.is_dir():
+        return import_file(src, root)
+    files = sorted(f for f in src.iterdir() if f.is_file() and f.suffix.lower() in IMPORTABLE_EXT)
+    if not files:
+        return f"No .apk/.apks/.xapk files in {src}."
+    return "\n".join(import_file(f, root) for f in files)
+
+
 # ---------------------------------------------------------------------------
 # The library
 # ---------------------------------------------------------------------------

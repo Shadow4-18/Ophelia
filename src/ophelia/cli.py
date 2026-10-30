@@ -1255,9 +1255,9 @@ def cmd_apk(args: argparse.Namespace) -> int:
         print(apk_extract.library_text())
         return 0
     if action == "import":
-        msg = apk_extract.import_file(Path(args.file))
+        msg = apk_extract.import_path(Path(args.file))
         print(msg)
-        return 0 if msg.startswith("Imported") else 1
+        return 0 if "Imported" in msg else 1
     if action in ("list", "pull"):
         from ophelia.android.factory import build_android_body
 
@@ -1846,7 +1846,9 @@ def main(argv: list[str] | None = None) -> int:
     a = apk_sub.add_parser("pull", help="Extract an installed app (base + split APKs)")
     a.add_argument("package")
     a.add_argument("--obb", action="store_true", help="Also copy its OBB game-data files")
-    a = apk_sub.add_parser("import", help="Add a local .apk/.apks/.xapk file to the library")
+    a = apk_sub.add_parser(
+        "import", help="Add a local .apk/.apks/.xapk file (or a folder of them) to the library"
+    )
     a.add_argument("file")
     for name, helptext in (
         ("inspect", "Engine, SDKs, code size, activities, permissions"),

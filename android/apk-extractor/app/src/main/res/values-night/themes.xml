@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Extractor" parent="android:Theme.Material">
+        <item name="android:colorPrimary">@color/accent_dark</item>
+        <item name="android:colorPrimaryDark">@color/icon_bg</item>
+        <item name="android:colorAccent">#B39DDB</item>
+    </style>
+</resources>

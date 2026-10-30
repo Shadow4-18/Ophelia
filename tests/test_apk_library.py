@@ -404,3 +404,24 @@ def test_apk_tools_have_their_own_tier():
     assert tiers.group_of("apk_search") == "apps"
     assert "apps" in tiers.triggered_groups("can you decompile that game and see how it works")
     assert "apps" in tiers.triggered_groups("pull the apk for balatro")
+
+
+def test_import_folder_like_the_extractor_app_writes(lib, tmp_path):
+    """The App Extractor app saves .apk / .apks (base.apk + splits + info.json)."""
+    out = tmp_path / "Extracted apps"
+    out.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    build_apk(src / "base.apk")
+    with zipfile.ZipFile(out / "Cards_com.example.cards_1.2.3.apks", "w") as z:
+        z.write(src / "base.apk", "base.apk")
+        z.write(src / "split_config.arm64_v8a.apk", "split_config.arm64_v8a.apk")
+        z.writestr("info.json", '{"package": "com.example.cards"}')
+    (out / "notes.txt").write_text("ignored")
+    msg = apk_extract.import_path(out)
+    assert msg.startswith("Imported com.example.cards 1.2.3 (2 apk file(s))"), msg
+    d = apk_extract.resolve("com.example.cards")
+    assert "liblove.so" in apk_inspect.analyze(d).to_text()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert "No .apk" in apk_extract.import_path(empty)

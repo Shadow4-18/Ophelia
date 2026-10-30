@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">App Extractor</string>
+    <string name="loading">Reading installed apps…</string>
+    <plurals name="status">
+        <item quantity="one">%1$d app · saving to: %2$s</item>
+        <item quantity="other">%1$d apps · saving to: %2$s</item>
+    </plurals>
+    <string name="no_folder">(pick a folder on first extract)</string>
+    <string name="search">Search</string>
+    <string name="search_hint">Name or package</string>
+    <string name="show_system">Show system apps</string>
+    <string name="choose_folder">Choose output folder…</string>
+    <string name="refresh">Refresh</string>
+    <string name="about">About</string>
+    <string name="about_text">Copies the APK files of apps already installed on this phone, so they can be studied (by you, or by Ophelia with `ophelia apk import`).\n\nApps installed as one APK are saved as .apk. Apps installed in pieces (split APKs) are saved as an .apks bundle: a zip of base.apk, the splits and info.json. Install it again with SAI, or unzip and use adb install-multiple.\n\nTap an app for details, long-press to select several.\n\nOnly keep what you extract for yourself: studying an app is one thing, redistributing it is another.</string>
+    <plurals name="selected">
+        <item quantity="one">%1$d app selected</item>
+        <item quantity="other">%1$d apps selected</item>
+    </plurals>
+    <string name="select_all">Select all</string>
+    <string name="extract">Extract</string>
+    <string name="share">Share</string>
+    <string name="app_settings">App info</string>
+    <string name="reading_app">Looking inside…</string>
+    <string name="read_failed">Couldn\'t read this app: %1$s</string>
+    <plurals name="badge_split">
+        <item quantity="one">%1$d APK</item>
+        <item quantity="other">%1$d APKs</item>
+    </plurals>
+    <string name="pick_folder_hint">Pick (or create) a folder for extracted apps, e.g. Download/Extracted apps</string>
+    <string name="extracting_one">Extracting %1$s</string>
+    <plurals name="extracting_many">
+        <item quantity="one">Extracting %1$d app</item>
+        <item quantity="other">Extracting %1$d apps</item>
+    </plurals>
+    <string name="progress_bytes">%1$s · %2$s of %3$s</string>
+    <string name="share_title">Share %1$s</string>
+    <string name="done">Done</string>
+    <plurals name="saved_to">
+        <item quantity="one">Saved %1$d app to %2$s:</item>
+        <item quantity="other">Saved %1$d apps to %2$s:</item>
+    </plurals>
+    <string name="cancelled">Cancelled.</string>
+    <string name="failed">Failed:</string>
+    <string name="ophelia_hint">For Ophelia: ophelia apk import "/sdcard/%1$s" (Termux), or send her the file.</string>
+</resources>
