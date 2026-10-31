@@ -271,9 +271,11 @@ def test_promises_come_back_at_sensible_times():
 def test_owner_up_late_is_not_asleep(tmp_path):
     from ophelia.mind.life_context import LifeContext
 
-    s = SimpleNamespace(sleep_hours="0-23", quiet_hours="", work_days="", work_hours="",
+    s = SimpleNamespace(sleep_hours="23-7", quiet_hours="", work_days="", work_hours="",
                         timezone="UTC", sleep_mode_enabled=True, home_wifi_ssid="")
     life = LifeContext(s, SimpleNamespace(last_user_message_at=time.time() - 60))
+    # 2am: inside sleep hours no matter when the suite runs.
+    life.now = lambda: datetime(2026, 1, 15, 2, 0, tzinfo=life.tz())
     assert life.infer_owner_state() == "up_late" and not life.is_sleep_mode()
     assert "he's up, talking to you" in life.to_context_block()
     life.signals.last_user_message_at = time.time() - 3 * 3600
