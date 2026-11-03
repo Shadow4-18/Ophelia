@@ -36,6 +36,42 @@ async def enable_wal(db: aiosqlite.Connection) -> str:
         return ""
 
 
+async def ensure_search_index(db: aiosqlite.Connection) -> str:
+    """The messages_fts search index and the trigger that feeds it.
+
+    "ok" when present; "rebuilt" when the index was missing (recreated and
+    refilled from messages); "disabled" when it can't be created (the trigger
+    is dropped so saving messages still works, only search is off). On
+    2026-11-03 her own database clean-up removed the index but left the
+    trigger, and every message save failed: "no such table:
+    main.messages_fts"."""
+    row = await (await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'")).fetchone()
+    trigger = await (await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='messages_ai'")).fetchone()
+    if row and trigger:
+        return "ok"
+    try:
+        await db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts "
+            "USING fts5(content, channel, role, content='messages', content_rowid='id')")
+        await db.execute(
+            "CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN "
+            "INSERT INTO messages_fts(rowid, content, channel, role) "
+            "VALUES (new.id, new.content, new.channel, new.role); END")
+        if not row:
+            await db.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        await db.commit()
+        if not row:
+            log.warning("memory.search_index_rebuilt")
+        return "rebuilt" if not row else "ok"
+    except aiosqlite.OperationalError as e:
+        await db.execute("DROP TRIGGER IF EXISTS messages_ai")
+        await db.commit()
+        log.warning("memory.search_index_unavailable", error=str(e))
+        return "disabled"
+
+
 class MemoryStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -82,23 +118,7 @@ class MemoryStore:
                 """
             )
             # Full-text search over all messages for recall_memory.
-            try:
-                await db.execute(
-                    """
-                    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
-                    USING fts5(content, channel, role, content='messages', content_rowid='id')
-                    """
-                )
-                await db.execute(
-                    """
-                    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-                        INSERT INTO messages_fts(rowid, content, channel, role)
-                        VALUES (new.id, new.content, new.channel, new.role);
-                    END
-                    """
-                )
-            except aiosqlite.OperationalError:
-                pass
+            await ensure_search_index(db)
             await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel)")
             # Quarantined store for GUEST conversations. Deliberately separate from
@@ -347,17 +367,20 @@ class MemoryStore:
         content: str,
         metadata: dict | None = None,
     ) -> None:
+        row = (channel, role, content, json.dumps(metadata or {}), time.time())
+        sql = ("INSERT INTO messages (channel, role, content, metadata, created_at) "
+               "VALUES (?, ?, ?, ?, ?)")
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO messages (channel, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
-                (
-                    channel,
-                    role,
-                    content,
-                    json.dumps(metadata or {}),
-                    time.time(),
-                ),
-            )
+            try:
+                await db.execute(sql, row)
+            except aiosqlite.OperationalError as e:
+                # The search index went missing under a live trigger: repair
+                # it and save again instead of failing every message.
+                if "messages_fts" not in str(e):
+                    raise
+                await db.rollback()
+                await ensure_search_index(db)
+                await db.execute(sql, row)
             await db.commit()
 
     async def recent_messages(self, channel: str, limit: int = 40) -> list[dict]:
