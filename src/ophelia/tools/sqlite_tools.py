@@ -24,6 +24,25 @@ _FORBIDDEN = re.compile(
 )
 
 
+# Her memory and chat log: she may read and change rows, but not take the
+# structure apart (a clean-up dropped the search index and every message save
+# failed until it was rebuilt).
+_CORE_DBS = ("data/memory.db", "data/logs/chat_log.db")
+_STRUCTURE = re.compile(r"\b(DROP|ALTER)\s+(TABLE|TRIGGER|INDEX|VIEW)\b", re.IGNORECASE)
+
+
+def _core_guard(path: Path, sql: str) -> str | None:
+    try:
+        rel = str(path.relative_to(OPHELIA_HOME.resolve())).replace("\\", "/")
+    except ValueError:
+        return None
+    if rel in _CORE_DBS and _STRUCTURE.search(sql):
+        return (f"Refused: {rel} is your own memory; its tables, indexes and triggers "
+                "aren't yours to drop or alter (it breaks saving messages). Read it, "
+                "or change rows; copy data into a database of your own to experiment.")
+    return None
+
+
 def resolve_ophelia_db(name: str) -> Path:
     """Resolve a db name under ~/.ophelia (creates parent dirs)."""
     raw = (name or "data/memory.db").strip().replace("\\", "/")
@@ -93,6 +112,9 @@ async def _run_sqlite(database: str, sql: str, *, max_rows: int, abort) -> str:
         return "ATTACH/DETACH/LOAD_EXTENSION are not allowed."
 
     path = resolve_ophelia_db(database)
+    refused = _core_guard(path, sql)
+    if refused:
+        return refused
     is_read = bool(_READ_PREFIX.match(sql))
 
     async with aiosqlite.connect(path) as db:
