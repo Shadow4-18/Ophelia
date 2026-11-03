@@ -50,6 +50,20 @@ async def ensure_search_index(db: aiosqlite.Connection) -> str:
     trigger = await (await db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='messages_ai'")).fetchone()
     if row and trigger:
+        # Present but empty or far behind (recreated without a refill, as a
+        # restart after the clean-up did): refill it. The docsize shadow
+        # table has one row per indexed message, so this is a cheap count.
+        try:
+            indexed = (await (await db.execute(
+                "SELECT count(*) FROM messages_fts_docsize")).fetchone())[0]
+            total = (await (await db.execute("SELECT count(*) FROM messages")).fetchone())[0]
+        except aiosqlite.OperationalError:
+            return "ok"
+        if total and indexed < total * 0.9:
+            await db.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            await db.commit()
+            log.warning("memory.search_index_refilled", indexed=indexed, messages=total)
+            return "rebuilt"
         return "ok"
     try:
         await db.execute(

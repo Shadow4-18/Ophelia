@@ -58,3 +58,23 @@ async def test_her_sql_cant_take_her_memory_apart(tmp_path, monkeypatch):
     assert '"count"' in await sqlite_tools.run_sqlite(
         "data/memory.db", "SELECT count(*) AS n FROM messages")
     await sqlite_tools.run_sqlite("data/scratch.db", "CREATE TABLE t (a); DROP TABLE t;")
+
+
+@pytest.mark.asyncio
+async def test_an_empty_recreated_index_gets_refilled(tmp_path):
+    """What a restart with the old code left: the index back, but empty."""
+    store = MemoryStore(tmp_path / "memory.db")
+    await store.init()
+    for i in range(5):
+        await store.append_message("telegram:1", "user", f"old memory number {i} lantern")
+    async with aiosqlite.connect(store.db_path) as db:
+        await db.execute("DROP TABLE messages_fts")
+        await db.execute(
+            "CREATE VIRTUAL TABLE messages_fts USING fts5(content, channel, role, "
+            "content='messages', content_rowid='id')")  # recreated, never refilled
+        await db.commit()
+    await MemoryStore(store.db_path).init()
+    async with aiosqlite.connect(store.db_path) as db:
+        hits = await (await db.execute(
+            "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'lantern'")).fetchone()
+    assert hits[0] == 5
