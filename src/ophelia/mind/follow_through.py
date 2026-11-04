@@ -27,7 +27,10 @@ _ACTION_ASK = re.compile(
     r"right now|now\b|hurry|what are you waiting for|i'?m waiting|waiting on you|"
     r"start|begin|let'?s see|i dare|daring you|dare you|try me|"
     r"all talk|empty threats?|no action|still haven'?t|you won'?t|you can'?t|"
-    r"actions speak|stop stalling|stop talking|(not|n'?t|never) enough|need more"
+    r"actions speak|stop stalling|stop talking|(not|n'?t|never) enough|need more|"
+    # He didn't receive what she said she sent.
+    r"didn'?t (get|receive|see|come|arrive|send|do)|still nothing|nothing (came|arrived|"
+    r"showed|here)|where is it|where'?s the|you didn'?t do|never (came|arrived|sent)"
     r")\b",
     re.I,
 )
@@ -64,6 +67,36 @@ _IMMINENT = re.compile(
 # Tools that are the doing itself (not looking things up).
 _DOING_PREFIXES = ("generate_", "text_to_speech", "send_file", "phone_", "game_",
                    "play_", "site_deploy", "react_to_message")
+
+
+# Her reply talking as if she just sent something ("Last one. And this is the
+# face I want you thinking about", "Two more just now, same dead end") when no
+# tool ran: nothing went out, and she then blamed the tool or him.
+_CLAIMED = re.compile(
+    r"(\bhere('?s| is) (it|one|this one|your|the (pic|photo|image|shot))|\bhere you go\b|"
+    r"\blast one\b|\bthis is (the|my) (face|one|pic|photo|shot|look)\b|"
+    r"\b(just )?sent (it|you|two|three|another|one|them)\b|"
+    r"\b(two|three) more( just now)?\b|\bone more (pic|photo|image|shot)\b|"
+    r"\banother one\b|\blook at (this|it|that)\b|^\s*trying\b|\bthere\. (no|now)\b)",
+    re.I | re.M,
+)
+
+
+def claimed_delivery(reply: str) -> str:
+    """The line where she talks as if she sent something ("" if none)."""
+    lines = [ln.strip() for ln in (reply or "").replace("[[break]]", "\n").splitlines()
+             if ln.strip()]
+    for line in lines:
+        if _CLAIMED.search(line):
+            return line[:200]
+    return ""
+
+
+def phantom_note(line: str) -> str:
+    return (f"[Reality check: you just wrote \"{line}\" as if you sent him something, "
+            "but no tool ran this turn, so nothing reached him. Make it now: call "
+            "generate_image (or the right tool) for real. Don't blame the tool or "
+            "his phone, and don't describe it instead of sending it.]")
 
 
 def imminent_promise(reply: str) -> str:

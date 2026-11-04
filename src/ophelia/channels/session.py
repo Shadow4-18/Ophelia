@@ -673,11 +673,19 @@ class ChannelSession:
 
         if channel in self._following_through:
             return
-        line = ft.imminent_promise(out)
-        if not line:
-            return
         called = list(getattr(self.agent.tools, "_tools_called", None) or [])
         if ft.did_something(called):
+            return
+        claimed = ft.claimed_delivery(out)
+        if claimed:
+            # Talked as if it was sent, but nothing ran: fix it right away.
+            log.warning("follow_through.phantom", channel=channel, line=claimed[:80],
+                        tools=called or None)
+            asyncio.create_task(self._follow_through(
+                channel, claimed, 3.0, time.time(), plumbing, note=ft.phantom_note(claimed)))
+            return
+        line = ft.imminent_promise(out)
+        if not line:
             return
         delay = ft.follow_through_delay(line)
         log.info("follow_through.scheduled", channel=channel, line=line[:80],
@@ -685,7 +693,7 @@ class ChannelSession:
         asyncio.create_task(self._follow_through(channel, line, delay, time.time(), plumbing))
 
     async def _follow_through(self, channel: str, line: str, delay: float, since: float,
-                              plumbing: dict) -> None:
+                              plumbing: dict, note: str = "") -> None:
         from ophelia.mind import follow_through as ft
 
         try:
@@ -700,7 +708,8 @@ class ChannelSession:
                 return
             self._following_through.add(channel)
             log.info("follow_through.run", channel=channel, line=line[:80])
-            await self.handle_chat(channel, ft.follow_through_note(line), plumbing["reply"],
+            await self.handle_chat(channel, note or ft.follow_through_note(line),
+                                   plumbing["reply"],
                                    media_reply=plumbing.get("media_reply"),
                                    log_context=plumbing.get("log_context"),
                                    actions=plumbing.get("actions"))
