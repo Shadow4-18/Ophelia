@@ -86,6 +86,7 @@ class ChannelSession:
         self._voice_reply: dict[str, bool] = {}
         self._chat_logger: ChatLogger | None = None
         self._side_locks: dict[str, asyncio.Lock] = {}
+        self._following_through: set[str] = set()
         self._log_hooks: list[LogHookFn] = []
         self._current_log_context: dict | None = None
 
@@ -592,6 +593,9 @@ class ChannelSession:
                 except Exception as e:
                     log.debug("reaction.chat_path_failed", error=str(e))
                     out = ""
+            tools = self.agent.tools
+            if hasattr(tools, "_tools_called"):
+                tools._tools_called = []  # what this turn actually does
             if not out:
                 out = await self.agent.run_turn(
                     channel, text, is_owner=is_owner, system_extra=turn_extra
@@ -625,6 +629,10 @@ class ChannelSession:
                 if i:
                     await asyncio.sleep(1.2)
                 await _logged_reply(cleaned)
+            if is_owner:
+                self._maybe_follow_through(
+                    channel, out, reply=reply, media_reply=media_reply,
+                    log_context=log_context, actions=actions)
             # Tier B #8: track jokes/quips in her normal chat replies (owner
             # only) so her humor can be calibrated from everyday conversation,
             # not just spontaneous outreach.
@@ -655,6 +663,51 @@ class ChannelSession:
             # Event-driven will: after a chat turn, stir consciousness soon so
             # she can react/impulse without waiting for the full clock interval.
             asyncio.create_task(self._wake_after_chat())
+
+    def _maybe_follow_through(self, channel: str, out: str, **plumbing) -> None:
+        """She ended on "give me thirty seconds" / "I'll do it properly" and
+        did nothing yet: go and do it after about that long, without waiting
+        for him. Once per promise (never from a follow-through itself); his
+        own next message takes over instead."""
+        from ophelia.mind import follow_through as ft
+
+        if channel in self._following_through:
+            return
+        line = ft.imminent_promise(out)
+        if not line:
+            return
+        called = list(getattr(self.agent.tools, "_tools_called", None) or [])
+        if ft.did_something(called):
+            return
+        delay = ft.follow_through_delay(line)
+        log.info("follow_through.scheduled", channel=channel, line=line[:80],
+                 delay=round(delay))
+        asyncio.create_task(self._follow_through(channel, line, delay, time.time(), plumbing))
+
+    async def _follow_through(self, channel: str, line: str, delay: float, since: float,
+                              plumbing: dict) -> None:
+        from ophelia.mind import follow_through as ft
+
+        try:
+            await asyncio.sleep(delay)
+            for _ in range(60):  # let a turn in progress finish first
+                if not (self.signals.user_talking or self.signals.agent_thinking):
+                    break
+                await asyncio.sleep(1)
+            if self.signals.last_user_message_at > since:
+                return  # he wrote; that turn answers (and acts)
+            if self.signals.user_talking or self.signals.agent_thinking:
+                return
+            self._following_through.add(channel)
+            log.info("follow_through.run", channel=channel, line=line[:80])
+            await self.handle_chat(channel, ft.follow_through_note(line), plumbing["reply"],
+                                   media_reply=plumbing.get("media_reply"),
+                                   log_context=plumbing.get("log_context"),
+                                   actions=plumbing.get("actions"))
+        except Exception as e:
+            log.warning("follow_through.failed", error=str(e))
+        finally:
+            self._following_through.discard(channel)
 
     async def _wake_after_chat(self) -> None:
         """Delayed consciousness wake so we don't interrupt our own send."""
