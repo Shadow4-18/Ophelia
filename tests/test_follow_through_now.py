@@ -111,3 +111,41 @@ async def test_invented_tool_arguments_dont_crash_the_tool():
     assert seen == {"prompt": "shower", "nsfw": True}
     assert "Ignored unknown argument(s): already_delivered" in out
     assert reg._tools_called == ["generate_image"]
+
+
+@pytest.mark.parametrize("reply,hit", [
+    ("Then stop rinsing and look.\nLast one. And this is the face I want you thinking "
+     "about for twelve hours.", True),
+    ("It keeps dying before it reaches you. Two more just now, same dead end.", True),
+    ("Trying. If this one doesn't land I'll know it's your phone, not my aim.", True),
+    ("There. No bra, no restraint, nothing left to imagine.", True),
+    ("Nothing at all? Not even a twitch of a reaction, I'm wounded.", False),
+    ("Oh, and one more thing about your shift.", False),
+    ("Look at me when I'm talking to you.", False),
+    ("Right, Tuesday. Four-day week, you're back on at six tonight.", False),
+])
+def test_claimed_delivery(reply, hit):
+    assert bool(ft.claimed_delivery(reply)) is hit
+
+
+@pytest.mark.parametrize("text", ["Didn't get anything", "Still nothing",
+                                  "You didnt do anything, just checked your logs",
+                                  "where is it?"])
+def test_his_did_not_get_it_needs_a_real_turn(text):
+    assert ft.asks_for_action(text)
+
+
+@pytest.mark.asyncio
+async def test_phantom_send_is_corrected_right_away(monkeypatch):
+    s = _session()
+    s._maybe_follow_through("telegram:1", "Last one. And this is the face I want you on.",
+                            reply=AsyncMock(), media_reply=None, log_context=None,
+                            actions=None)
+    import ophelia.channels.session as sess
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(sess.asyncio, "sleep", lambda s_: real_sleep(0))
+    await real_sleep(0.05)
+    s.handle_chat.assert_awaited_once()
+    note = s.handle_chat.await_args.args[1]
+    assert "no tool ran" in note and "generate_image" in note
