@@ -109,6 +109,7 @@ _TURN_DEFAULTS: dict[str, Any] = {
 _TURN_FACTORIES: dict[str, Callable[[], Any]] = {
     "pending_artifacts": list,
     "delivered_artifacts": set,
+    "tools_called": list,
 }
 
 
@@ -125,6 +126,20 @@ def _turn_state(key: str) -> property:
         self._turn_var(key).set(value)
 
     return property(_get, _set)
+
+
+def _known_args(handler: Any, args: dict) -> tuple[dict, list[str]]:
+    """Split tool arguments into the ones the handler takes and the rest."""
+    import inspect
+
+    try:
+        params = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return args, []
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return args, []
+    keep = {k: v for k, v in args.items() if k in params}
+    return keep, sorted(k for k in args if k not in params)
 
 
 class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMixin):
@@ -146,6 +161,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
     # flush (or mark as sent) files that belong to the owner / consciousness.
     _pending_artifacts = _turn_state("pending_artifacts")
     _delivered_artifacts = _turn_state("delivered_artifacts")
+    _tools_called = _turn_state("tools_called")
     _proactive_messages_sent = _turn_state("proactive_sent")
 
     @property
@@ -573,8 +589,20 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         handler = self._handlers.get(name)
         if not handler:
             return f"Unknown tool: {name}"
+        if not isinstance(args, dict):
+            return "Tool arguments must be a JSON object."
+        args, dropped = _known_args(handler, args)
+        try:
+            self._tools_called.append(name)
+        except Exception:
+            pass
         result = await handler(**args)
         self._remember_doing(name, args, result)
+        if dropped and isinstance(result, str):
+            # She invented a parameter (one crashed generate_image with
+            # "unexpected keyword argument 'already_delivered'"): run with
+            # the real ones and say what was ignored.
+            result += f"\n(Ignored unknown argument(s): {', '.join(dropped)}.)"
         return result
 
     def _remember_doing(self, name: str, args: dict, result: Any) -> None:
