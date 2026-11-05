@@ -668,6 +668,16 @@ class Orchestrator:
         if self.settings.diary_enabled:
             self.agent.narrative = self.narrative
             tasks.append(asyncio.create_task(self.narrative.run()))
+        # Episodic memory: each day/week written down as the story of it.
+        self.episodes = None
+        if getattr(self.settings, "episodic_memory", True):
+            from ophelia.mind.episodes import EpisodicMemory
+
+            self.episodes = EpisodicMemory(self.agent, self.memory, inner=self.inner,
+                                           settings=self.settings)
+            self.agent.episodes = self.episodes
+            self.agent.tools.episodes = self.episodes
+            tasks.append(asyncio.create_task(self.episodes.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.
@@ -837,6 +847,8 @@ class Orchestrator:
                 self.backup_loop.stop()
             self.housekeeping.stop()
             self.narrative.stop()
+            if getattr(self, "episodes", None):
+                self.episodes.stop()
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

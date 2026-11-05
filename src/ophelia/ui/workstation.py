@@ -230,6 +230,14 @@ class Workstation:
         if self.settings.diary_enabled:
             self.agent.narrative = self.narrative
             self._tasks.append(asyncio.create_task(self.narrative.run()))
+        if getattr(self.settings, "episodic_memory", True):
+            from ophelia.mind.episodes import EpisodicMemory
+
+            self.episodes = EpisodicMemory(self.agent, self.memory, inner=self.inner,
+                                           settings=self.settings)
+            self.agent.episodes = self.episodes
+            self.agent.tools.episodes = self.episodes
+            self._tasks.append(asyncio.create_task(self.episodes.run()))
         if self.settings.avatar_enabled:
             self._tasks.append(asyncio.create_task(self._avatar_loop()))
 

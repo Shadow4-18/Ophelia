@@ -258,6 +258,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             "edit_soul": self._edit_soul,
             "edit_prompter": self._edit_prompter,
             "recall_memory": self._recall_memory,
+            "recall_day": self._recall_day,
             "save_lesson": self._save_lesson,
             "reflect": self._reflect,
             "sqlite_list_databases": self._sqlite_list_databases,
@@ -1240,6 +1241,14 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         hits = await self.memory.recall(query, limit=limit)
         lessons = await self.memory.search_lessons(query, limit=3)
         parts: list[str] = []
+        episodes = getattr(self, "episodes", None)
+        if episodes is not None:
+            # The days it happened in first: the thread, not just the lines.
+            try:
+                for ep in await episodes.search(query, limit=2):
+                    parts.append("From your episodic memory:\n" + episodes._format(ep))
+            except Exception as e:
+                log.debug("recall.episodes_failed", error=str(e))
         if hits:
             parts.append(f"Found {len(hits)} past message(s):")
             for h in hits:
@@ -1250,6 +1259,12 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             for les in lessons:
                 parts.append(f"  - {les['lesson'][:240]}")
         return "\n".join(parts) if parts else f"No memories matched '{query}'."
+
+    async def _recall_day(self, when: str = "", query: str = "") -> str:
+        episodes = getattr(self, "episodes", None)
+        if episodes is None:
+            return "Episodic memory is off (OPHELIA_EPISODIC_MEMORY); use recall_memory."
+        return await episodes.recall(when or ("" if query else "yesterday"), query=query)
 
     async def _follow_up(self, note: str, in_hours: float = 3.0) -> str:
         if not self.memory:

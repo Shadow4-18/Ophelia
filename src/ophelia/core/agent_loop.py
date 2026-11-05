@@ -495,8 +495,14 @@ class AgentLoop:
             curiosity = getattr(self, "curiosity", None)
             if curiosity is not None:
                 parts.append(await curiosity.context_block())
+            # The long arc: episodic memory (days and weeks in her words);
+            # the 2-day diary when there are no episodes yet.
+            episodes = getattr(self, "episodes", None)
+            arc = await episodes.context_block() if episodes is not None else ""
             narrative = getattr(self, "narrative", None)
-            if narrative is not None:
+            if arc:
+                parts.append(arc)
+            elif narrative is not None:
                 parts.append(await narrative.recent_block())
             from ophelia.mind import body_clock, day_log
 
