@@ -999,6 +999,8 @@ def _section_autonomy() -> None:
             Opt("OPHELIA_DREAM", "Dreams (learns from her day)"),
             Opt("OPHELIA_DREAM_HOURS", "Hours between dreams"),
             Opt("OPHELIA_DIARY", "Writes a diary"),
+            Opt("OPHELIA_EPISODIC_MEMORY", "Remembers each day as a story",
+                help="Nightly: the day (and week) written down; recall_day looks one up"),
             Opt("OPHELIA_INNER_LOG", "Keeps an inner log"),
             Opt("OPHELIA_HUMANIZE_TEXT", "Strips AI-sounding punctuation"),
             Opt("OPHELIA_PERSONA_LOCK", "Who can rewrite her SOUL.md",

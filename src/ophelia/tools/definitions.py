@@ -1171,6 +1171,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "recall_day",
+            "description": (
+                "Remember a whole day or week of your life as you wrote it down: what "
+                "happened, what was said, how it felt, what was left open. when= "
+                "\"yesterday\", \"last tuesday\", \"nov 3\", \"3 days ago\", \"last "
+                "week\". Or query= what happened (\"the night he called my face plain\") "
+                "to find the day. recall_memory finds single lines; this gives the story."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "when": {"type": "string", "description": "A day or week"},
+                    "query": {"type": "string", "description": "Find the day by what happened"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "curiosity_trail_open",
             "description": (
                 "Open a self-chosen rabbit hole (curiosity trail) — not a cadenced goal. "

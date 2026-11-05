@@ -36,6 +36,7 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
             "web_search",
             "fetch_url",
             "recall_memory",
+            "recall_day",
             "correct_memory",
             "recall_past_sessions",
             "save_lesson",

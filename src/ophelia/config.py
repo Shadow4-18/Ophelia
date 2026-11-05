@@ -673,6 +673,19 @@ class Settings(BaseSettings):
         alias="OPHELIA_DIARY",
         description="Daily self-narrative (one short curator-model call per day)",
     )
+    episodic_memory: bool = Field(
+        default=True,
+        alias="OPHELIA_EPISODIC_MEMORY",
+        description=(
+            "Write each day (and week) of her life down as one episode, nightly, and "
+            "keep the recent arc in her prompt; recall_day looks up any day."
+        ),
+    )
+    episodes_backfill_days: int = Field(
+        default=90,
+        alias="OPHELIA_EPISODES_BACKFILL_DAYS",
+        description="How far back to write past days as episodes (a few per night).",
+    )
     tool_tiers: str = Field(
         default="auto",
         alias="OPHELIA_TOOL_TIERS",
