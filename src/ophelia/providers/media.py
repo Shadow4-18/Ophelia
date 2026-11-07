@@ -389,9 +389,14 @@ async def generate_image(
             )
 
     agent_model = (model or "").strip()
-    # Civitai AIR URNs must never hit xAI/OpenAI (404). If she passes an AIR,
-    # route to Civitai when a key is configured; otherwise strip and use default.
-    is_civitai_air = agent_model.lower().startswith("urn:air:")
+    # Civitai models must never hit xAI/OpenAI (404): an AIR URN, or one of
+    # her Civitai recipe names ("hassaku", "prefect-pony"...) which went to
+    # Grok as a model name, 404'd, and the fallback lost her choice. Route to
+    # Civitai with the model kept when a key is configured; otherwise drop it.
+    from ophelia.providers.civitai.catalog import recipe_by_name
+
+    is_civitai_air = agent_model.lower().startswith("urn:air:") or (
+        bool(agent_model) and recipe_by_name(agent_model) is not None)
     if is_civitai_air and provider != "civitai":
         if settings.civitai_api_key:
             log.info(

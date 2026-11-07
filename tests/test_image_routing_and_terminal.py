@@ -189,3 +189,48 @@ async def test_telegram_logs_file_and_image_ledger(tmp_path):
     sent = doc.await_args.kwargs["document"]
     assert sent.filename.endswith(".jsonl") and b"civitai" in sent.input_file_content
     assert b"supersecretkeyvalue99" not in sent.input_file_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["hassaku", "prefect-pony", "CyberRealistic Pony",
+                                   "urn:air:sdxl:checkpoint:civitai:1@2"])
+async def test_civitai_model_names_go_to_civitai_with_the_model_kept(tmp_path, monkeypatch,
+                                                                    model):
+    """model="hassaku" went to Grok as a model name, 404'd, and the
+    Civitai fallback picked LUSTIFY instead."""
+    from ophelia.providers import media
+
+    settings = _settings(tmp_path)
+    stack = MagicMock()
+    stack.image_provider_for.return_value = "xai"
+    stack.image_model_for.return_value = "grok-imagine-image-2.0"
+    seen = []
+
+    async def dispatch(provider, **kw):
+        seen.append((provider, kw.get("resolved_model")))
+        return f"Image saved to {tmp_path / 'x.png'}"
+
+    monkeypatch.setattr(media, "_dispatch_image_provider", dispatch)
+    await media.generate_image(settings, stack, "a portrait", artifacts_dir=tmp_path,
+                               model=model)
+    assert seen[0][0] == "civitai" and seen[0][1] == model
+
+
+@pytest.mark.asyncio
+async def test_grok_model_names_still_go_to_grok(tmp_path, monkeypatch):
+    from ophelia.providers import media
+
+    settings = _settings(tmp_path)
+    stack = MagicMock()
+    stack.image_provider_for.return_value = "xai"
+    stack.image_model_for.return_value = "grok-imagine-image-2.0"
+    seen = []
+
+    async def dispatch(provider, **kw):
+        seen.append(provider)
+        return f"Image saved to {tmp_path / 'x.png'}"
+
+    monkeypatch.setattr(media, "_dispatch_image_provider", dispatch)
+    await media.generate_image(settings, stack, "a cat", artifacts_dir=tmp_path,
+                               model="grok-imagine-image-2.0")
+    assert seen == ["xai"]
