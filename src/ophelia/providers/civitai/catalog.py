@@ -81,6 +81,12 @@ class Recipe:
     pony_source: str = ""  # tags in place of source_anime (realistic Pony merges)
     sampler: str = ""  # sdcpp sampleMethod; "" = the family default (sampling_for)
     schedule: str = ""  # sdcpp schedule; "" = the family default
+    # Non-sdcpp engines (comfy, seedream, google, fal, ...): how the request
+    # is shaped, straight from the orchestration spec. Keys: fixed (fields
+    # sent as-is), op (send operation), size ("wh" | "aspect" |
+    # "image_size" | "none"), aspects (allowed ratios), cfg (field name or
+    # ""), steps, seed. Empty = the sdcpp/flux2 paths.
+    api: dict[str, Any] = field(default_factory=dict)
 
     def estimate_buzz(self, width: int, height: int, steps: int, quantity: int) -> float:
         px = width * height
@@ -101,6 +107,8 @@ class Recipe:
             return 0.3 * steps * (1 if self.cfg == 1 else 2) * q
         if self.cost == "flux2-dev":
             return 40 * math.ceil(px / 1_000_000) * q
+        if self.cost == "api":
+            return 0.0  # priced by Civitai per engine; the real cost is logged after
         return 8 * q
 
 
@@ -260,6 +268,149 @@ RECIPES: dict[str, Recipe] = {
     )
 }
 
+CHROMA_HD_AIR = "urn:air:chroma:checkpoint:civitai:1330309@2164239"  # v1.0-HD
+UNCANNY_CHROMA_AIR = "urn:air:chroma:checkpoint:civitai:2086389@2517681"  # v1.3
+PONY_V7_AIR = "urn:air:ponyv7:checkpoint:civitai:1901521@2152373"  # v7.0 base
+
+_FAL_SIZES = ("square_hd", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9")
+_GOOGLE_ASPECTS = ("21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16")
+_COMMON_ASPECTS = ("21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21")
+
+
+def _comfy(key: str, label: str, ecosystem: str, model: str | None, steps: int, cfg: float,
+           *, negative: bool = True, max_q: int = 4, min_side: int = 64, nsfw: str = "weak",
+           style: str = "general", notes: str = "", **extra: Any) -> Recipe:
+    """A Civitai ComfyUI base model (the 'families' list on the site)."""
+    air = extra.pop("model_air", "")
+    model = air or model  # chroma / ponyV7 take a checkpoint AIR as the model
+    fixed: dict[str, Any] = {"ecosystem": ecosystem}
+    if model is not None:
+        fixed["model"] = model
+    fixed.update(extra)
+    return Recipe(
+        key=key, label=label, ecosystem=ecosystem, family="other", style=style,
+        engine="comfy", model=str(model or ""), steps=steps, cfg=cfg, img2img=False,
+        loras=False, negative=negative, max_quantity=max_q, min_side=min_side,
+        max_steps=steps if cfg <= 1 else 50,  # distilled/turbo: more steps over-cook
+        prompt_style="natural", cost="api", nsfw=nsfw, notes=notes,
+        api={"fixed": fixed, "op": True, "size": "wh", "cfg": "cfgScale", "steps": True,
+             "seed": True},
+    )
+
+
+def _hosted(key: str, label: str, engine: str, fixed: dict[str, Any], *, size: str = "wh",
+            aspects: tuple[str, ...] = (), cfg_field: str = "", cfg: float = 0.0,
+            steps: int = 0, op: bool = False, seed: bool = True, negative: bool = False,
+            max_q: int = 4, min_side: int = 512, max_side: int = 2048,
+            notes: str = "") -> Recipe:
+    """A commercial engine Civitai resells (Seedream, Nano Banana, Flux Pro, ...).
+    Their own safety filters apply, so they are never picked for explicit
+    images."""
+    return Recipe(
+        key=key, label=label, ecosystem=engine, family="other", style="general",
+        engine=engine, model=str(fixed.get("model") or fixed.get("version") or ""),
+        steps=steps or 1, cfg=cfg, img2img=False, loras=False, negative=negative,
+        max_quantity=max_q, min_side=min_side, max_side=max_side, max_steps=max(steps, 1),
+        prompt_style="natural", cost="api", nsfw="weak", notes=notes,
+        api={"fixed": fixed, "op": op, "size": size, "aspects": aspects, "cfg": cfg_field,
+             "steps": bool(steps), "seed": seed},
+    )
+
+
+# Every other base model ("family") Civitai can run, from the orchestration
+# spec (2026-11). Text-to-image only, no LoRAs; auto mode never picks them,
+# she names them with model=<key>.
+EXTRA_RECIPES: tuple[Recipe, ...] = (
+    _comfy("chroma", "Chroma v1 HD (uncensored Flux-style, photoreal/any)", "chroma", None,
+           28, 3.5, nsfw="strong", style="realistic", model_air=CHROMA_HD_AIR,
+           notes="Uncensored, natural language, good anatomy."),
+    _comfy("chroma-uncanny", "UnCanny (photoreal Chroma)", "chroma", None, 28, 3.5,
+           nsfw="strong", style="realistic", model_air=UNCANNY_CHROMA_AIR,
+           notes="Photoreal Chroma fine-tune."),
+    _comfy("pony-v7", "Pony V7 (AuraFlow)", "ponyV7", None, 25, 7.0, nsfw="ok",
+           style="pony", model_air=PONY_V7_AIR, notes="Natural language plus style tags."),
+    _comfy("krea2", "Krea 2 (raw)", "krea2", "raw", 20, 4.0, nsfw="ok", style="realistic",
+           notes="Photographic, natural skin."),
+    _comfy("krea2-turbo", "Krea 2 Turbo", "krea2", "turbo", 8, 1.0, nsfw="ok",
+           style="realistic", notes="Fast Krea 2."),
+    _comfy("hidream", "HiDream I1 (full)", "hidream", None, 30, 5.0, variant="full",
+           notes="Strong prompt following."),
+    _comfy("hidream-fast", "HiDream I1 fast", "hidream", None, 16, 1.0, variant="fast"),
+    _comfy("hidream-o1", "HiDream O1", "hidream-o1", "HiDream-O1-Image", 40, 5.0,
+           notes="Newest HiDream, detailed."),
+    _comfy("ernie", "ERNIE Image", "ernie", "ernie", 20, 4.0),
+    _comfy("ernie-turbo", "ERNIE Image Turbo", "ernie", "turbo", 8, 1.0),
+    _comfy("boogu", "Boogu", "boogu", "base", 20, 4.0),
+    _comfy("boogu-turbo", "Boogu Turbo", "boogu", "turbo", 4, 1.0),
+    _comfy("lens", "Lens", "lens", "normal", 20, 4.0),
+    _comfy("lens-turbo", "Lens Turbo", "lens", "turbo", 4, 1.0),
+    _comfy("ming", "Ming Design", "ming", "design", 12, 1.0, min_side=256,
+           notes="Design/graphic look."),
+    _comfy("moss", "MOSS Image", "mossImage", "base", 25, 2.5),
+    _comfy("moss-sft", "MOSS Image SFT", "mossImage", "sft", 25, 2.5),
+    _comfy("flux3-klein", "Flux.3 Klein", "flux3Klein", "base", 50, 3.5),
+    _comfy("flux3-klein-fast", "Flux.3 Klein distilled", "flux3Klein", "distilled", 16, 1.0),
+    _comfy("mageflow", "MageFlow 4B", "mageflow", "4b", 20, 5.0, min_side=512),
+    _comfy("mageflow-turbo", "MageFlow 4B Turbo", "mageflow", "4b-turbo", 4, 1.0,
+           min_side=512),
+    _comfy("ideogram4", "Ideogram 4 (open)", "ideogram4", None, 12, 7.0, negative=False,
+           notes="Good at text in images."),
+    _comfy("fibo2", "FIBO 2", "fibo2", "dev", 30, 5.0),
+    _comfy("qwen-2.1", "Qwen-Image 2.1", "qwen", "2.1", 25, 1.0),
+    _comfy("qwen-2.1-turbo", "Qwen-Image 2.1 Turbo", "qwen", "2.1-turbo", 8, 1.0),
+    _hosted("qwen-3", "Qwen Image 3.0 Pro (API)", "qwen", {"model": "3.0-pro"}, op=True,
+            negative=True, max_q=6, min_side=256),
+    _hosted("qwen-2", "Qwen Image 2.0 Pro (API)", "qwen", {"model": "2.0-pro"}, op=True,
+            negative=True, max_q=6, min_side=256),
+    _hosted("qwen2-fal", "Qwen Image 2 (fal)", "fal", {"model": "qwen2"}, op=True,
+            size="image_size", negative=True),
+    _hosted("seedream", "Seedream 5.0 Pro", "seedream", {"version": "v5.0-pro"},
+            cfg_field="guidanceScale", cfg=2.5, min_side=256, max_side=4096,
+            notes="ByteDance; very good photoreal and text."),
+    _hosted("seedream-4.5", "Seedream 4.5", "seedream", {"version": "v4.5"},
+            cfg_field="guidanceScale", cfg=2.5, min_side=256, max_side=4096),
+    _hosted("seedream-4", "Seedream 4", "seedream", {"version": "v4"},
+            cfg_field="guidanceScale", cfg=2.5, min_side=256, max_side=4096),
+    _hosted("nano-banana-2", "Nano Banana 2 (Google)", "google", {"model": "nano-banana-2"},
+            size="aspect", aspects=_GOOGLE_ASPECTS),
+    _hosted("nano-banana-2.1", "Nano Banana 2.1 (Google)", "google",
+            {"model": "nano-banana-2.1"}, size="aspect", aspects=_GOOGLE_ASPECTS, seed=False),
+    _hosted("nano-banana-pro", "Nano Banana Pro (Google)", "google",
+            {"model": "nano-banana-pro"}, size="aspect", aspects=_GOOGLE_ASPECTS, seed=False),
+    _hosted("imagen4", "Imagen 4 (Google)", "google", {"model": "imagen4"}, size="aspect",
+            aspects=("1:1", "16:9", "9:16", "3:4", "4:3"), negative=True),
+    _hosted("flux3", "Flux.3 (fal)", "fal", {"model": "flux3"}, op=True, size="aspect",
+            aspects=("21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"),
+            seed=False),
+    _hosted("ideogram", "Ideogram 4.5 (fal)", "fal", {"model": "ideogram45"}, op=True,
+            size="image_size", notes="Best at text and typography."),
+    _hosted("reve", "Reve (fal)", "fal", {"model": "reve"}, op=True, size="aspect",
+            aspects=("21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"),
+            seed=False),
+    _hosted("muse", "Muse Image (fal)", "fal", {"model": "museImage"}, op=True,
+            size="aspect", aspects=("21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16"),
+            seed=False),
+    _hosted("mai", "MAI Image (Microsoft, fal)", "fal", {"model": "maiImage"}, op=True,
+            size="aspect", aspects=_GOOGLE_ASPECTS, seed=False),
+    _hosted("wan-image", "Wan 2.7 Image (fal)", "wan", {"version": "v2.7", "provider": "fal"},
+            op=True, size="image_size", cfg_field="cfgScale", cfg=3.5, negative=True),
+    _hosted("flux2-pro", "Flux.2 Pro", "flux2", {"model": "pro"}, op=True),
+    _hosted("flux2-max", "Flux.2 Max", "flux2", {"model": "max"}, op=True),
+    _hosted("flux2-flex", "Flux.2 Flex", "flux2", {"model": "flex"}, op=True,
+            cfg_field="guidanceScale", cfg=3.5, steps=28),
+    _hosted("flux2-dev", "Flux.2 Dev", "flux2", {"model": "dev"}, op=True,
+            cfg_field="guidanceScale", cfg=2.5, steps=28),
+    _hosted("flux-ultra", "Flux.1 Pro Ultra", "flux1-pro", {"model": "ultra"}, size="aspect",
+            aspects=("21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "9:21")),
+    _hosted("flux-kontext", "Flux.1 Kontext Pro", "flux1-kontext", {"model": "pro"},
+            size="aspect", aspects=_COMMON_ASPECTS, cfg_field="guidanceScale", cfg=3.5),
+    _hosted("flux-kontext-max", "Flux.1 Kontext Max", "flux1-kontext", {"model": "max"},
+            size="aspect", aspects=_COMMON_ASPECTS, cfg_field="guidanceScale", cfg=3.5),
+    _hosted("gpt-image-2", "GPT Image 2 (OpenAI)", "openai", {"model": "gpt-image-2"},
+            op=True, seed=False, min_side=256, max_side=3840),
+)
+RECIPES.update({r.key: r for r in EXTRA_RECIPES})
+
 # Auto-pick: style → recipe for explicit requests (all NSFW-strong SDXL
 # fine-tunes; tested on the phone 2026-10-20). Each is the head of its
 # pool; the others in the pool rotate in (see selection.py).
@@ -297,6 +448,30 @@ _ALIASES = {
     "prefectpony": "prefect-pony", "waipony": "wai-pony", "wai-ani-ponyxl": "wai-pony",
     "cyberrealistic": "cyberrealistic-pony", "cyberrealisticpony": "cyberrealistic-pony",
     "big-love": "biglove", "porn-master": "pornmaster", "realismillustrious": "realism-il",
+    # Other families, by the names on the site.
+    "krea": "krea2", "krea2raw": "krea2", "krea-2": "krea2", "krea2turbo": "krea2-turbo",
+    "flux.1krea": "krea2", "fluxkrea": "krea2",
+    "seedream5": "seedream", "seedream-5": "seedream", "seedream4": "seedream-4",
+    "seedream-4.0": "seedream-4", "seedream45": "seedream-4.5",
+    "nanobanana": "nano-banana-2", "nano-banana": "nano-banana-2",
+    "nanobanana2": "nano-banana-2", "nanobananapro": "nano-banana-pro",
+    "nanobanana2.1": "nano-banana-2.1", "gemini": "nano-banana-2", "imagen": "imagen4",
+    "hidream-i1": "hidream", "hidreamo1": "hidream-o1",
+    "ideogram4open": "ideogram4", "ideogram45": "ideogram", "ideogram4.5": "ideogram",
+    "mingdesign": "ming", "muse-image": "muse", "museimage": "muse", "maiimage": "mai",
+    "mage-flow": "mageflow", "mageflow4b": "mageflow", "wan": "wan-image",
+    "wan2.7": "wan-image", "wanimage": "wan-image",
+    "qwen2": "qwen-2", "qwen-image-2": "qwen-2", "qwen3": "qwen-3", "qwen-image-3": "qwen-3",
+    "qwen2.1": "qwen-2.1", "ernieimage": "ernie", "moss-image": "moss", "mossimage": "moss",
+    "kontext": "flux-kontext", "flux-kontext-pro": "flux-kontext", "fluxkontext": "flux-kontext",
+    "flux.1-kontext": "flux-kontext", "flux1-kontext": "flux-kontext",
+    "flux.2": "flux2-pro", "flux.2-pro": "flux2-pro", "flux2pro": "flux2-pro",
+    "flux.2-dev": "flux2-dev", "flux.2-klein": "flux2-klein",
+    "flux.3": "flux3", "flux3-pro": "flux3", "flux.3-klein": "flux3-klein",
+    "flux-pro-ultra": "flux-ultra", "flux1-ultra": "flux-ultra", "flux.1-ultra": "flux-ultra",
+    "gpt-image": "gpt-image-2", "gptimage2": "gpt-image-2", "openai": "gpt-image-2",
+    "chroma1": "chroma", "chroma-hd": "chroma", "uncanny": "chroma-uncanny",
+    "ponyv7": "pony-v7", "pony7": "pony-v7",
 }
 
 
@@ -429,9 +604,13 @@ def render_settings(
 
 
 def catalog_text(*, notes: bool = True) -> str:
-    """One line per recipe, for her tool description / search results."""
+    """One line per main recipe, then the other families on one line each
+    group, for her tool description / search results."""
     lines = []
+    extra_keys = {r.key for r in EXTRA_RECIPES}
     for r in RECIPES.values():
+        if r.key in extra_keys:
+            continue
         w, h, steps = render_settings(r, "standard", "1:1")
         est = r.estimate_buzz(w, h, steps, 1)
         extra = [] if r.img2img else ["txt2img only"]
@@ -440,4 +619,18 @@ def catalog_text(*, notes: bool = True) -> str:
         tail = f" ({', '.join(extra)})" if extra else ""
         line = f"- {r.key}: {r.label}, ~{est:.0f} Buzz{tail}"
         lines.append(f"{line}. {r.notes}" if notes else line)
+    open_ = [r for r in EXTRA_RECIPES if r.engine == "comfy"]
+    hosted = [r for r in EXTRA_RECIPES if r.engine != "comfy"]
+    lines.append(
+        "- Other families (text-to-image only, no LoRAs, priced by Civitai): "
+        + ", ".join(f"{r.key}{'*' if r.nsfw == 'strong' else ''}" for r in open_)
+        + ". * = uncensored, fine for explicit."
+    )
+    lines.append(
+        "- Hosted engines (SFW only, their own filters block nudity): "
+        + ", ".join(r.key for r in hosted) + "."
+    )
+    if notes:
+        lines.extend(f"  - {r.key}: {r.label}. {r.notes}".rstrip(". ") + "."
+                     for r in EXTRA_RECIPES)
     return "\n".join(lines)

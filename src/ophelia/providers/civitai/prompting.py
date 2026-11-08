@@ -322,6 +322,12 @@ _NEGATIVES: dict[str, str] = {
     "anima": "worst quality, low quality, blurry, bad anatomy, deformed hands",
     "zimage": "blurry, low quality, deformed hands, watermark",
     "qwen": "blurry, low detail",
+    # Newer base models (Chroma, HiDream, Krea 2, ...): natural-language
+    # models that still benefit from the anatomy basics.
+    "other": (
+        "blurry, low quality, bad anatomy, deformed hands, extra fingers, "
+        "extra limbs, watermark, text"
+    ),
 }
 
 _UNCENSOR = "censored, mosaic censoring, bar censor"
