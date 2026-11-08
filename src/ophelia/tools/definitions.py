@@ -158,7 +158,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "expression, camera angle, setting, lighting); quality, rating and "
                 "anti-censor tags are added for you, and 1girl/solo if you forget. "
                 "lustify/pornmaster/biglove: tags or a short description. "
-                "zimage/qwen/flux: plain sentences. Be specific: body, hair, outfit "
+                "zimage/qwen/flux and the other families: plain sentences. Be specific: body, hair, outfit "
                 "or what's exposed, the act, expression, where. Explicit images are of "
                 "adults only: prompts describing minors are refused.\n"
                 "- prompt = only what SHOULD be in the image. Never write what you "

@@ -8,6 +8,7 @@ so each ecosystem only gets the fields its schema lists.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,10 @@ def build_input(
     op = "createVariant" if variant else "createImage"
     q = max(1, min(int(quantity), recipe.max_quantity))
 
+    if recipe.api:
+        return _api_input(recipe, prompt=prompt, width=width, height=height, steps=steps,
+                          negative=negative, quantity=q, seed=seed)
+
     # Flux.2 text-to-image has its own engine; its img2img runs on sdcpp.
     if recipe.engine == "flux2" and not variant:
         step: dict[str, Any] = {
@@ -97,6 +102,50 @@ def build_input(
     if variant:
         step["image"] = image_url
         step["strength"] = float(strength)
+    return step
+
+
+_FAL_SIZE_RATIOS = {
+    "square_hd": 1.0, "portrait_4_3": 3 / 4, "portrait_16_9": 9 / 16,
+    "landscape_4_3": 4 / 3, "landscape_16_9": 16 / 9,
+}
+
+
+def _nearest(ratio: float, options: dict[str, float]) -> str:
+    return min(options, key=lambda k: abs(math.log(options[k] / ratio)))
+
+
+def _ratio_of(aspect: str) -> float:
+    a, b = aspect.split(":")
+    return int(a) / int(b)
+
+
+def _api_input(recipe: Recipe, *, prompt: str, width: int, height: int, steps: int,
+               negative: str, quantity: int, seed: int | None) -> dict[str, Any]:
+    """Request for a non-sdcpp engine, shaped by the recipe's ``api`` spec:
+    only the fields that engine's schema lists (anything else is a 400)."""
+    api = recipe.api
+    step: dict[str, Any] = {"engine": recipe.engine, **api.get("fixed", {})}
+    if api.get("op"):
+        step["operation"] = "createImage"
+    step["prompt"] = prompt
+    size = api.get("size", "wh")
+    ratio = width / max(1, height)
+    if size == "wh":
+        step["width"], step["height"] = width, height
+    elif size == "aspect" and api.get("aspects"):
+        step["aspectRatio"] = _nearest(ratio, {a: _ratio_of(a) for a in api["aspects"]})
+    elif size == "image_size":
+        step["imageSize"] = _nearest(ratio, _FAL_SIZE_RATIOS)
+    if negative and recipe.negative:
+        step["negativePrompt"] = negative
+    if api.get("cfg"):
+        step[api["cfg"]] = recipe.cfg
+    if api.get("steps"):
+        step["steps"] = steps
+    step["quantity"] = quantity
+    if seed is not None and api.get("seed"):
+        step["seed"] = seed
     return step
 
 

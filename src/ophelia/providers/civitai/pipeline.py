@@ -130,6 +130,12 @@ class Plan:
         self.width, self.height, self.steps = render_settings(recipe, self.quality, self.aspect)
 
     @property
+    def buzz_label(self) -> str:
+        if self.recipe.cost == "api":
+            return "priced by Civitai"
+        return f"~{self.est_buzz} Buzz"
+
+    @property
     def est_buzz(self) -> float:
         return round(
             self.recipe.estimate_buzz(self.width, self.height, self.steps, self.quantity), 1
@@ -196,6 +202,9 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
                             "or a checkpoint AIR from search_civitai_models.")
         recipe = named
         notes.append(f"recipe {recipe.key}")
+        if req.nsfw and recipe.cost == "api" and recipe.engine != "comfy":
+            notes.append(f"{recipe.key} is a hosted engine with its own filter; explicit "
+                         "prompts may be blocked (chroma or the auto pick won't be)")
     else:
         recipe, fallback = _auto_recipe(settings, req, loras, lora_base, notes)
 
@@ -432,7 +441,7 @@ def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "") -> str
         bits.append(f"strength={record['strength']}")
     if record.get("seed") is not None:
         bits.append(f"seed={record['seed']}")
-    bits.append(f"~{plan.est_buzz} Buzz")
+    bits.append(plan.buzz_label)
     if plan.notes:
         bits.append("picked: " + "; ".join(plan.notes))
     missing = [t for t in plan.lora_triggers if t.lower() not in plan.prompt.lower()]
@@ -609,7 +618,7 @@ async def run_generation(
         log.info("civitai.pending", workflow_id=wf_id, waited=round(_now() - started))
         return (
             f"Pending: still rendering on Civitai after {wait_total}s (workflow {wf_id}, "
-            f"~{plan.est_buzz} Buzz). It'll be sent here automatically when it finishes, "
+            f"{plan.buzz_label}). It'll be sent here automatically when it finishes, "
             "no need to generate it again."
         )
 
