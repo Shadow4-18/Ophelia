@@ -351,6 +351,15 @@ class Settings(BaseSettings):
             "checkpoint's family, unless she picked LoRAs herself."
         ),
     )
+    image_self_check: str = Field(
+        default="people",
+        alias="OPHELIA_IMAGE_SELF_CHECK",
+        description=(
+            "She looks at a generated image before sending it and remakes it once if "
+            "it's wrong (who's in it, merged bodies, the wrong act). people: scenes "
+            "with two or more people or a man; all: any image with a person; off."
+        ),
+    )
     civitai_checkpoints: str = Field(
         default="",
         alias="OPHELIA_CIVITAI_CHECKPOINTS",

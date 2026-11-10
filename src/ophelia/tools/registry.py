@@ -653,10 +653,15 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         count: int = 1,
         attempts: int = 1,
         style_image: str | None = None,
+        pose_image: str | None = None,
     ) -> str:
         style_note = ""
+        style_terms: list[str] = []
         if (style_image or "").strip():
-            prompt, style_note = await self._apply_style_reference(prompt, style_image)
+            prompt, style_note, style_terms = await self._apply_style_reference(
+                prompt, style_image)
+        if not self._is_owner:
+            pose_image = None
         # Guests get 1:1 only — wider aspect ratios cost more tokens and the
         # experience is "see I can make images," not "produce wallpaper for
         # strangers." Owner is unaffected. Same for batches, retries and
@@ -706,29 +711,79 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             attempts=attempts,
             deliver_to=self._current_sender_channel or "",
             fallback_mature=mature_ok,
+            pose_image=(pose_image or "").strip() or None,
+            style_terms=style_terms or None,
+        )
+        result = await self._self_check_image(
+            result, prompt,
+            lambda: generate_image(
+                self.settings, self.stack, prompt, aspect_ratio=aspect_ratio,
+                artifacts_dir=self.artifacts_dir, nsfw=nsfw, model=model, loras=loras,
+                negative_prompt=negative_prompt, image=image, strength=strength,
+                auto_pick=auto_pick, quality=quality, count=count, attempts=1,
+                deliver_to=self._current_sender_channel or "", fallback_mature=mature_ok,
+                pose_image=(pose_image or "").strip() or None,
+                style_terms=style_terms or None,
+            ),
         )
         if style_note:
             result = f"{style_note}\n{result}"
         return await self._finalize_media_tool_result(result)
 
-    async def _apply_style_reference(self, prompt: str, source: str) -> tuple[str, str]:
-        """(prompt with the reference's style words, a note for the result)."""
+    async def _apply_style_reference(self, prompt: str,
+                                     source: str) -> tuple[str, str, list[str]]:
+        """(prompt with the reference's style words, a note for the result,
+        style terms for a Civitai style-LoRA search)."""
         from ophelia.media import style_reference as sr
 
         if not self._is_owner:
-            return prompt, ""
+            return prompt, "", []
         try:
             path = await sr.local_copy(source, self.artifacts_dir / "style_refs")
             ref = await sr.analyze_style(self.settings, path, stack=self.stack)
         except Exception as e:
             log.warning("style_ref.failed", error=str(e))
-            return prompt, f"(Style reference unreadable: {e}; made it from the prompt alone.)"
+            return (prompt, f"(Style reference unreadable: {e}; made it from the prompt "
+                    "alone.)", [])
         if not ref.ok:
-            return prompt, "(Couldn't read the reference's style; made it from the prompt alone.)"
+            return (prompt, "(Couldn't read the reference's style; made it from the prompt "
+                    "alone.)", [])
         styled = sr.apply_style(prompt, ref)
-        return styled, (f"Style from the reference ({ref.medium}): {', '.join(ref.tags)}. "
-                        "For a closer match, search_civitai_models type=LORA with those "
-                        "words and pass the LoRA.")
+        return (styled, f"Style from the reference ({ref.medium}): {', '.join(ref.tags)}.",
+                list(ref.tags))
+
+    async def _self_check_image(self, result: str, prompt: str, again) -> str:
+        """Look at the picture before it's sent; a wrong one (cast, merged
+        bodies, wrong act) is made once more and the better one goes out."""
+        from ophelia.media import self_check
+
+        if not self._is_owner or not isinstance(result, str):
+            return result
+        if result.startswith(("Refused", "Pending")) or not self_check.wants_check(
+                self.settings, prompt):
+            return result
+        paths = artifact_paths_in_text(result)
+        if not paths:
+            return result
+        first = await self_check.check_image(self.settings, paths[0], prompt, stack=self.stack)
+        if first.ok:
+            return result
+        try:
+            retry = await again()
+        except Exception as e:
+            log.warning("self_check.retry_failed", error=str(e)[:200])
+            return f"{result}\n(Self-check: {first.problem}. Retry failed: {e})"
+        retry_paths = artifact_paths_in_text(retry) if isinstance(retry, str) else []
+        if not retry_paths:
+            return f"{result}\n(Self-check: {first.problem}. Retry failed: {str(retry)[:200]})"
+        second = await self_check.check_image(self.settings, retry_paths[0], prompt,
+                                              stack=self.stack)
+        if second.ok:
+            return (f"{retry}\n(Self-check: the first image had {first.problem}, so it was "
+                    "made again; this one checks out. Only this one was sent.)")
+        return (f"{retry}\n(Self-check: the first image had {first.problem}; the remake "
+                f"still has {second.problem}. Only the remake was sent. Say so honestly "
+                "if he notices; a different model or simpler scene may work better.)")
 
     async def _search_civitai_models(
         self,

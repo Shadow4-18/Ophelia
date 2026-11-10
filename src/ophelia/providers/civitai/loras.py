@@ -152,3 +152,50 @@ async def pick_loras(settings: Any, recipe: Recipe, prompt: str) -> tuple[dict[s
         triggers.extend(lora.get("triggers") or [])
         notes.append(f"auto LoRA {lora['name']} @{base_w}")
     return loras, triggers, notes
+
+
+# --- style LoRAs (from a style reference) ------------------------------------
+
+# Style words worth a LoRA search; generic ones ("high contrast", "soft
+# lighting") match thousands of unrelated LoRAs.
+_STYLEISH = re.compile(
+    r"\b(style|anime|manga|watercolou?r|oil|painting|painted|ink|sketch|lineart|line art|"
+    r"cel|pixel|comic|retro|vintage|\d0s|ukiyo|impasto|pastel|gouache|chibi|noir|"
+    r"cyberpunk|vaporwave|synthwave|gothic|art nouveau|art deco|pop art|graffiti|"
+    r"airbrush|crayon|charcoal|pencil|woodblock|lowpoly|low poly|claymation|"
+    r"polaroid|film|analog|vhs|cinematic|ghibli|disney|pixar)\b", re.I)
+_STOP = {"style", "art", "with", "and", "the", "colors", "colours", "look", "shading"}
+
+
+def style_queries(terms: list[str], limit: int = 3) -> list[tuple[str, str]]:
+    """(search query, name must match) for the most distinctive style terms."""
+    out: list[tuple[str, str]] = []
+    for term in terms:
+        t = (term or "").strip().lower()
+        if not t or not _STYLEISH.search(t):
+            continue
+        words = [w for w in re.findall(r"[a-z0-9]+", t) if len(w) >= 3 and w not in _STOP]
+        if not words:
+            continue
+        out.append((t, "|".join(re.escape(w) for w in words)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def pick_style_lora(settings: Any, recipe: Recipe,
+                          terms: list[str]) -> tuple[dict[str, float], list[str], list[str]]:
+    """({air: weight}, trigger tags, notes): the most downloaded LoRA in the
+    model's family for the reference's most distinctive style term."""
+    if not (enabled(settings) and recipe.loras and recipe.family in _FAMILY_BASE):
+        return {}, [], []
+    scored = feedback.scores(settings)
+    for query, must in style_queries(terms):
+        lora = await _find(settings, query, must, "", recipe.family)
+        if not lora:
+            continue
+        if feedback.multiplier(scored.get(lora["air"])) < 0.6:
+            continue
+        return ({lora["air"]: 0.6}, list(lora.get("triggers") or []),
+                [f"style LoRA {lora['name']} @0.6 (for '{query}')"])
+    return {}, [], []
