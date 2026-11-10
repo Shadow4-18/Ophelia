@@ -74,6 +74,7 @@ _DOING_PREFIXES = ("generate_", "text_to_speech", "send_file", "phone_", "game_"
 # tool ran: nothing went out, and she then blamed the tool or him.
 _CLAIMED = re.compile(
     r"(\bhere('?s| is) (it|one|this one|your|the (pic|photo|image|shot))|\bhere you go\b|"
+    r"\bhere (it is|they are)\b|"
     r"\blast one\b|\bthis is (the|my) (face|one|pic|photo|shot|look)\b|"
     r"\b(just )?sent (it|you|two|three|another|one|them)\b|"
     r"\b(two|three) more( just now)?\b|\bone more (pic|photo|image|shot)\b|"
@@ -82,14 +83,55 @@ _CLAIMED = re.compile(
 )
 
 
-def claimed_delivery(reply: str) -> str:
+# Weaker wording that only means "I sent it" when a picture is in play
+# (he asked for one, or her reply talks about one): "enjoy", "how's that?".
+_CLAIMED_WEAK = re.compile(
+    r"(\bthere you go\b|\benjoy\b|\bhow'?s (that|this)\b|\bhope you like\b|"
+    r"\blike (it|what you see)\b|\bcheck (it|this|that) out\b|\bvoil[aà]\b|\bta-?da\b|"
+    r"\bas promised\b|\b(just )?made (you|this|it|that)\b|\bthis one'?s for you\b|"
+    r"\b(sending|attached|attaching)\b|\bfresh(ly)? (made|baked|out)\b|"
+    r"📸|🖼)",
+    re.I | re.M,
+)
+_PICTURE = re.compile(
+    r"\b(pics?|pictures?|photos?|images?|selfies?|shots?|nudes?|drawings?|render|"
+    r"generat\w*|draw\w*|voice (note|message)|send (me )?(one|it))\b", re.I)
+
+
+def claimed_delivery(reply: str, owner_text: str = "") -> str:
     """The line where she talks as if she sent something ("" if none)."""
     lines = [ln.strip() for ln in (reply or "").replace("[[break]]", "\n").splitlines()
              if ln.strip()]
     for line in lines:
         if _CLAIMED.search(line):
             return line[:200]
+    if _PICTURE.search(owner_text or "") or _PICTURE.search(reply or ""):
+        for line in lines:
+            if _CLAIMED_WEAK.search(line):
+                return line[:200]
     return ""
+
+
+_OK_RESULT = re.compile(r"image saved to|saved to |sent to the user|^pending:|audio saved|"
+                        r"video saved|^sent file", re.I | re.M)
+
+
+def delivery_status(doing_results: list[tuple[str, str]] | None, delivered: int = 0,
+                    queued: int = 0) -> tuple[str, str]:
+    """("ok" | "failed" | "none", why) for what this turn actually sent.
+    "ok": something reached him or is on its way (Civitai pending, queued
+    file). "failed": a tool ran but nothing came of it. "none": nothing ran."""
+    if delivered or queued:
+        return "ok", ""
+    results = list(doing_results or [])
+    if not results:
+        return "none", ""
+    for _, res in results:
+        if _OK_RESULT.search(res or ""):
+            return "ok", ""
+    name, res = results[-1]
+    first = (res or "no result").strip().splitlines()[0][:220]
+    return "failed", f"{name}: {first}"
 
 
 def phantom_note(line: str) -> str:
@@ -97,6 +139,13 @@ def phantom_note(line: str) -> str:
             "but no tool ran this turn, so nothing reached him. Make it now: call "
             "generate_image (or the right tool) for real. Don't blame the tool or "
             "his phone, and don't describe it instead of sending it.]")
+
+
+def failed_note(line: str, why: str) -> str:
+    return (f"[Reality check: you were about to tell him \"{line}\", but it didn't send. "
+            f"The tool said: {why}. He hasn't seen your message yet. Fix it and try "
+            "again (different model or wording if it was refused), or tell him plainly "
+            "what went wrong. Don't say it was sent.]")
 
 
 def imminent_promise(reply: str) -> str:

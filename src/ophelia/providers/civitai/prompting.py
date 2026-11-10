@@ -152,14 +152,130 @@ def is_solo(text: str) -> bool:
     return not any(_has_word(low, w) for w in _PARTNER)
 
 
+_NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "both": 2, "pair of": 2, "couple of": 2}
+_WOMEN_WORDS = r"(?:women|woman|girls?|ladies|lady|females?|wives|wife|milfs?|sisters?|maids?)"
+_MEN_WORDS = r"(?:men|man|boys?|guys?|males?|husbands?|boyfriends?|dudes?|gentlemen)"
+_COUNTED = re.compile(
+    r"(?<![a-z0-9])(a|an|one|two|three|four|five|both|pair of|couple of|[1-5])\s+"
+    r"(?:\w+\s+){0,3}?(" + _WOMEN_WORDS + "|" + _MEN_WORDS + r")(?![a-z0-9])")
+_MALE_ONE = ("man", "boy", "guy", "male", "husband", "boyfriend", "1boy", "he", "him",
+             "his", "dude", "bf", "stepbro")
+# Acts that imply a man is in the picture (unless the scene is all women).
+_MALE_ACTS = ("penis", "cock", "dick", "fellatio", "blowjob", "handjob", "paizuri",
+              "titjob", "cum", "cumshot", "creampie", "missionary", "doggystyle",
+              "cowgirl position", "reverse cowgirl", "hetero", "sex from behind",
+              "vaginal", "anal", "deepthroat", "facial", "bukkake")
+_ALL_WOMEN = ("yuri", "lesbian", "lesbians", "futanari", "futa", "strap-on", "strapon",
+              "2girls", "3girls", "girls only", "scissoring")
+_COUNT_TAGS = re.compile(r"(?<![a-z0-9])([1-6])\+?(girls?|boys?)(?![a-z0-9])")
+
+
+def cast(text: str) -> tuple[int, int]:
+    """(women, men) the prompt describes, 0 when it doesn't say. Count tags
+    (2girls, 1boy) win; then "two women", "a man"; then words that imply
+    someone (she/her, an act that needs a man)."""
+    low = (text or "").lower()
+    women = men = 0
+    for n, kind in _COUNT_TAGS.findall(low):
+        if kind.startswith("girl"):
+            women = max(women, int(n))
+        else:
+            men = max(men, int(n))
+    tagged = bool(women or men)
+    for num, noun in ([] if tagged else _COUNTED.findall(low)):
+        n = _NUM.get(num, 1)
+        if re.fullmatch(_WOMEN_WORDS, noun):
+            women = max(women, n if not noun.endswith(("s", "ies")) or n > 1 else 2)
+        else:
+            men = max(men, n if not noun.endswith("s") or n > 1 else 2)
+    if not women and any(_has_word(low, w) for w in _FEMALE):
+        women = 1
+    all_women = any(_has_word(low, w) for w in _ALL_WOMEN)
+    if all_women and women < 2 and not men:
+        women = 2
+    if not men and not all_women:
+        if any(_has_word(low, w) for w in _MALE_ONE) or any(_has_word(low, w)
+                                                             for w in _MALE_ACTS):
+            men = 1
+    if tagged:
+        return women, men
+    if (_has_word(low, "threesome") or _has_word(low, "mmf")) and women + men < 3:
+        if _has_word(low, "mmf") or men >= 1 and not _has_word(low, "ffm"):
+            men = max(men, 2)
+            women = max(women, 1)
+        else:
+            women, men = max(women, 2), max(men, 1)
+    if _has_word(low, "ffm"):
+        women, men = max(women, 2), max(men, 1)
+    return women, men
+
+
+_INTIMATE = ("sex", "fuck", "fucking", "kiss", "kissing", "nsfw", "nude", "naked",
+             "couple", "lovers", "making out", "cuddling", "lesbian", "yuri", "explicit",
+             "threesome", "orgy") + _MALE_ACTS
+
+
+def cast_tags(women: int, men: int, *, intimate: bool = True) -> list[str]:
+    """Danbooru count tags for a cast: 1boy, 1girl, hetero / 2girls, yuri...
+    hetero/yuri only for intimate scenes (on danbooru they mean that)."""
+    tags: list[str] = []
+    if women:
+        tags.append(f"{women}girl" + ("s" if women > 1 else ""))
+    if men:
+        tags.append(f"{men}boy" + ("s" if men > 1 else ""))
+    if women > 1:
+        tags.append("multiple girls")
+    if men > 1:
+        tags.append("multiple boys")
+    if intimate and women and men:
+        tags.append("hetero")
+    elif intimate and women > 1 and not men:
+        tags.append("yuri")
+    if women + men == 1:
+        tags.append("solo")
+    return tags
+
+
+def cast_negatives(text: str) -> list[str]:
+    """Negative tags that stop the cast changing: a man drawn as a woman in a
+    hetero scene, a man appearing in a scene of two women, extra people."""
+    low = (text or "").lower()
+    women, men = cast(low)
+    if women + men < 2:
+        return []
+    neg: list[str] = []
+    if women and men and not any(_has_word(low, w) for w in _ALL_WOMEN):
+        neg.append("futanari")
+        if women == 1:
+            neg += ["yuri", "2girls"]
+    if women > 1 and not men and not any(_has_word(low, w) for w in _MALE_ACTS):
+        neg += ["1boy", "male focus"]
+    total = women + men
+    if total == 2:
+        neg += ["3girls", "3boys", "extra person"]
+    neg.append("merged bodies")
+    return neg
+
+
 def ensure_subject(text: str) -> str:
-    """Danbooru models anchor on 1girl/solo: add them when the prompt says
-    "her" or "a woman" but has no count tag."""
+    """Danbooru models anchor on count tags: put the cast first (1girl, solo
+    / 1boy, 1girl, hetero / 2girls, yuri). Without them a "man and woman"
+    prompt came out as two women, or one person with both bodies merged."""
     low = text.lower()
-    if _COUNT_TAG.search(low) or not any(_has_word(low, w) for w in _FEMALE):
+    women, men = cast(low)
+    if not women and not men:
         return text
-    tags = ["1girl"] + (["solo"] if is_solo(low) else [])
-    return ", ".join(tags) + ", " + text
+    have = {_tag_key(t) for t in split_tags(text)}
+    intimate = any(_has_word(low, w) for w in _INTIMATE)
+    want = [t for t in cast_tags(women, men, intimate=intimate) if _tag_key(t) not in have]
+    if _COUNT_TAG.search(low):
+        # She wrote count tags already: add the missing person and the
+        # tags that go with them, never "solo".
+        want = [t for t in want if t != "solo"]
+    if not want:
+        return text
+    return ", ".join(want) + ", " + text
 
 
 # --- negatives that ended up in the prompt -----------------------------------
@@ -333,9 +449,10 @@ _NEGATIVES: dict[str, str] = {
 _UNCENSOR = "censored, mosaic censoring, bar censor"
 
 
-def negative_for(recipe: Recipe, *, nsfw: bool) -> str:
+def negative_for(recipe: Recipe, *, nsfw: bool, prompt: str = "") -> str:
     if not recipe.negative:
         return ""
+    cast_neg = ", ".join(cast_negatives(prompt)) if recipe.prompt_style != "natural" else ""
     if recipe.family == "sdxl" and recipe.style == "realistic":
         neg = f"{_NEGATIVES['anatomy']}, {_NEGATIVES['realistic']}"
     elif recipe.family == "sdxl":
@@ -350,6 +467,8 @@ def negative_for(recipe: Recipe, *, nsfw: bool) -> str:
         neg = f"{neg}, anime, cartoon, 3d render"  # realistic Pony/IL merges drift to 2D
     if nsfw and neg:
         neg = f"{neg}, {_ADULT_NEGATIVE}"
+    if cast_neg:
+        neg = f"{neg}, {cast_neg}" if neg else cast_neg
     return neg
 
 

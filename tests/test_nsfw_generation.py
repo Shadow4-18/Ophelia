@@ -73,8 +73,10 @@ def test_tidy_and_subject_tags():
     assert tidy_tags("nude, long hair, , long_hair, NUDE, (red eyes:1.2, glowing)") == \
         "nude, long hair, (red eyes:1.2, glowing)"
     assert ensure_subject("her, nude, on a bed") == "1girl, solo, her, nude, on a bed"
-    assert ensure_subject("her riding him, sex, 1boy").startswith("her")  # has a count tag
-    assert ensure_subject("woman, man, sex").startswith("1girl, woman")  # no solo with a partner
+    # A count tag for him, and "her": she gets hers too (no solo, ever, with a partner).
+    assert ensure_subject("her riding him, sex, 1boy") == "1girl, hetero, her riding him, sex, 1boy"
+    # A man in the scene gets 1boy, or he was drawn as a second woman.
+    assert ensure_subject("woman, man, sex") == "1girl, 1boy, hetero, woman, man, sex"
     assert ensure_subject("sunset over the sea") == "sunset over the sea"
 
 

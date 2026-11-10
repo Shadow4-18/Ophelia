@@ -132,8 +132,10 @@ def add_variety(
     for category, (_, tags, phrases) in _BANKS.items():
         if covered(text, category):
             continue
-        if category == "pose" and not is_solo(text):
-            continue  # a pose for one person would fight the scene she described
+        if category in ("pose", "expression") and not is_solo(text):
+            # A pose or face for one person would fight the scene she
+            # described, or land on the wrong person ("biting her lip" on him).
+            continue
         options = list(phrases if natural else tags)
         recent = state.get(category, [])
         fresh = [o for o in options if o not in recent] or options

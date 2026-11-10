@@ -126,7 +126,8 @@ class Plan:
         self.recipe = recipe
         self.prompt = format_prompt(recipe, self.raw_prompt, nsfw=self.nsfw)
         self.negative, self.embeddings = build_negative(
-            recipe, nsfw=self.nsfw, extra=self.extra_negative, embeddings=self.use_embeddings)
+            recipe, nsfw=self.nsfw, extra=self.extra_negative, embeddings=self.use_embeddings,
+            prompt=self.raw_prompt)
         self.width, self.height, self.steps = render_settings(recipe, self.quality, self.aspect)
 
     @property
@@ -272,6 +273,7 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     use_emb = getattr(settings, "civitai_negative_embeddings", False) is True
     extra_negative = merge_negatives(req.negative_prompt or "", ", ".join(moved))
     negative, embeddings = build_negative(recipe, nsfw=req.nsfw, extra=extra_negative,
+                                          prompt=prompt,
                                           embeddings=use_emb)
     return Plan(
         recipe=recipe,
@@ -344,14 +346,15 @@ def _default_style(settings: Settings) -> str:
 
 
 def build_negative(recipe: Recipe, *, nsfw: bool, extra: str = "",
-                   embeddings: bool = True) -> tuple[str, list[str]]:
+                   embeddings: bool = True, prompt: str = "") -> tuple[str, list[str]]:
     """(negative prompt, embedding AIRs): negative embedding trigger words,
     the model's tuned negatives, then hers. Hers adds to the defaults; it
     never replaces them (that dropped the anatomy terms)."""
     if not recipe.negative:
         return "", []
     emb = negative_embeddings(recipe) if embeddings else []
-    neg = merge_negatives(", ".join(t for _, t in emb), negative_for(recipe, nsfw=nsfw), extra)
+    neg = merge_negatives(", ".join(t for _, t in emb), negative_for(recipe, nsfw=nsfw, prompt=prompt),
+                         extra)
     return neg, [air for air, _ in emb]
 
 
