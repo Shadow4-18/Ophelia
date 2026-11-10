@@ -405,10 +405,14 @@ def format_prompt(recipe: Recipe, prompt: str, *, nsfw: bool) -> str:
 
 
 _NEGATIVES: dict[str, str] = {
-    "illustrious": "bad quality, worst quality, worst detail, sketch, watermark, signature",
+    # Patreon/artist marks: much of the anime training art carried them.
+    "illustrious": (
+        "bad quality, worst quality, worst detail, sketch, watermark, signature, "
+        "patreon logo, patreon username, artist name"
+    ),
     "pony": (
         "score_6, score_5, score_4, worst quality, low quality, bad anatomy, bad hands, "
-        "watermark, signature"
+        "watermark, signature, patreon logo, patreon username, artist name"
     ),
     "sdxl": (
         "worst quality, low quality, blurry, jpeg artifacts, bad anatomy, bad hands, "
