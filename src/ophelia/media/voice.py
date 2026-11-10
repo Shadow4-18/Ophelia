@@ -192,33 +192,46 @@ def _join_wavs(parts: list[tuple[Path, float]], out_path: Path) -> Path | None:
     return out_path
 
 
+_MIME = {".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg",
+         ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+         ".webm": "audio/webm", ".flac": "audio/flac"}
+
+
 async def transcribe_audio(
     audio_path: Path,
     *,
     bearer: str,
     base_url: str,
 ) -> str:
-    url = f"{base_url.rstrip('/')}/audio/transcriptions"
+    """Speech to text. xAI: POST /v1/stt (multipart ``file``, model optional,
+    transcript in ``text``); it has no /audio/transcriptions route, so the old
+    call 404'd on both tries. Other OpenAI-compatible servers get
+    /audio/transcriptions with whisper-1. An empty transcript is "" (silence),
+    not an error."""
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    mime = _MIME.get(audio_path.suffix.lower(), "application/octet-stream")
+    if "api.x.ai" in root:
+        attempts = [(f"{root}/v1/stt", {})]
+    else:
+        attempts = [(f"{root}/v1/stt", {}),
+                    (f"{root}/v1/audio/transcriptions", {"model": "whisper-1"})]
+    headers = {"Authorization": f"Bearer {bearer}"}
+    last = ""
     async with httpx.AsyncClient(timeout=120.0) as http:
-        with audio_path.open("rb") as f:
-            r = await http.post(
-                url,
-                headers={"Authorization": f"Bearer {bearer}"},
-                files={"file": (audio_path.name, f, "audio/ogg")},
-                data={"model": "grok-audio"},
-            )
-        if r.status_code == 404:
-            url2 = f"{base_url.rstrip('/')}/transcriptions"
+        for url, data in attempts:
             with audio_path.open("rb") as f:
-                r = await http.post(
-                    url2,
-                    headers={"Authorization": f"Bearer {bearer}"},
-                    files={"file": (audio_path.name, f)},
-                    data={"model": "whisper-1"},
-                )
-        r.raise_for_status()
-        data = r.json()
-    return (data.get("text") or data.get("transcript") or "").strip()
+                # httpx writes form fields before the file, as /v1/stt requires.
+                r = await http.post(url, headers=headers, data=data,
+                                    files={"file": (audio_path.name, f, mime)})
+            if r.status_code in (404, 405):
+                last = f"HTTP {r.status_code} {url}"
+                continue
+            r.raise_for_status()
+            body = r.json()
+            return (body.get("text") or body.get("transcript") or "").strip()
+    raise RuntimeError(f"speech-to-text failed: {last}")
 
 
 def resolve_tts_provider(settings: Settings) -> str:
