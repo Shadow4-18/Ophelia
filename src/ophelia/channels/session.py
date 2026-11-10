@@ -596,6 +596,7 @@ class ChannelSession:
             tools = self.agent.tools
             if hasattr(tools, "_tools_called"):
                 tools._tools_called = []  # what this turn actually does
+                tools._doing_results = []
             if not out:
                 out = await self.agent.run_turn(
                     channel, text, is_owner=is_owner, system_extra=turn_extra
@@ -621,6 +622,8 @@ class ChannelSession:
             if is_owner:
                 self.drives.on_user_message(text)
                 await self.memory.save_drives(self.drives)
+            if is_owner and out:
+                out = await self._catch_phantom(channel, text, out, turn_extra)
             self.signals.last_agent_message_at = time.time()
             for i, chunk in enumerate(split_messages(out)):
                 cleaned = strip_consciousness_tick_leak(chunk)
@@ -676,14 +679,6 @@ class ChannelSession:
         called = list(getattr(self.agent.tools, "_tools_called", None) or [])
         if ft.did_something(called):
             return
-        claimed = ft.claimed_delivery(out)
-        if claimed:
-            # Talked as if it was sent, but nothing ran: fix it right away.
-            log.warning("follow_through.phantom", channel=channel, line=claimed[:80],
-                        tools=called or None)
-            asyncio.create_task(self._follow_through(
-                channel, claimed, 3.0, time.time(), plumbing, note=ft.phantom_note(claimed)))
-            return
         line = ft.imminent_promise(out)
         if not line:
             return
@@ -691,6 +686,56 @@ class ChannelSession:
         log.info("follow_through.scheduled", channel=channel, line=line[:80],
                  delay=round(delay))
         asyncio.create_task(self._follow_through(channel, line, delay, time.time(), plumbing))
+
+    async def _catch_phantom(self, channel: str, owner_text: str, out: str,
+                             turn_extra: str = "") -> str:
+        """Her reply says she sent a picture but nothing went out (no tool ran,
+        or it failed): don't send that. Redo the turn once with the truth, so
+        he gets the image (or an honest reason) instead of a claim."""
+        from ophelia.channels.proactive_filter import strip_consciousness_tick_leak
+        from ophelia.mind import follow_through as ft
+
+        if channel in self._following_through:
+            return out
+        claimed = ft.claimed_delivery(out, owner_text)
+        if not claimed:
+            return out
+        tools = self.agent.tools
+        status, why = ft.delivery_status(
+            list(getattr(tools, "_doing_results", None) or []),
+            delivered=len(getattr(tools, "_delivered_artifacts", None) or ()),
+            queued=len(getattr(tools, "_pending_artifacts", None) or ()),
+        )
+        if status == "ok":
+            return out
+        log.warning("follow_through.phantom_caught", channel=channel, status=status,
+                    line=claimed[:80], why=why[:160] or None)
+        note = ft.failed_note(claimed, why) if status == "failed" else ft.phantom_note(claimed)
+        self._following_through.add(channel)
+        try:
+            if hasattr(tools, "_tools_called"):
+                tools._tools_called = []
+                tools._doing_results = []
+            again = await self.agent.run_turn(channel, note, is_owner=True,
+                                              system_extra=turn_extra)
+        except Exception as e:
+            log.warning("follow_through.phantom_retry_failed", error=str(e))
+            return out
+        finally:
+            self._following_through.discard(channel)
+        again = strip_consciousness_tick_leak(again or "")
+        status2, _ = ft.delivery_status(
+            list(getattr(tools, "_doing_results", None) or []),
+            delivered=len(getattr(tools, "_delivered_artifacts", None) or ()),
+            queued=len(getattr(tools, "_pending_artifacts", None) or ()),
+        )
+        log.info("follow_through.phantom_retry", channel=channel, status=status2)
+        if status2 != "ok" and ft.claimed_delivery(again, owner_text):
+            # Still claiming with nothing sent: keep only the lines that don't.
+            keep = [ln for ln in (again or "").splitlines()
+                    if not ft.claimed_delivery(ln, owner_text)]
+            again = "\n".join(keep).strip()
+        return again
 
     async def _follow_through(self, channel: str, line: str, delay: float, since: float,
                               plumbing: dict, note: str = "") -> None:

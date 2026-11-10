@@ -183,6 +183,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "- img2img: image=<path from list_inbox_images or URL>, strength "
                 "0.6-0.8 (lower keeps more of the source). SFW edits run on Grok, "
                 "explicit ones on Civitai.\n"
+                "- Two or more people: name each one and keep their details "
+                "together and different (hair colour, build, skin). Tags: count tags "
+                "first (1girl, 1boy / 2girls), then the act, then 'girl: <her details>', "
+                "'boy: <his details>'; count and hetero/yuri tags are added if you "
+                "forget. Sentences: one sentence per person, then who does what to whom. "
+                "Two people work far better than three. For photoreal couples, "
+                "model=chroma (reads full sentences) keeps people apart better.\n"
+                "- Match a reference's art style: style_image=<path or URL> (its style "
+                "words are added; the content is your prompt). image= is for editing "
+                "that picture itself.\n"
                 "- If a Civitai image is slow you'll get 'Pending:'; it is delivered "
                 "automatically when done, so don't generate it again."
             ),
@@ -249,6 +259,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "strength": {
                         "type": "number",
                         "description": "img2img change amount 0-1 (default 0.7).",
+                    },
+                    "style_image": {
+                        "type": "string",
+                        "description": (
+                            "Reference image whose ART STYLE to match (path from "
+                            "list_inbox_images or URL). Only its style is used (medium, "
+                            "lines, shading, palette, lighting); the content comes from "
+                            "your prompt. Use this, not image=, for 'in the style of this'."
+                        ),
                     },
                 },
                 "required": ["prompt"],

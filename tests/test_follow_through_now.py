@@ -135,17 +135,66 @@ def test_his_did_not_get_it_needs_a_real_turn(text):
     assert ft.asks_for_action(text)
 
 
-@pytest.mark.asyncio
-async def test_phantom_send_is_corrected_right_away(monkeypatch):
+def _phantom_session(redo_reply: str, *, redo_sends: bool):
     s = _session()
-    s._maybe_follow_through("telegram:1", "Last one. And this is the face I want you on.",
-                            reply=AsyncMock(), media_reply=None, log_context=None,
-                            actions=None)
-    import ophelia.channels.session as sess
+    tools = SimpleNamespace(_tools_called=[], _doing_results=[], _delivered_artifacts=set(),
+                            _pending_artifacts=[])
+    s.agent = SimpleNamespace(tools=tools)
 
-    real_sleep = asyncio.sleep
-    monkeypatch.setattr(sess.asyncio, "sleep", lambda s_: real_sleep(0))
-    await real_sleep(0.05)
-    s.handle_chat.assert_awaited_once()
-    note = s.handle_chat.await_args.args[1]
-    assert "no tool ran" in note and "generate_image" in note
+    async def run_turn(channel, text, **kw):
+        s.redo_note = text
+        if redo_sends:
+            tools._doing_results.append(("generate_image", "Image saved to /a/x.png"))
+            tools._delivered_artifacts.add("/a/x.png")
+        return redo_reply
+
+    s.agent.run_turn = run_turn
+    return s
+
+
+@pytest.mark.asyncio
+async def test_phantom_claim_is_never_sent_and_the_turn_is_redone():
+    s = _phantom_session("Here you go 😈", redo_sends=True)
+    out = await s._catch_phantom("telegram:1", "send me one",
+                                 "Last one. And this is the face I want you on.")
+    assert out == "Here you go 😈"
+    assert "no tool ran" in s.redo_note and "generate_image" in s.redo_note
+    assert "telegram:1" not in s._following_through
+
+
+@pytest.mark.asyncio
+async def test_failed_generation_claim_gets_the_real_reason():
+    s = _phantom_session("Civitai refused that one, trying another model in a sec.",
+                         redo_sends=False)
+    s.agent.tools._doing_results.append(("generate_image", "Civitai refused: HTTP 400"))
+    out = await s._catch_phantom("telegram:1", "send a pic", "There you go, enjoy 😈")
+    assert "HTTP 400" in s.redo_note and "Don't say it was sent" in s.redo_note
+    assert out.startswith("Civitai refused")
+
+
+@pytest.mark.asyncio
+async def test_still_claiming_after_redo_drops_the_claim_lines():
+    s = _phantom_session("Here you go.\nYou're welcome.", redo_sends=False)
+    out = await s._catch_phantom("telegram:1", "pic?", "Here it is.")
+    assert out == "You're welcome."
+
+
+@pytest.mark.asyncio
+async def test_real_delivery_is_left_alone():
+    s = _phantom_session("unused", redo_sends=False)
+    s.agent.tools._delivered_artifacts.add("/a/x.png")
+    assert await s._catch_phantom("telegram:1", "pic", "Here you go") == "Here you go"
+    s.agent.tools._delivered_artifacts.clear()
+    s.agent.tools._doing_results.append(("generate_image", "Pending: still rendering"))
+    assert await s._catch_phantom("telegram:1", "pic", "Here you go") == "Here you go"
+
+
+@pytest.mark.parametrize("reply,owner,hit", [
+    ("Enjoy 😈", "send me a nude", True),
+    ("Enjoy your shift", "ok", False),
+    ("How's that for a selfie?", "", True),
+    ("There you go, as promised", "make me a pic", True),
+    ("Hope you like it", "", False),
+])
+def test_weak_claims_need_a_picture_in_play(reply, owner, hit):
+    assert bool(ft.claimed_delivery(reply, owner)) is hit

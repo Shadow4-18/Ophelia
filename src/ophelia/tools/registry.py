@@ -110,6 +110,7 @@ _TURN_FACTORIES: dict[str, Callable[[], Any]] = {
     "pending_artifacts": list,
     "delivered_artifacts": set,
     "tools_called": list,
+    "doing_results": list,
 }
 
 
@@ -162,6 +163,9 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
     _pending_artifacts = _turn_state("pending_artifacts")
     _delivered_artifacts = _turn_state("delivered_artifacts")
     _tools_called = _turn_state("tools_called")
+    # (tool, result head) for tools that make/send something: lets the
+    # chat loop tell a real delivery from a failed or never-run one.
+    _doing_results = _turn_state("doing_results")
     _proactive_messages_sent = _turn_state("proactive_sent")
 
     @property
@@ -599,6 +603,11 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             pass
         result = await handler(**args)
         self._remember_doing(name, args, result)
+        if name.startswith(("generate_", "text_to_speech", "send_file")):
+            try:
+                self._doing_results.append((name, str(result)[:400]))
+            except Exception:
+                pass
         if dropped and isinstance(result, str):
             # She invented a parameter (one crashed generate_image with
             # "unexpected keyword argument 'already_delivered'"): run with
@@ -643,7 +652,11 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         quality: str = "",
         count: int = 1,
         attempts: int = 1,
+        style_image: str | None = None,
     ) -> str:
+        style_note = ""
+        if (style_image or "").strip():
+            prompt, style_note = await self._apply_style_reference(prompt, style_image)
         # Guests get 1:1 only — wider aspect ratios cost more tokens and the
         # experience is "see I can make images," not "produce wallpaper for
         # strangers." Owner is unaffected. Same for batches, retries and
@@ -694,7 +707,28 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             deliver_to=self._current_sender_channel or "",
             fallback_mature=mature_ok,
         )
+        if style_note:
+            result = f"{style_note}\n{result}"
         return await self._finalize_media_tool_result(result)
+
+    async def _apply_style_reference(self, prompt: str, source: str) -> tuple[str, str]:
+        """(prompt with the reference's style words, a note for the result)."""
+        from ophelia.media import style_reference as sr
+
+        if not self._is_owner:
+            return prompt, ""
+        try:
+            path = await sr.local_copy(source, self.artifacts_dir / "style_refs")
+            ref = await sr.analyze_style(self.settings, path, stack=self.stack)
+        except Exception as e:
+            log.warning("style_ref.failed", error=str(e))
+            return prompt, f"(Style reference unreadable: {e}; made it from the prompt alone.)"
+        if not ref.ok:
+            return prompt, "(Couldn't read the reference's style; made it from the prompt alone.)"
+        styled = sr.apply_style(prompt, ref)
+        return styled, (f"Style from the reference ({ref.medium}): {', '.join(ref.tags)}. "
+                        "For a closer match, search_civitai_models type=LORA with those "
+                        "words and pass the LoRA.")
 
     async def _search_civitai_models(
         self,
