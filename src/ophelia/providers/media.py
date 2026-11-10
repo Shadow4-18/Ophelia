@@ -213,6 +213,7 @@ async def _dispatch_image_provider(
     quality: str = "",
     count: int = 1,
     deliver_to: str = "",
+    civitai_extra: dict | None = None,
 ) -> str:
     """Call a single image backend. Raises on hard misconfiguration."""
     if provider in ("xai-oauth", "xai") and image:
@@ -267,6 +268,7 @@ async def _dispatch_image_provider(
             quality=quality,
             count=count,
             deliver_to=deliver_to,
+            **(civitai_extra or {}),
         )
     if provider == "modelslab":
         return await _modelslab_image(
@@ -353,6 +355,8 @@ async def generate_image(
     attempts: int = 1,
     deliver_to: str = "",
     fallback_mature: bool = False,
+    pose_image: str | None = None,
+    style_terms: list[str] | None = None,
 ) -> str:
     """Route one image request. SFW goes to the image provider (Grok by
     default), explicit to the NSFW provider (Civitai). A failed generation is
@@ -387,6 +391,19 @@ async def generate_image(
                 f"img2img needs Grok or Civitai; {provider} can't take a source image. "
                 "Call again without image= for a fresh text-to-image."
             )
+
+    # Pose control only exists on Civitai (ControlNet on SDXL).
+    if pose_image and provider != "civitai":
+        if settings.civitai_api_key:
+            log.info("image.reroute_pose_to_civitai", from_provider=provider)
+            provider = "civitai"
+        else:
+            pose_image = None
+    civitai_extra: dict = {}
+    if pose_image:
+        civitai_extra["pose_image"] = pose_image
+    if style_terms:
+        civitai_extra["style_terms"] = list(style_terms)
 
     agent_model = (model or "").strip()
     # Civitai models must never hit xAI/OpenAI (404): an AIR URN, or one of
@@ -461,6 +478,8 @@ async def generate_image(
                         quality=quality,
                         count=count,
                         deliver_to=deliver_to,
+                        civitai_extra=civitai_extra if attempt_provider == "civitai"
+                        else None,
                     )
             except Exception as e:
                 errors.append(f"{attempt_provider}: {e}")
@@ -1083,6 +1102,8 @@ async def _civitai_image(
     quality: str = "",
     count: int = 1,
     deliver_to: str = "",
+    pose_image: str | None = None,
+    style_terms: list[str] | None = None,
 ) -> str:
     """Civitai orchestration: see ophelia.providers.civitai.pipeline."""
     from ophelia.providers.civitai import GenerationRequest, run_generation
@@ -1094,6 +1115,7 @@ async def _civitai_image(
             prompt=prompt, aspect_ratio=aspect_ratio, nsfw=nsfw, model=model or "",
             quality=quality, loras=loras, negative_prompt=negative_prompt, image=image,
             strength=strength, count=count, deliver_to=deliver_to,
+            pose_image=pose_image, style_terms=list(style_terms or []),
         ),
         artifacts_dir,
     )

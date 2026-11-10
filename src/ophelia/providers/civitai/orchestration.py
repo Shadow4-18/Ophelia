@@ -149,6 +149,49 @@ def _api_input(recipe: Recipe, *, prompt: str, width: int, height: int, steps: i
     return step
 
 
+# sdcpp sampler/schedule names → ComfyUI's.
+_COMFY_SAMPLER = {
+    "euler": "euler", "euler_a": "euler_ancestral", "heun": "heun", "dpm2": "dpm_2",
+    "dpm++2s_a": "dpmpp_2s_ancestral", "dpm++2m": "dpmpp_2m", "dpm++2mv2": "dpmpp_2m",
+    "ipndm": "ipndm", "ipndm_v": "ipndm_v", "lcm": "lcm", "ddim_trailing": "ddim",
+    "res_multistep": "res_multistep", "er_sde": "er_sde",
+}
+_COMFY_SCHEDULE = {
+    "discrete": "normal", "karras": "karras", "exponential": "exponential",
+    "sgm_uniform": "sgm_uniform", "simple": "simple",
+}
+POSE_PREPROCESSOR = "dwpose"
+
+
+def supports_pose(recipe: Recipe) -> bool:
+    """Pose control runs on Civitai's ComfyUI SDXL/SD1 path (ControlNet)."""
+    return recipe.ecosystem in ("sdxl", "sd1") and not recipe.api and recipe.engine == "sdcpp"
+
+
+def with_pose(inp: dict[str, Any], pose_url: str, *, weight: float = 0.85,
+              end: float = 0.8) -> dict[str, Any]:
+    """An sdcpp SDXL/SD1 createImage input moved to the comfy engine with an
+    OpenPose (DWPose) ControlNet: the reference's body positions, not its
+    look. The same checkpoint, LoRAs, prompt and negatives."""
+    out: dict[str, Any] = {"engine": "comfy", "ecosystem": inp["ecosystem"],
+                           "operation": "createImage"}
+    model = inp.get("model") or inp.get("checkpointModel")
+    if model:
+        out["checkpointModel"] = model
+    for key in ("prompt", "negativePrompt", "steps", "cfgScale", "seed", "quantity",
+                "loras", "embeddings", "width", "height"):
+        if key in inp:
+            out[key] = inp[key]
+    if inp.get("sampleMethod") in _COMFY_SAMPLER:
+        out["sampler"] = _COMFY_SAMPLER[inp["sampleMethod"]]
+        out["scheduler"] = _COMFY_SCHEDULE.get(inp.get("schedule", ""), "normal")
+    out["controlNets"] = [{
+        "preprocessor": POSE_PREPROCESSOR, "weight": weight, "startStep": 0.0,
+        "endStep": end, "image": pose_url,
+    }]
+    return out
+
+
 def build_step_input(
     *,
     prompt: str,

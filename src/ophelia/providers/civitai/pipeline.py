@@ -52,6 +52,8 @@ from ophelia.providers.civitai.orchestration import (
     images_ready,
     output_images,
     resolve_image_url,
+    supports_pose,
+    with_pose,
     status_of,
     TERMINAL_BAD,
     TERMINAL_OK,
@@ -91,6 +93,8 @@ class GenerationRequest:
     strength: float = 0.7
     count: int = 1
     deliver_to: str = ""  # channel for images that finish after the wait
+    pose_image: str | None = None  # reference whose body pose to copy (ControlNet)
+    style_terms: list[str] = field(default_factory=list)  # from a style reference
 
 
 @dataclass
@@ -217,6 +221,13 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
         notes.append(f"{recipe.key} has no img2img, using {swap.key}")
         recipe, fallback = swap, None
 
+    if req.pose_image and not supports_pose(recipe):
+        if pin:
+            return _refusal(f"{recipe.label} can't copy a pose (pose control needs an "
+                            "SDXL model: illustrious, pony, lustify...).")
+        swap = RECIPES["lustify" if recipe.style == "realistic" else "illustrious"]
+        notes.append(f"{recipe.key} can't copy a pose, using {swap.key}")
+        recipe, fallback = swap, None
     if loras and not recipe.loras:
         return _refusal(f"{recipe.label} doesn't take LoRAs.")
 
@@ -226,6 +237,7 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     if moved:
         notes.append("moved to negative: " + ", ".join(moved[:8]))
     found: dict[str, float] = {}
+    pin_loras = bool(loras)  # hers: auto never adds to a set she chose
     if not loras and not pin and req.nsfw and not req.image:
         found, trig, lora_notes = await auto_loras.pick_loras(settings, recipe, prompt)
         if found:
@@ -236,6 +248,18 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
             if fresh:
                 prompt = ", ".join(fresh) + ", " + prompt
         notes.extend(lora_notes)
+    if req.style_terms and not pin_loras and not req.image:
+        style, trig, style_notes = await auto_loras.pick_style_lora(settings, recipe,
+                                                                    req.style_terms)
+        if style:
+            loras.update(style)
+            lora_base.update({a: recipe.base_model for a in style})
+            found.update(style)
+            low = prompt.lower()
+            fresh = [t for t in trig if t.lower() not in low]
+            if fresh:
+                prompt = ", ".join(fresh) + ", " + prompt
+        notes.extend(style_notes)
     added: list[str] = []
     if not req.image and variety.enabled(settings):
         prompt, added = variety.add_variety(settings, prompt,
@@ -493,6 +517,14 @@ async def run_generation(
             write_ledger(settings, {**record, "error": msg})
             return msg
 
+    pose_url = None
+    if req.pose_image and not image_url and supports_pose(plan.recipe):
+        try:
+            pose_url = await resolve_image_url(settings, req.pose_image)
+            record["pose_image"] = req.pose_image
+        except Exception as e:
+            plan.notes.append(f"pose reference unreadable ({e}), made without it")
+
     seed: int | None = random.randint(1, 2**32 - 1)
     recipe = plan.recipe
 
@@ -505,6 +537,8 @@ async def run_generation(
         )
         for key in dropped:
             inp.pop(key, None)
+        if pose_url and supports_pose(r):
+            inp = with_pose(inp, pose_url)
         body: dict[str, Any] = {"steps": [{"$type": "imageGen", "input": inp}]}
         if req.nsfw:
             # Mature content forces yellow Buzz, so only explicit requests ask.
@@ -553,6 +587,15 @@ async def run_generation(
         record.update(negative_prompt=plan.negative or None,
                       embeddings=plan.embeddings or None)
         log.warning("civitai.input_refused", error=r.text[:300])
+        body = body_for(recipe, seed)
+        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
+    if r.status_code == 400 and pose_url and \
+            any(w in r.text.lower() for w in ("controlnet", "comfy", "preprocessor")):
+        # Civitai wouldn't take the pose ControlNet: make it without.
+        log.warning("civitai.pose_refused", error=r.text[:300])
+        plan.notes.append("pose control refused by Civitai, made without it")
+        pose_url = None
+        record.pop("pose_image", None)
         body = body_for(recipe, seed)
         r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
     if r.status_code in (400, 404) and is_air(recipe.model) and \

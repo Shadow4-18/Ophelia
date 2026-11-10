@@ -191,8 +191,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "Two people work far better than three. For photoreal couples, "
                 "model=chroma (reads full sentences) keeps people apart better.\n"
                 "- Match a reference's art style: style_image=<path or URL> (its style "
-                "words are added; the content is your prompt). image= is for editing "
-                "that picture itself.\n"
+                "words, and on Civitai a matching style LoRA, are added; the content is "
+                "your prompt). Copy a pose or sex position: pose_image=<path or URL>. "
+                "image= is for editing that picture itself.\n"
+                "- Pictures of two or more people are checked before sending and remade "
+                "once if wrong; the result says so.\n"
                 "- If a Civitai image is slow you'll get 'Pending:'; it is delivered "
                 "automatically when done, so don't generate it again."
             ),
@@ -267,6 +270,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                             "list_inbox_images or URL). Only its style is used (medium, "
                             "lines, shading, palette, lighting); the content comes from "
                             "your prompt. Use this, not image=, for 'in the style of this'."
+                        ),
+                    },
+                    "pose_image": {
+                        "type": "string",
+                        "description": (
+                            "Reference whose body POSE/position to copy (path or URL): "
+                            "the people's positions and limbs, not their look. Explicit "
+                            "positions come out far more reliably. Runs on an SDXL model "
+                            "(illustrious, pony, lustify...)."
                         ),
                     },
                 },
