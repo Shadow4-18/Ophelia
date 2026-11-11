@@ -523,6 +523,117 @@ def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "",
     return f"{head} [" + "; ".join(bits) + "]\n" + "\n".join(sent)
 
 
+@dataclass
+class _Submit:
+    """What a resubmission may change."""
+    recipe: Recipe
+    seed: int | None
+    pose_url: str | None = None
+    dropped: set[str] = field(default_factory=set)  # input fields Civitai refused
+
+
+def _low(r: Any) -> str:
+    return r.text.lower() if r.status_code == 400 else ""
+
+
+def _seed_refused(st: _Submit, plan: Plan, r: Any) -> bool:
+    return st.seed is not None and "seed" in _low(r)
+
+
+async def _drop_seed(st: _Submit, plan: Plan, r: Any, settings: Settings, record: dict) -> bool:
+    st.seed = None
+    record["seed"] = None
+    return True
+
+
+def _extras_refused(st: _Submit, plan: Plan, r: Any) -> bool:
+    low = _low(r)
+    return ("embedding" in low and bool(plan.embeddings)) or (
+        ("samplemethod" in low or "schedule" in low) and "sampleMethod" not in st.dropped)
+
+
+async def _drop_extras(st: _Submit, plan: Plan, r: Any, settings: Settings,
+                       record: dict) -> bool:
+    """Civitai refused the negative embeddings or the sampler: send without."""
+    low = _low(r)
+    if "embedding" in low and plan.embeddings:
+        plan.use_embeddings = False
+        plan.retarget(st.recipe)
+        plan.notes.append("negative embeddings refused, sent without")
+    if "samplemethod" in low or "schedule" in low:
+        st.dropped.update(("sampleMethod", "schedule"))
+        plan.notes.append("sampler refused, used Civitai's default")
+    record.update(negative_prompt=plan.negative or None, embeddings=plan.embeddings or None)
+    log.warning("civitai.input_refused", error=r.text[:300])
+    return True
+
+
+def _pose_refused(st: _Submit, plan: Plan, r: Any) -> bool:
+    return bool(st.pose_url) and any(w in _low(r)
+                                     for w in ("controlnet", "comfy", "preprocessor"))
+
+
+async def _drop_pose(st: _Submit, plan: Plan, r: Any, settings: Settings,
+                     record: dict) -> bool:
+    log.warning("civitai.pose_refused", error=r.text[:300])
+    plan.notes.append("pose control refused by Civitai, made without it")
+    st.pose_url = None
+    record.pop("pose_image", None)
+    return True
+
+
+def _version_gone(st: _Submit, plan: Plan, r: Any) -> bool:
+    return r.status_code in (400, 404) and is_air(st.recipe.model) and \
+        any(h in r.text.lower() for h in _STALE_HINTS)
+
+
+async def _use_latest_version(st: _Submit, plan: Plan, r: Any, settings: Settings,
+                              record: dict) -> bool:
+    mid = model_id(st.recipe.model)
+    newer = await site.latest_version_air(settings, mid, st.recipe.base_model) if mid else ""
+    if not newer or sanitize_air(newer) == st.recipe.model:
+        return False
+    log.warning("civitai.checkpoint_updated", old=st.recipe.model, new=newer)
+    plan.notes.append(f"stored version gone, used {newer}")
+    st.recipe = replace(st.recipe, model=sanitize_air(newer))
+    record["model"] = st.recipe.model
+    return True
+
+
+def _rotated_in_refused(st: _Submit, plan: Plan, r: Any) -> bool:
+    return r.status_code in (400, 404, 422) and plan.fallback is not None and \
+        st.recipe is not plan.fallback and "buzz" not in r.text.lower()
+
+
+async def _use_pool_head(st: _Submit, plan: Plan, r: Any, settings: Settings,
+                         record: dict) -> bool:
+    """A rotated-in checkpoint Civitai won't run: bench it, use the pool's head."""
+    selection.bench(settings, st.recipe.model, f"HTTP {r.status_code}: {r.text[:200]}")
+    plan.notes.append(f"{st.recipe.key} refused (HTTP {r.status_code}), "
+                      f"used {plan.fallback.key}")
+    st.recipe = plan.fallback
+    plan.retarget(st.recipe)
+    record.update(recipe=st.recipe.key, model=st.recipe.model, cfg=st.recipe.cfg,
+                  label=st.recipe.label, base_model=st.recipe.base_model or None,
+                  loras=dict(plan.loras), prompt=plan.prompt, steps=plan.steps,
+                  width=plan.width, height=plan.height, est_buzz=plan.est_buzz,
+                  negative_prompt=plan.negative or None,
+                  embeddings=plan.embeddings or None)
+    return True
+
+
+# What to change when Civitai refuses a request, most specific first. Each
+# rule runs at most once per image; a rule whose fix finds nothing to change
+# (no newer version) lets the next one try.
+_SUBMIT_RULES = (
+    ("seed", _seed_refused, _drop_seed),
+    ("extras", _extras_refused, _drop_extras),
+    ("pose", _pose_refused, _drop_pose),
+    ("version", _version_gone, _use_latest_version),
+    ("fallback", _rotated_in_refused, _use_pool_head),
+)
+
+
 async def run_generation(
     settings: Settings, req: GenerationRequest, artifacts_dir: Path
 ) -> str:
@@ -563,36 +674,33 @@ async def run_generation(
         except Exception as e:
             plan.notes.append(f"pose reference unreadable ({e}), made without it")
 
-    seed: int | None = random.randint(1, 2**32 - 1)
-    recipe = plan.recipe
+    st = _Submit(recipe=plan.recipe, seed=random.randint(1, 2**32 - 1), pose_url=pose_url)
 
-    def body_for(r: Recipe, s: int | None) -> dict:
+    def body_for() -> dict:
         inp = build_input(
-            r, prompt=plan.prompt, width=plan.width, height=plan.height, steps=plan.steps,
-            negative=plan.negative, loras=plan.loras or None, quantity=plan.quantity,
-            embeddings=plan.embeddings or None,
-            seed=s, image_url=image_url, strength=plan.strength,
+            st.recipe, prompt=plan.prompt, width=plan.width, height=plan.height,
+            steps=plan.steps, negative=plan.negative, loras=plan.loras or None,
+            quantity=plan.quantity, embeddings=plan.embeddings or None,
+            seed=st.seed, image_url=image_url, strength=plan.strength,
         )
-        for key in dropped:
+        for key in st.dropped:
             inp.pop(key, None)
-        if pose_url and supports_pose(r):
-            inp = with_pose(inp, pose_url)
+        if st.pose_url and supports_pose(st.recipe):
+            inp = with_pose(inp, st.pose_url)
         body: dict[str, Any] = {"steps": [{"$type": "imageGen", "input": inp}]}
         if req.nsfw:
             # Mature content forces yellow Buzz, so only explicit requests ask.
             body["allowMatureContent"] = True
         return body
 
-    dropped: set[str] = set()
-    body = body_for(recipe, seed)
-    inp = body["steps"][0]["input"]
+    inp = body_for()["steps"][0]["input"]
     record.update(
         sampler=f"{inp['sampleMethod']}/{inp['schedule']}" if "sampleMethod" in inp else None,
     )
     record.update(
         operation=inp.get("operation"), width=plan.width, height=plan.height,
-        steps=plan.steps, cfg=recipe.cfg, quality=plan.quality, quantity=plan.quantity,
-        negative_prompt=plan.negative or None, seed=seed, est_buzz=plan.est_buzz,
+        steps=plan.steps, cfg=st.recipe.cfg, quality=plan.quality, quantity=plan.quantity,
+        negative_prompt=plan.negative or None, seed=st.seed, est_buzz=plan.est_buzz,
         embeddings=plan.embeddings or None,
     )
     client = CivitaiClient(settings)
@@ -606,63 +714,24 @@ async def run_generation(
         write_ledger(settings, {**record, "error": msg})
         return msg
 
-    r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
-    if r.status_code == 400 and "seed" in r.text.lower():
-        seed = None
-        record["seed"] = None
-        body = body_for(recipe, None)
-        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
-    low = r.text.lower() if r.status_code == 400 else ""
-    if low and ("embedding" in low or "samplemethod" in low or "schedule" in low):
-        # Civitai refused the embeddings or sampler: plain request instead.
-        if "embedding" in low and plan.embeddings:
-            plan.use_embeddings = False
-            plan.retarget(recipe)
-            plan.notes.append("negative embeddings refused, sent without")
-        if "samplemethod" in low or "schedule" in low:
-            dropped.update(("sampleMethod", "schedule"))
-            plan.notes.append("sampler refused, used Civitai's default")
-        record.update(negative_prompt=plan.negative or None,
-                      embeddings=plan.embeddings or None)
-        log.warning("civitai.input_refused", error=r.text[:300])
-        body = body_for(recipe, seed)
-        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
-    if r.status_code == 400 and pose_url and \
-            any(w in r.text.lower() for w in ("controlnet", "comfy", "preprocessor")):
-        # Civitai wouldn't take the pose ControlNet: make it without.
-        log.warning("civitai.pose_refused", error=r.text[:300])
-        plan.notes.append("pose control refused by Civitai, made without it")
-        pose_url = None
-        record.pop("pose_image", None)
-        body = body_for(recipe, seed)
-        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
-    if r.status_code in (400, 404) and is_air(recipe.model) and \
-            any(h in r.text.lower() for h in _STALE_HINTS):
-        mid = model_id(recipe.model)
-        newer = await site.latest_version_air(settings, mid, recipe.base_model) if mid else ""
-        if newer and sanitize_air(newer) != recipe.model:
-            log.warning("civitai.checkpoint_updated", old=recipe.model, new=newer)
-            plan.notes.append(f"stored version gone, used {newer}")
-            recipe = replace(recipe, model=sanitize_air(newer))
-            record["model"] = recipe.model
-            body = body_for(recipe, seed)
-            r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
-    if r.status_code in (400, 404, 422) and plan.fallback is not None \
-            and "buzz" not in r.text.lower():
-        # A rotated-in checkpoint Civitai won't run: bench it, use the pool's head.
-        selection.bench(settings, recipe.model, f"HTTP {r.status_code}: {r.text[:200]}")
-        plan.notes.append(f"{recipe.key} refused (HTTP {r.status_code}), "
-                          f"used {plan.fallback.key}")
-        recipe = plan.fallback
-        plan.retarget(recipe)
-        record.update(recipe=recipe.key, model=recipe.model, cfg=recipe.cfg,
-                      label=recipe.label, base_model=recipe.base_model or None,
-                      loras=dict(plan.loras), prompt=plan.prompt, steps=plan.steps,
-                      width=plan.width, height=plan.height, est_buzz=plan.est_buzz,
-                      negative_prompt=plan.negative or None,
-                      embeddings=plan.embeddings or None)
-        body = body_for(recipe, seed)
-        r = await client.submit(body, wait=min(90, wait_total), mature=req.nsfw)
+    async def submit():
+        return await client.submit(body_for(), wait=min(90, wait_total), mature=req.nsfw)
+
+    # Civitai refused the request: apply the first rule that fits (each at
+    # most once) and send it again; stop when none does.
+    r = await submit()
+    used: set[str] = set()
+    while r.status_code >= 400:
+        for name, applies, fix in _SUBMIT_RULES:
+            if name in used or not applies(st, plan, r):
+                continue
+            used.add(name)
+            if await fix(st, plan, r, settings, record):
+                break
+        else:
+            break
+        r = await submit()
+    recipe, seed = st.recipe, st.seed
     if r.status_code >= 400:
         return fail(f"Civitai submit failed HTTP {r.status_code}: {r.text[:300]}")
 
