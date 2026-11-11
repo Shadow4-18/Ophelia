@@ -172,8 +172,8 @@ class _RecordingBot(ExtBot):
         if hook is not None:
             try:
                 hook(msg)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("telegram_bot.send_message_ignored", error=str(_err))
         photo_hook = type(self).on_sent_photo
         if photo_hook is not None:
             try:
@@ -182,8 +182,8 @@ class _RecordingBot(ExtBot):
                 name = getattr((data or {}).get("photo"), "filename", None)
                 if name:
                     photo_hook(msg, name)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("telegram_bot.send_message_ignored", error=str(_err))
         return msg
 
 
@@ -556,8 +556,8 @@ class TelegramGateway:
                 if self.settings.is_owner_channel(channel):
                     await self.session.agent.memory.append_message(
                         channel, "assistant", note, metadata={"type": "reaction_sent"})
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("telegram_bot.react_ignored", error=str(_err))
             log.info("telegram.reacted", emoji=e, message_id=t.message_id)
             return f"Reacted {e} to: \"{t.text[:80]}\""
 
@@ -578,8 +578,8 @@ class TelegramGateway:
                     await self.session.agent.memory.append_message(
                         channel, "assistant", f"[replying to \"{t.text[:120]}\"] {text}",
                         metadata={"type": "quote_reply"})
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("telegram_bot.reply_ignored", error=str(_err))
             return "Sent as a reply to that message. Don't repeat it in your final reply."
 
         async def typing() -> None:
@@ -1430,13 +1430,13 @@ class TelegramGateway:
             # Already resumed or finished — clear the stale button.
             try:
                 await q.edit_message_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("telegram_bot.on_continue_callback_ignored", error=str(_err))
             return
         try:
             await q.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("telegram_bot.on_continue_callback_ignored", error=str(_err))
         chat = q.message.chat if q.message and q.message.chat else None
         if chat is None:
             return

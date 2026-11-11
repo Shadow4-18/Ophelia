@@ -183,8 +183,8 @@ class DreamLoop:
                 parts.append(f"Mood shift: {mood_shift}")
             try:
                 await self.inner.write("\n".join(parts), kind="dream")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("dream.dream_cycle_ignored", error=str(_err))
         if dream:
             await self.memory.set_fact(f"memory:{int(time.time())}", f"[dream] {dream}")
             await self.memory.append_message(
@@ -227,8 +227,8 @@ class DreamLoop:
                     m.baseline_valence = max(-0.2, min(0.45, m.baseline_valence))
                     m.baseline_arousal = max(0.15, min(0.55, m.baseline_arousal))
                     await self.memory.save_psyche(psyche)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("dream.dream_cycle_ignored", error=str(_err))
 
         # Prune: if a forget topic is given, note it (actual MEMORY.md pruning is
         # handled by the curator's dedup; here we just record the intent).

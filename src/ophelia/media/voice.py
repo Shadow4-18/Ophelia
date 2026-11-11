@@ -514,8 +514,8 @@ async def kokoro_combine_voices(
                     else:
                         flat += "+" + piece
                 r = await http.post(url, json=flat)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("voice.kokoro_combine_voices_ignored", error=str(_err))
         r.raise_for_status()
     out_path.write_bytes(r.content)
     return out_path

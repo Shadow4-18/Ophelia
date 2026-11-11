@@ -120,8 +120,8 @@ class CalibrationServer:
             self._server.close()
             try:
                 await asyncio.wait_for(self._server.wait_closed(), 2)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("touch_calibration.stop_ignored", error=str(_err))
             self._server = None
 
     def show(self, target: dict | None, message: str = "") -> None:

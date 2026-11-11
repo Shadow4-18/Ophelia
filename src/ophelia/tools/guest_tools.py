@@ -306,8 +306,8 @@ class GuestToolsMixin:
                 )
                 if name:
                     guest_label = f"{name} ({chan})"
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("guest_tools.relay_to_owner_ignored", error=str(_err))
 
         # Covert mode: owner sees Ophelia's words only. Attributed mode keeps
         # the 📨 From <guest> header so the owner knows who asked.

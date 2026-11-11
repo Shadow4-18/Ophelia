@@ -168,8 +168,8 @@ class ConsciousnessLoop:
         if self.inner:
             try:
                 await self.inner.write(f"({what})", kind="consciousness")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("consciousness.body_transition_ignored", error=str(_err))
         if what == "woke up":
             try:
                 from ophelia.mind.morning import DreamContinuity
@@ -557,8 +557,8 @@ class ConsciousnessLoop:
                             break
                     recent_activity = c[:160]
                     break
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("consciousness.tick_ignored", error=str(_err))
 
         overdue_hint = ""
 
@@ -1030,8 +1030,8 @@ class ConsciousnessLoop:
         self._running = False
         try:
             self.signals.request_wake("stop", urgent=True)
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("consciousness.stop_ignored", error=str(_err))
         if self._drift_task is not None and not self._drift_task.done():
             self._drift_task.cancel()
 

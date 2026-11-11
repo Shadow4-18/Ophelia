@@ -768,8 +768,8 @@ class AgentLoop:
                 for t in inner:
                     lines.append(f"- {t}")
                 parts.append("\n".join(lines))
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("agent_loop.self_improvement_block_ignored", error=str(_err))
         return "\n\n".join(parts)
 
     async def _build_messages(
@@ -1126,8 +1126,8 @@ class AgentLoop:
                     user_text=user_text,
                     assistant_text=text,
                 )
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("agent_loop.run_reaction_turn_ignored", error=str(_err))
         return text
 
     async def compose_message(
