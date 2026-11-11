@@ -10,7 +10,8 @@ import re
 import random
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -81,6 +82,24 @@ def satiation_threshold_delta(
     since = max(0.0, now - last_action_at)
     half = float(half_life_seconds) / (1.0 + max(0.0, float(arousal)))
     return 0.35 * (0.5 ** (since / max(1.0, half)))
+
+
+@dataclass
+class _TickState:
+    """What one check-in knows, passed between its steps."""
+    idle_seconds: float
+    wake_reason: str | None
+    pressure: float
+    knobs: Any
+    clock: Any
+    effective_threshold: float
+    must_consider_acting: bool
+    due_goal: Any
+    goals_block: str
+    goal_hint: str
+    due_loops: list
+    director_decision: Any = None
+    burst_max: int = 0
 
 
 class ConsciousnessLoop:
@@ -356,12 +375,36 @@ class ConsciousnessLoop:
                 await self.signals.set_agent_thinking(False)
 
     async def _tick(self, idle_seconds: float, *, wake_reason: str | None = None) -> None:
+        """One check-in: is anything pushing her, does the director let her
+        act, what's on her mind, what she thinks, then what she does and
+        says. Each step is its own method below."""
+        t = await self._assess(idle_seconds, wake_reason)
+        if self._quiet(t, director_skipped=False):
+            await self._settle_quiet(t)
+            return
+        if not await self._consult_director(t):
+            return
+        if self._quiet(t, director_skipped=True):
+            await self._settle_quiet(t)
+            return
+        tick = await self._think(t)
+        if tick is None:
+            return
+        action, thought, finish = await self._take_in(t, tick)
+        if await self._act(t, tick, action, thought):
+            return
+        await self._speak(t, tick, action, finish)
+
+    async def _assess(self, idle_seconds: float, wake_reason: str | None) -> "_TickState":
+        """How strong the urge to act is, against a threshold her mood,
+        tiredness, recent outreach and how it landed all move; and what's
+        due (goals, follow-ups)."""
         await self.memory.save_psyche(self.psyche)
         pressure = self.drives.initiative_pressure()
         # Mood → behavior (Tier A #5): negative valence raises the bar to reach
         # out, positive lowers it. Same psyche drives TTS speed and bursts, so
         # she stays one person across voice / pacing / willingness to speak.
-        from ophelia.mind.mood_behavior import mood_knobs, mood_system_hint, play_hint
+        from ophelia.mind.mood_behavior import mood_knobs
 
         knobs = mood_knobs(self.psyche)
         satiation = satiation_threshold_delta(
@@ -406,23 +449,45 @@ class ConsciousnessLoop:
                     "let it go (follow_up_done):"
                 ),
             )
+        return _TickState(
+            idle_seconds=idle_seconds, wake_reason=wake_reason, pressure=pressure,
+            knobs=knobs, clock=clock, effective_threshold=effective_threshold,
+            must_consider_acting=must_consider_acting, due_goal=due_goal,
+            goals_block=goals_block, goal_hint=goal_hint, due_loops=due_loops,
+        )
 
-        # Nothing pushing at all: skip before spending a director call.
-        if (
-            not must_consider_acting
-            and not due_goal
-            and not due_loops
-            and pressure < 0.15
-            and not wake_reason
+    def _quiet(self, t: "_TickState", *, director_skipped: bool) -> bool:
+        """Nothing pushing at all: skip before spending a model call. After
+        the director, its "skip" counts as nothing pushing too."""
+        if director_skipped and not (
+            t.director_decision is None or t.director_decision.action == "skip"
         ):
-            self.psyche.relax(60)
-            await self.memory.save_drives(self.drives)
-            await self.memory.save_psyche(self.psyche)
-            if pressure >= 0.12:
-                self.request_wake("drive_rising")
-            log.info("consciousness.fast_tick_skip", pressure=pressure, idle=int(idle_seconds))
-            return
+            return False
+        return (
+            not t.must_consider_acting
+            and not t.due_goal
+            and not t.due_loops
+            and t.pressure < 0.15
+            and not t.wake_reason
+        )
 
+    async def _settle_quiet(self, t: "_TickState") -> None:
+        self.psyche.relax(60)
+        await self.memory.save_drives(self.drives)
+        await self.memory.save_psyche(self.psyche)
+        # Rising pressure → stir again soon instead of waiting full interval
+        if t.pressure >= 0.12:
+            self.request_wake("drive_rising")
+        log.info("consciousness.fast_tick_skip", pressure=t.pressure,
+                 idle=int(t.idle_seconds))
+
+    async def _consult_director(self, t: "_TickState") -> bool:
+        """False when this check-in should stop here (mid-conversation, or
+        the director deferred and nothing overrides it)."""
+        pressure, effective_threshold = t.pressure, t.effective_threshold
+        due_goal, due_loops = t.due_goal, t.due_loops
+        idle_seconds, wake_reason = t.idle_seconds, t.wake_reason
+        must_consider_acting = t.must_consider_acting
         # Tier A #1: director decides whether this tick produces an action at
         # all, and at what urgency. When enabled, it replaces the simple
         # pressure-threshold heuristic with a richer speak/react/defer/skip
@@ -433,7 +498,7 @@ class ConsciousnessLoop:
         if conversation_live and (self.director is None or not self.director.available()):
             self.psyche.relax(60)
             log.info("consciousness.conversation_live_skip", idle=int(idle_seconds))
-            return
+            return False
         director_decision = None
         if self.director is not None and self.director.available():
             trigger = (
@@ -482,33 +547,20 @@ class ConsciousnessLoop:
                         "consciousness.director_defer",
                         reason=director_decision.reason[:80],
                     )
-                    return
+                    return False
+        t.director_decision = director_decision
+        return True
 
-        # Fast inner-tick mode: when nothing is pushing (low-moderate pressure,
-        # no due goal, no director demand), skip the expensive LLM call entirely
-        # and just let state drift. The pulse still lands on cadence — heartbeat,
-        # not summons — without forcing a status narration every cycle.
-        if (
-            not must_consider_acting
-            and not due_goal
-            and not due_loops
-            and (director_decision is None or director_decision.action == "skip")
-            and pressure < 0.15
-            and not wake_reason
-        ):
-            self.psyche.relax(60)
-            await self.memory.save_drives(self.drives)
-            await self.memory.save_psyche(self.psyche)
-            # Rising pressure → stir again soon instead of waiting full interval
-            if pressure >= 0.12:
-                self.request_wake("drive_rising")
-            log.info(
-                "consciousness.fast_tick_skip",
-                pressure=pressure,
-                idle=int(idle_seconds),
-            )
-            return
+    async def _context(self, t: "_TickState") -> tuple[str, str | None]:
+        """(system prompt for the check-in, the dream it surfaces, if any).
+        Also sets t.burst_max, the cap on anything she says outward."""
+        from ophelia.mind.mood_behavior import mood_system_hint, play_hint
 
+        must_consider_acting, knobs = t.must_consider_acting, t.knobs
+        due_goal = t.due_goal
+        goals_block, goal_hint = t.goals_block, t.goal_hint
+        idle_seconds, wake_reason = t.idle_seconds, t.wake_reason
+        director_decision = t.director_decision
         hint = ""
         if must_consider_acting:
             hint = "\n\n" + random.choice((
@@ -655,29 +707,36 @@ class ConsciousnessLoop:
             self._pending_dream_ref = None
         else:
             dream_to_clear = None
+        t.burst_max = burst_max
+        system_extra = (
+            CONSCIOUSNESS_PROMPT
+            + life_block
+            + sleep_hint
+            + "\n"
+            + self.drives.to_context_block()
+            + "\n"
+            + goals_block
+            + goal_hint
+            + hint
+            + game_hint
+            + context_block
+            + ("\n" + mood_system_hint(self.psyche) if mood_system_hint(self.psyche) else "")
+            + ("\n" + play_hint(self.drives, self.psyche) if play_hint(self.drives, self.psyche) else "")
+        )
+        return system_extra, dream_to_clear
 
+    async def _think(self, t: "_TickState") -> dict | None:
+        """The check-in itself: her model reads the moment and answers with
+        thought, mood and an action. None when there's nothing usable."""
+        system_extra, dream_to_clear = await self._context(t)
         raw = await self.agent.run_consciousness_tick(
             channel="consciousness",
-            user_text=_moment_text(idle_seconds, self.life),
-            system_extra=(
-                CONSCIOUSNESS_PROMPT
-                + life_block
-                + sleep_hint
-                + "\n"
-                + self.drives.to_context_block()
-                + "\n"
-                + goals_block
-                + goal_hint
-                + hint
-                + game_hint
-                + context_block
-                + ("\n" + mood_system_hint(self.psyche) if mood_system_hint(self.psyche) else "")
-                + ("\n" + play_hint(self.drives, self.psyche) if play_hint(self.drives, self.psyche) else "")
-            ),
+            user_text=_moment_text(t.idle_seconds, self.life),
+            system_extra=system_extra,
             mirror_channel=self.user_channel,
             allow_tools=True,
         )
-
+        must_consider_acting, pressure = t.must_consider_acting, t.pressure
         # Tier B #10: regardless of whether she chose to mention it, the dream
         # reference was surfaced this wake — mark it consumed so we don't loop.
         if dream_to_clear:
@@ -696,11 +755,18 @@ class ConsciousnessLoop:
                 # High pressure + unparseable: reflect only if there is real
                 # content — not another stillness / SKIP placeholder.
                 if is_tick_status_noise(raw or ""):
-                    return
+                    return None
                 tick = {"action": "reflect", "internal_thought": raw[:400]}
             else:
-                return
+                return None
+        return tick
 
+    async def _take_in(self, t: "_TickState", tick: dict):
+        """Let the check-in change her (mood, drives, energy, rabbit holes,
+        notes, the inner log). Returns (action, thought, finish), where
+        finish(action) closes goals/follow-ups once something really happened."""
+        pressure, clock = t.pressure, t.clock
+        due_goal, due_loops = t.due_goal, t.due_loops
         tick = _soften_silent_tick(tick, prior_mood_label=self.psyche.mood.label)
         tick = _promote_declared_action(tick)
         self.psyche.apply_tick(tick)
@@ -770,7 +836,12 @@ class ConsciousnessLoop:
                     pressure=pressure,
                 )
                 self.inner.mirror_telegram = prev
+        return action, thought, finish
 
+    async def _act(self, t: "_TickState", tick: dict, action: str, thought: str) -> bool:
+        """explore/act: look at the screen and/or run a tool turn on her own.
+        True when this check-in is done (an unfinished chain was resumed)."""
+        due_goal = t.due_goal
         outward = (tick.get("outward_message") or "").strip()
         vision_context = ""
 
@@ -815,7 +886,7 @@ class ConsciousnessLoop:
                     log.warning("consciousness.autonomous_resume_failed", error=str(e))
                 # After a continuation, don't also fire a fresh act this tick.
                 # The continuation is itself a full tool-capable turn.
-                return
+                return True
 
             prefix = ""
             if vision_context:
@@ -880,7 +951,14 @@ class ConsciousnessLoop:
             # She did something (tools/screen/media) — start the action cooldown
             # so the next tick backs off instead of interrupting immediately.
             await self.signals.mark_action()
+        return False
 
+    async def _speak(self, t: "_TickState", tick: dict, action: str, finish) -> None:
+        """Say something to him first, if she chose to and it's allowed."""
+        pressure, effective_threshold = t.pressure, t.effective_threshold
+        due_goal, burst_max = t.due_goal, t.burst_max
+        goal_id = tick.get("goal_id")
+        outward = (tick.get("outward_message") or "").strip()
         if action == "message" and not outward:
             await finish("silent")
         if action in ("message", "act", "explore") and outward:
