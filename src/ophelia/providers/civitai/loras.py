@@ -155,29 +155,60 @@ async def _find(settings: Any, query: str, must: str, must_not: str,
             continue
         if not re.search(must, name) or (must_not and re.search(must_not, name)):
             continue
-        found = {"air": r.air, "name": r.name, "triggers": trigger_tags(r.trained_words),
-                 "category": r.category, "rec": r.rec_weight}
-        break
+        option = {"air": r.air, "name": r.name, "triggers": trigger_tags(r.trained_words),
+                  "category": r.category, "rec": r.rec_weight}
+        if found is None:
+            found = dict(option, options=[])
+        found["options"].append(option)
+        if len(found["options"]) >= 3:
+            break
     cache[key] = {"ts": time.time(), "lora": found}
     _store(settings, cache)
     return found
 
 
-async def concept_picks(settings: Any, recipe: Recipe, prompt: str) -> tuple[list, list[str]]:
-    """(LoraPicks, notes) for concepts the prompt names, one per group."""
+def _best_option(found: dict, scored: dict, pairs: dict,
+                 others: list[str]) -> tuple[dict | None, str]:
+    """Of the top few LoRAs for a concept, the one he liked most, alone and
+    together with this checkpoint and the other LoRAs (rank order breaks ties)."""
+    options = found.get("options") or [found]
+    best, best_score = None, 0.0
+    for i, opt in enumerate(options):
+        single = feedback.multiplier(scored.get(opt["air"]))
+        if single < 0.6:
+            continue
+        score = single * feedback.pair_multiplier(pairs, opt["air"], others) * (1 - 0.1 * i)
+        if score > best_score:
+            best, best_score = opt, score
+    if best is None:
+        return None, f"skipped LoRA {options[0]['name']} (he didn't like it before)"
+    if best["air"] != options[0]["air"]:
+        return best, f"{best['name']} over {options[0]['name']} (went better with this before)"
+    return best, ""
+
+
+async def concept_picks(settings: Any, recipe: Recipe, prompt: str,
+                        others: tuple[str, ...] = ()) -> tuple[list, list[str]]:
+    """(LoraPicks, notes) for concepts the prompt names, one per group. Among
+    a concept's top LoRAs, the one that went best with this checkpoint and
+    ``others`` (her LoRAs) in images he reacted to wins."""
     from ophelia.providers.civitai.stack import LoraPick
 
     if not (enabled(settings) and recipe.loras and recipe.family in _FAMILY_BASE):
         return [], []
     scored = feedback.scores(settings)
+    pairs = feedback.pair_scores(settings)
     picks: list[LoraPick] = []
     notes: list[str] = []
     for query, must, must_not, group in concepts_with_groups(prompt)[:_MAX_AUTO]:
-        lora = await _find(settings, query, must, must_not, recipe.family)
-        if not lora or lora["air"] in {p.air for p in picks}:
+        found = await _find(settings, query, must, must_not, recipe.family)
+        if not found:
             continue
-        if feedback.multiplier(scored.get(lora["air"])) < 0.6:
-            notes.append(f"skipped LoRA {lora['name']} (he didn't like it before)")
+        lora, why = _best_option(found, scored, pairs,
+                                 [recipe.model] + [p.air for p in picks] + list(others))
+        if why:
+            notes.append(why)
+        if not lora or lora["air"] in {p.air for p in picks}:
             continue
         picks.append(LoraPick(
             air=lora["air"], name=lora["name"], category=lora.get("category") or "concept",

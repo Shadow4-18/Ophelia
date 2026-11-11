@@ -116,6 +116,9 @@ class Workstation:
         self.curiosity = CuriosityStore(self.memory)
         self.agent.curiosity = self.curiosity
         self.tools.curiosity = self.curiosity
+        from ophelia.providers.civitai import rewrite as civitai_rewrite
+
+        civitai_rewrite.install(self.agent)
         self.inner = (
             InnerMonologue(mirror_telegram=False)
             if settings.inner_log_enabled
