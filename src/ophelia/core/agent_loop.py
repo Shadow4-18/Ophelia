@@ -8,6 +8,7 @@ from typing import Any
 import contextvars
 import itertools
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 import structlog
 
@@ -150,6 +151,37 @@ Everything above is context; your SOUL is who you are. Speak exactly like her, w
 # typed or something she told the owner. Context-local, like tool state.
 _AUTONOMOUS = contextvars.ContextVar("ophelia_autonomous_turn", default=False)
 AUTONOMOUS_PROMPT_TYPES = ("autonomous", "autonomous_continuation")
+
+_CONTINUE = object()  # _final_text: keep looping
+
+
+@dataclass
+class _Loop:
+    """One model+tools loop's state, passed between its steps."""
+    messages: list
+    tools: Any
+    all_tools: Any
+    tier_groups: Any
+    known_tool_names: Any
+    use: Any
+    is_owner: bool
+    role: str
+    store_channel: str
+    model: str
+    provider: str
+    client: Any
+    gate: Any
+    json_mode: bool
+    max_tool_rounds: int
+    interject_here: bool
+    answering: bool = False
+    bonus_rounds: int = 0
+    # At most one narration-recovery nudge per turn: avoids endless
+    # "let me try" <-> nudge loops when the model still won't call tools.
+    narration_nudge_used: bool = False
+    seen_signatures: list = field(default_factory=list)
+    rounds_used: int = 0
+
 
 # Tools that only look things up: safe to run at the same time as each other.
 READ_ONLY_TOOLS = frozenset({
@@ -1345,11 +1377,6 @@ class AgentLoop:
                         rounds_already=pending.get("rounds", 0),
                     )
 
-        seen_signatures: list[str] = []
-        rounds_used = 0
-        # At most one narration-recovery nudge per turn — avoids infinite
-        # "let me try" ↔ nudge loops when the model still won't emit tools.
-        narration_nudge_used = False
         # Tool tiers (local chat): send core + relevant groups, not all ~60
         # schemas. Recovery of tool calls written into content still knows
         # every tool name, and a resumed chain gets the full set.
@@ -1365,305 +1392,369 @@ class AgentLoop:
         interject_here = (
             role == "chat" and bool(use) and _INTERJECT_CHANNEL.get() == store_channel
         )
-        answering = False  # an interjection is waiting for her reply
-        bonus_rounds = 0
-
+        st = _Loop(
+            messages=messages, tools=tools, all_tools=all_tools, tier_groups=tier_groups,
+            known_tool_names=known_tool_names, use=use, is_owner=is_owner, role=role,
+            store_channel=store_channel, model=model, provider=provider, client=client,
+            gate=gate, json_mode=json_mode, max_tool_rounds=max_tool_rounds,
+            interject_here=interject_here,
+        )
         for round_idx in itertools.count():
-            if round_idx >= max_tool_rounds + bonus_rounds:
+            if round_idx >= st.max_tool_rounds + st.bonus_rounds:
                 break
-            rounds_used = round_idx + 1
-            if interject_here:
-                notes = interjections.take_all(store_channel)
-                answered = [n for n in notes if n.reply]
-                waiting = [n.text for n in notes if not n.reply]
-                for n in answered:  # parallel mode: stored by side_reply
-                    messages.append({"role": "user", "content": n.text})
-                    messages.append({"role": "assistant", "content": n.reply})
-                if answered:
-                    messages.append({"role": "system", "content": _ANSWERED_NOTE})
-                    bonus_rounds += 1
-                if waiting:
-                    for said in waiting:
-                        await self._store(store_channel, "user", said, is_owner=is_owner,
-                                          metadata={"type": "interjection"})
-                    messages.append({"role": "user", "content": "\n".join(waiting)})
-                    messages.append({"role": "system", "content": _INTERJECTION_NUDGE})
-                    answering = True
-                    bonus_rounds += _INTERJECTION_BONUS_ROUNDS
-                if notes:
-                    log.info("interjection.taken", channel=store_channel, round=round_idx + 1,
-                             answered=len(answered), waiting=len(waiting))
-            try:
-                response = await self._call_with_fallback(
-                    role=role,
-                    primary_provider=provider,
-                    primary_model=model,
-                    primary_client=client,
-                    messages=messages,
-                    tools=tools,
-                    channel=store_channel,
-                    round_idx=round_idx,
-                    gate=gate,
-                    json_mode=json_mode,
-                )
-            except Exception as e:
-                from ophelia.providers.errors import api_error_detail
-
-                detail = api_error_detail(e)
-                log.error(
-                    "tool_loop.api_error",
-                    channel=store_channel,
-                    role=role,
-                    model=model,
-                    provider=provider,
-                    round=round_idx + 1,
-                    error=detail,
-                )
-                # Drop any pending resume context — this turn can't continue.
-                self._pending_resume.pop(store_channel, None)
-                self._continuation_count.pop(store_channel, None)
-                raise RuntimeError(
-                    f"LLM call failed for {role}/{model} on {provider}: {detail}"
-                ) from e
-            _warn_if_ollama_truncated(response, provider)
-            msg = response.choices[0].message
-
-            # Normalize tool_calls: prefer structured API field; if empty,
-            # salvage JSON/markup tool invocations that some providers leave
-            # in content (common text-before-tool failure mode on Ollama).
-            tool_call_dicts = self._structured_tool_call_dicts(msg.tool_calls)
-            content_text = msg.content or ""
-            recovered_from_content = False
-            if not tool_call_dicts and use and content_text.strip():
-                parsed, remaining = extract_tool_calls_from_content(
-                    content_text, known_tools=known_tool_names
-                )
-                if parsed:
-                    tool_call_dicts = parsed_to_openai_dicts(parsed)
-                    content_text = remaining
-                    recovered_from_content = True
-                    log.info(
-                        "tool_loop.recovered_from_content",
-                        channel=store_channel,
-                        role=role,
-                        round=round_idx + 1,
-                        tools=[c.name for c in parsed],
-                    )
-
+            st.rounds_used = round_idx + 1
+            if st.interject_here:
+                await self._take_interjections(st, round_idx)
+            msg = await self._ask_round(st, round_idx)
+            tool_call_dicts, content_text, recovered = self._calls_in(st, msg, round_idx)
             if tool_call_dicts:
-                tc_names = [tc["function"]["name"] for tc in tool_call_dicts]
-                log.info(
-                    "tool_loop.round",
-                    channel=store_channel,
-                    role=role,
-                    round=round_idx + 1,
-                    tools=tc_names,
-                    recovered_from_content=recovered_from_content,
-                )
-                # Speak-then-act: deliver any preamble text mid-turn so the
-                # user hears "okay, one sec" while tools still run. Without
-                # this, content+tool_calls kept the text only in the message
-                # history and never pushed it to the channel until the final
-                # (often empty) synthesis — looking like the turn died after
-                # the text.
-                await self._deliver_mid_turn_preamble(content_text)
-                if interject_here and content_text.strip():
-                    interjections.note_step(store_channel, f'you said: "{content_text.strip()}"')
-                if answering and content_text.strip():
-                    answering = False
-                    await self._store(store_channel, "assistant", content_text.strip(),
-                                      is_owner=is_owner, metadata={"type": "interjection_reply"})
-                # Detect a stuck loop: the same set of tool calls (same names +
-                # same arguments) repeated back-to-back. Bail early rather than
-                # burning the rest of the budget.
-                sig = self._tool_call_dicts_signature(tool_call_dicts)
-                stuck = sig in seen_signatures[-2:] if seen_signatures else False
-                seen_signatures.append(sig)
-
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": content_text or "",
-                        "tool_calls": tool_call_dicts,
-                    }
-                )
-                # Several lookups in one round (recall_memory + web_search...)
-                # don't depend on each other: start them all now, then take
-                # the results in order. Anything that acts stays sequential.
-                prefetched: dict[str, asyncio.Future] = {}
-                lookups = [tc for tc in tool_call_dicts
-                           if tc["function"]["name"] in READ_ONLY_TOOLS]
-                if len(lookups) > 1:
-                    for tc in lookups:
-                        prefetched[tc["id"]] = asyncio.ensure_future(self.tools.dispatch(
-                            tc["function"]["name"], tc["function"].get("arguments") or "{}"))
-                for tc in tool_call_dicts:
-                    name = tc["function"]["name"]
-                    arguments = tc["function"].get("arguments") or "{}"
-                    if tc["id"] in prefetched:
-                        result = await prefetched.pop(tc["id"])
-                    elif name == "load_tools":
-                        import json
-
-                        try:
-                            wanted = json.loads(arguments or "{}").get("groups") or []
-                        except (json.JSONDecodeError, AttributeError):
-                            wanted = []
-                        if tier_groups is None:
-                            result = "All of your tools are already available."
-                        else:
-                            loaded = self.tools.tiers.load(store_channel, list(wanted))
-                            tier_groups |= set(loaded)
-                            tools = _tiered_definitions(all_tools, tier_groups)
-                            result = (
-                                f"Loaded: {', '.join(loaded)}. Call the tool you need now."
-                                if loaded
-                                else "No such tool group."
-                            )
-                    elif name in ("search_hermes_memory", "recall_past_sessions"):
-                        if not is_owner:
-                            result = (
-                                "Searching past sessions is owner-only and disabled "
-                                "for guest conversations."
-                            )
-                        else:
-                            import json
-
-                            args = json.loads(arguments or "{}")
-                            result = await self.search_past(args.get("query", ""))
-                    else:
-                        result = await self.tools.dispatch(name, arguments)
-                        if answering and name == "send_message":
-                            answering = False
-                            await self._record_interjection_reply(
-                                store_channel, arguments, is_owner=is_owner
-                            )
-                    if interject_here:
-                        interjections.note_step(
-                            store_channel, f"{name}({arguments[:80]}) -> {str(result)[:140]}"
-                        )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": result,
-                        }
-                    )
-
-                if stuck:
-                    log.warning(
-                        "tool_loop.stuck",
-                        channel=store_channel,
-                        role=role,
-                        round=round_idx + 1,
-                        repeated_tools=tc_names,
-                        max_rounds=max_tool_rounds,
-                    )
-                    # Force a final synthesis: ask the model to wrap up using
-                    # what it has so far, with no further tool calls allowed.
-                    text = await self._finalize_after_stuck(
-                        messages,
-                        store_channel=store_channel,
-                        role=role,
-                        model=model,
-                        provider=provider,
-                        gate=gate,
-                        is_owner=is_owner,
-                    )
-                    return text
+                done = await self._tool_round(st, tool_call_dicts, content_text, recovered,
+                                              round_idx)
+                if done is not None:
+                    return done  # a stuck loop, wrapped up
                 continue
-
-            text = content_text.strip() or "(no response)"
-
-            # She answered a mid-task message in plain text instead of with
-            # send_message: deliver it as the reply, then send her back to the
-            # task once rather than ending the turn there.
-            if answering and content_text.strip():
-                answering = False
-                await self._deliver_mid_turn_preamble(text)
-                await self._store(store_channel, "assistant", text, is_owner=is_owner,
-                                  metadata={"type": "interjection_reply"})
-                messages.append({"role": "assistant", "content": text})
-                messages.append({"role": "system", "content": _RESUME_NUDGE})
-                log.info("interjection.resume_nudge", channel=store_channel)
+            text = await self._final_text(st, content_text, round_idx)
+            if text is _CONTINUE:
                 continue
+            return text
+        return await self._cap_hit(st)
 
-            # Text-before-tool failure: model narrated an action but emitted
-            # neither structured tool_calls nor recoverable markup. Give one
-            # recovery round instead of finalizing the turn (which made her
-            # look like she lied about using a tool).
-            if (
-                use
-                and tools
-                and not narration_nudge_used
-                and looks_like_tool_narration(text)
-            ):
-                narration_nudge_used = True
-                messages.append({"role": "assistant", "content": text})
-                messages.append({"role": "system", "content": _TOOL_NARRATION_NUDGE})
-                await self._deliver_mid_turn_preamble(text)
-                log.warning(
-                    "tool_loop.narration_recovery",
-                    channel=store_channel,
-                    role=role,
-                    round=round_idx + 1,
-                    preview=text[:120],
-                )
-                continue
+    async def _take_interjections(self, st: "_Loop", round_idx: int) -> None:
+        """Messages he sent while she was mid-task: answered ones go into the
+        history, waiting ones get a nudge to answer first (and extra rounds)."""
+        messages, is_owner, store_channel = st.messages, st.is_owner, st.store_channel
+        answering, bonus_rounds = st.answering, st.bonus_rounds
+        notes = interjections.take_all(store_channel)
+        answered = [n for n in notes if n.reply]
+        waiting = [n.text for n in notes if not n.reply]
+        for n in answered:  # parallel mode: stored by side_reply
+            messages.append({"role": "user", "content": n.text})
+            messages.append({"role": "assistant", "content": n.reply})
+        if answered:
+            messages.append({"role": "system", "content": _ANSWERED_NOTE})
+            bonus_rounds += 1
+        if waiting:
+            for said in waiting:
+                await self._store(store_channel, "user", said, is_owner=is_owner,
+                                  metadata={"type": "interjection"})
+            messages.append({"role": "user", "content": "\n".join(waiting)})
+            messages.append({"role": "system", "content": _INTERJECTION_NUDGE})
+            answering = True
+            bonus_rounds += _INTERJECTION_BONUS_ROUNDS
+        if notes:
+            log.info("interjection.taken", channel=store_channel, round=round_idx + 1,
+                     answered=len(answered), waiting=len(waiting))
+        st.answering, st.bonus_rounds = answering, bonus_rounds
 
-            store_meta = (
-                {"type": "consciousness_json"} if role == "consciousness" else None
+    async def _ask_round(self, st: "_Loop", round_idx: int):
+        """One model call with the current history and tool set."""
+        messages, tools, role, store_channel = st.messages, st.tools, st.role, st.store_channel
+        model, provider, client, gate = st.model, st.provider, st.client, st.gate
+        json_mode = st.json_mode
+        try:
+            response = await self._call_with_fallback(
+                role=role,
+                primary_provider=provider,
+                primary_model=model,
+                primary_client=client,
+                messages=messages,
+                tools=tools,
+                channel=store_channel,
+                round_idx=round_idx,
+                gate=gate,
+                json_mode=json_mode,
             )
-            # Chat/autonomous turns must not persist leaked tick JSON — it
-            # re-enters history and teaches the model to echo ticks again.
-            if role != "consciousness":
-                from ophelia.channels.proactive_filter import (
-                    is_consciousness_tick_payload,
-                    strip_consciousness_tick_leak,
-                )
+        except Exception as e:
+            from ophelia.providers.errors import api_error_detail
 
-                cleaned = strip_consciousness_tick_leak(text)
-                if cleaned:
-                    text = cleaned
-                elif is_consciousness_tick_payload(text):
-                    log.warning(
-                        "tool_loop.tick_json_stripped",
-                        channel=store_channel,
-                        role=role,
-                        preview=text[:120],
-                    )
-                    text = ""
-            if text:
-                await self._store(
-                    store_channel,
-                    "assistant",
-                    text,
-                    is_owner=is_owner,
-                    metadata=store_meta,
-                )
-            elif role == "consciousness":
-                # Always keep the raw tick for the consciousness parser path
-                # (caller already has `raw`); tag empty edge cases too.
-                await self._store(
-                    store_channel,
-                    "assistant",
-                    content_text.strip() or "(no response)",
-                    is_owner=is_owner,
-                    metadata=store_meta,
-                )
-            # Turn finished cleanly — drop any stale resume context and reset
-            # the continuation counter (Tier C #14 follow-up: a fresh, finished
-            # turn means we're not mid-chain anymore).
-            self._pending_resume.pop(store_channel, None)
-            self._continuation_count.pop(store_channel, None)
-            log.info(
-                "tool_loop.done",
+            detail = api_error_detail(e)
+            log.error(
+                "tool_loop.api_error",
                 channel=store_channel,
                 role=role,
-                rounds=rounds_used,
+                model=model,
+                provider=provider,
+                round=round_idx + 1,
+                error=detail,
+            )
+            # Drop any pending resume context — this turn can't continue.
+            self._pending_resume.pop(store_channel, None)
+            self._continuation_count.pop(store_channel, None)
+            raise RuntimeError(
+                f"LLM call failed for {role}/{model} on {provider}: {detail}"
+            ) from e
+        _warn_if_ollama_truncated(response, provider)
+        msg = response.choices[0].message
+        return msg
+
+    def _calls_in(self, st: "_Loop", msg, round_idx: int):
+        """(tool calls, text, recovered?): structured calls, or ones the model
+        wrote into its text (some providers do), salvaged."""
+        known_tool_names, use, role = st.known_tool_names, st.use, st.role
+        store_channel = st.store_channel
+        # Normalize tool_calls: prefer structured API field; if empty,
+        # salvage JSON/markup tool invocations that some providers leave
+        # in content (common text-before-tool failure mode on Ollama).
+        tool_call_dicts = self._structured_tool_call_dicts(msg.tool_calls)
+        content_text = msg.content or ""
+        recovered_from_content = False
+        if not tool_call_dicts and use and content_text.strip():
+            parsed, remaining = extract_tool_calls_from_content(
+                content_text, known_tools=known_tool_names
+            )
+            if parsed:
+                tool_call_dicts = parsed_to_openai_dicts(parsed)
+                content_text = remaining
+                recovered_from_content = True
+                log.info(
+                    "tool_loop.recovered_from_content",
+                    channel=store_channel,
+                    role=role,
+                    round=round_idx + 1,
+                    tools=[c.name for c in parsed],
+                )
+        return tool_call_dicts, content_text, recovered_from_content
+
+    async def _tool_round(self, st: "_Loop", tool_call_dicts, content_text: str,
+                          recovered_from_content: bool, round_idx: int) -> str | None:
+        """Speak-then-act preamble, loop detection, run the calls (lookups
+        together), feed results back. Returns the wrap-up if she's stuck."""
+        messages, tools = st.messages, st.tools
+        all_tools, tier_groups = st.all_tools, st.tier_groups
+        is_owner, role, store_channel, model = st.is_owner, st.role, st.store_channel, st.model
+        provider, gate = st.provider, st.gate
+        max_tool_rounds, interject_here = st.max_tool_rounds, st.interject_here
+        answering, seen_signatures = st.answering, st.seen_signatures
+        tc_names = [tc["function"]["name"] for tc in tool_call_dicts]
+        log.info(
+            "tool_loop.round",
+            channel=store_channel,
+            role=role,
+            round=round_idx + 1,
+            tools=tc_names,
+            recovered_from_content=recovered_from_content,
+        )
+        # Speak-then-act: deliver any preamble text mid-turn so the
+        # user hears "okay, one sec" while tools still run. Without
+        # this, content+tool_calls kept the text only in the message
+        # history and never pushed it to the channel until the final
+        # (often empty) synthesis — looking like the turn died after
+        # the text.
+        await self._deliver_mid_turn_preamble(content_text)
+        if interject_here and content_text.strip():
+            interjections.note_step(store_channel, f'you said: "{content_text.strip()}"')
+        if answering and content_text.strip():
+            answering = False
+            await self._store(store_channel, "assistant", content_text.strip(),
+                              is_owner=is_owner, metadata={"type": "interjection_reply"})
+        # Detect a stuck loop: the same set of tool calls (same names +
+        # same arguments) repeated back-to-back. Bail early rather than
+        # burning the rest of the budget.
+        sig = self._tool_call_dicts_signature(tool_call_dicts)
+        stuck = sig in seen_signatures[-2:] if seen_signatures else False
+        seen_signatures.append(sig)
+
+        messages.append(
+            {
+                "role": "assistant",
+                "content": content_text or "",
+                "tool_calls": tool_call_dicts,
+            }
+        )
+        # Several lookups in one round (recall_memory + web_search...)
+        # don't depend on each other: start them all now, then take
+        # the results in order. Anything that acts stays sequential.
+        prefetched: dict[str, asyncio.Future] = {}
+        lookups = [tc for tc in tool_call_dicts
+                   if tc["function"]["name"] in READ_ONLY_TOOLS]
+        if len(lookups) > 1:
+            for tc in lookups:
+                prefetched[tc["id"]] = asyncio.ensure_future(self.tools.dispatch(
+                    tc["function"]["name"], tc["function"].get("arguments") or "{}"))
+        for tc in tool_call_dicts:
+            name = tc["function"]["name"]
+            arguments = tc["function"].get("arguments") or "{}"
+            if tc["id"] in prefetched:
+                result = await prefetched.pop(tc["id"])
+            elif name == "load_tools":
+                import json
+
+                try:
+                    wanted = json.loads(arguments or "{}").get("groups") or []
+                except (json.JSONDecodeError, AttributeError):
+                    wanted = []
+                if tier_groups is None:
+                    result = "All of your tools are already available."
+                else:
+                    loaded = self.tools.tiers.load(store_channel, list(wanted))
+                    tier_groups |= set(loaded)
+                    tools = _tiered_definitions(all_tools, tier_groups)
+                    result = (
+                        f"Loaded: {', '.join(loaded)}. Call the tool you need now."
+                        if loaded
+                        else "No such tool group."
+                    )
+            elif name in ("search_hermes_memory", "recall_past_sessions"):
+                if not is_owner:
+                    result = (
+                        "Searching past sessions is owner-only and disabled "
+                        "for guest conversations."
+                    )
+                else:
+                    import json
+
+                    args = json.loads(arguments or "{}")
+                    result = await self.search_past(args.get("query", ""))
+            else:
+                result = await self.tools.dispatch(name, arguments)
+                if answering and name == "send_message":
+                    answering = False
+                    await self._record_interjection_reply(
+                        store_channel, arguments, is_owner=is_owner
+                    )
+            if interject_here:
+                interjections.note_step(
+                    store_channel, f"{name}({arguments[:80]}) -> {str(result)[:140]}"
+                )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                }
+            )
+
+        if stuck:
+            log.warning(
+                "tool_loop.stuck",
+                channel=store_channel,
+                role=role,
+                round=round_idx + 1,
+                repeated_tools=tc_names,
+                max_rounds=max_tool_rounds,
+            )
+            # Force a final synthesis: ask the model to wrap up using
+            # what it has so far, with no further tool calls allowed.
+            text = await self._finalize_after_stuck(
+                messages,
+                store_channel=store_channel,
+                role=role,
+                model=model,
+                provider=provider,
+                gate=gate,
+                is_owner=is_owner,
             )
             return text
+        st.answering, st.tools = answering, tools
+        return None
 
+    async def _final_text(self, st: "_Loop", content_text: str, round_idx: int):
+        """A reply without tool calls: answer a mid-task message and go back
+        to work, recover narrated-but-not-called tools once, or store and
+        return the reply (_CONTINUE to keep looping)."""
+        messages, tools, use, is_owner = st.messages, st.tools, st.use, st.is_owner
+        role, store_channel, answering = st.role, st.store_channel, st.answering
+        narration_nudge_used, rounds_used = st.narration_nudge_used, st.rounds_used
+        text = content_text.strip() or "(no response)"
+
+        # She answered a mid-task message in plain text instead of with
+        # send_message: deliver it as the reply, then send her back to the
+        # task once rather than ending the turn there.
+        if answering and content_text.strip():
+            answering = False
+            await self._deliver_mid_turn_preamble(text)
+            await self._store(store_channel, "assistant", text, is_owner=is_owner,
+                              metadata={"type": "interjection_reply"})
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "system", "content": _RESUME_NUDGE})
+            log.info("interjection.resume_nudge", channel=store_channel)
+            st.answering, st.narration_nudge_used = answering, narration_nudge_used
+            return _CONTINUE
+
+        # Text-before-tool failure: model narrated an action but emitted
+        # neither structured tool_calls nor recoverable markup. Give one
+        # recovery round instead of finalizing the turn (which made her
+        # look like she lied about using a tool).
+        if (
+            use
+            and tools
+            and not narration_nudge_used
+            and looks_like_tool_narration(text)
+        ):
+            narration_nudge_used = True
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "system", "content": _TOOL_NARRATION_NUDGE})
+            await self._deliver_mid_turn_preamble(text)
+            log.warning(
+                "tool_loop.narration_recovery",
+                channel=store_channel,
+                role=role,
+                round=round_idx + 1,
+                preview=text[:120],
+            )
+            st.answering, st.narration_nudge_used = answering, narration_nudge_used
+            return _CONTINUE
+
+        store_meta = (
+            {"type": "consciousness_json"} if role == "consciousness" else None
+        )
+        # Chat/autonomous turns must not persist leaked tick JSON — it
+        # re-enters history and teaches the model to echo ticks again.
+        if role != "consciousness":
+            from ophelia.channels.proactive_filter import (
+                is_consciousness_tick_payload,
+                strip_consciousness_tick_leak,
+            )
+
+            cleaned = strip_consciousness_tick_leak(text)
+            if cleaned:
+                text = cleaned
+            elif is_consciousness_tick_payload(text):
+                log.warning(
+                    "tool_loop.tick_json_stripped",
+                    channel=store_channel,
+                    role=role,
+                    preview=text[:120],
+                )
+                text = ""
+        if text:
+            await self._store(
+                store_channel,
+                "assistant",
+                text,
+                is_owner=is_owner,
+                metadata=store_meta,
+            )
+        elif role == "consciousness":
+            # Always keep the raw tick for the consciousness parser path
+            # (caller already has `raw`); tag empty edge cases too.
+            await self._store(
+                store_channel,
+                "assistant",
+                content_text.strip() or "(no response)",
+                is_owner=is_owner,
+                metadata=store_meta,
+            )
+        # Turn finished cleanly — drop any stale resume context and reset
+        # the continuation counter (Tier C #14 follow-up: a fresh, finished
+        # turn means we're not mid-chain anymore).
+        self._pending_resume.pop(store_channel, None)
+        self._continuation_count.pop(store_channel, None)
+        log.info(
+            "tool_loop.done",
+            channel=store_channel,
+            role=role,
+            rounds=rounds_used,
+        )
+        return text
+
+    async def _cap_hit(self, st: "_Loop") -> str:
+        """Out of rounds: queue the chain to resume next turn (unless it was
+        repeating itself) and say so."""
+        messages, is_owner = st.messages, st.is_owner
+        role, store_channel = st.role, st.store_channel
+        max_tool_rounds, seen_signatures = st.max_tool_rounds, st.seen_signatures
+        rounds_used = st.rounds_used
         # Hit the hard cap without finishing and without being flagged stuck.
         log.warning(
             "tool_loop.cap_hit",
