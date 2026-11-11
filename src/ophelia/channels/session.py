@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -53,6 +55,22 @@ def guest_welcome_message() -> str:
         "or poke at my phone.\n"
         "Otherwise — I'm around. What's up?"
     )
+
+
+@dataclass
+class _ChatTurn:
+    """One incoming message being answered."""
+    channel: str
+    text: str
+    reply: Any
+    is_owner: bool
+    media_reply: Any
+    log_context: dict | None
+    actions: Any
+    started: float
+    sender_id: Any
+    logger: Any
+    sent: int = 0  # chunks sent so far (the first one is paced differently)
 
 
 class ChannelSession:
@@ -387,8 +405,44 @@ class ChannelSession:
         log_context: dict | None = None,
         actions: ChatActions | None = None,
     ) -> None:
-        settings = self.agent.settings
-        is_owner = settings.is_owner_channel(channel)
+        """One message, start to finish: screen it (/stop, her silent
+        treatment, an interjection into a running turn), set the turn up, let
+        the director shape the reply, compose it, deliver it, clean up."""
+        is_owner = self.agent.settings.is_owner_channel(channel)
+        screened = await self._screen_inbound(
+            channel, text, reply, is_owner=is_owner, media_reply=media_reply,
+            log_context=log_context, actions=actions)
+        if screened is None:
+            return
+        turn = _ChatTurn(channel=channel, text=screened, reply=reply, is_owner=is_owner,
+                         media_reply=media_reply, log_context=log_context, actions=actions,
+                         started=time.time(), sender_id=_sender_id(channel),
+                         logger=self._logger())
+        self._current_log_context = log_context
+        await self._begin_turn(turn)
+        director_decision = await self._direct(turn)
+        await self._log_inbound(channel, screened, is_owner=is_owner, log_context=log_context)
+        send = self._text_sender(turn)
+        send_media = self._media_sender(turn)
+        # Wire mid-turn senders AFTER the logged wrappers exist so send_message
+        # and preamble delivery hit the chat log / Discord mirror too.
+        self.agent.tools.set_message_sender(send)
+        if send_media is not None:
+            self.agent.tools.set_media_sender(send_media)
+        try:
+            out = await self._compose(turn, director_decision)
+            await self._deliver(turn, out, send)
+        except Exception as e:
+            log.exception("channel.chat_error", channel=channel)
+            await send(f"Error: {e}")
+        finally:
+            await self._end_turn(turn, send_media)
+
+    async def _screen_inbound(self, channel: str, text: str, reply: ReplyFn, *,
+                              is_owner: bool, media_reply, log_context,
+                              actions) -> str | None:
+        """The message to answer (with a comeback note if it broke her silent
+        treatment), or None when it's already been dealt with."""
         if is_owner and text.strip().lower() in ("/stop", "/stop@ophelia"):
             # Surfaces without a command router (Discord, etc.) land here.
             from ophelia.core import interrupts
@@ -400,7 +454,7 @@ class ChannelSession:
                 stopped.append("silent treatment")
             await reply("Stopped. (" + ", ".join(stopped) + ")" if stopped
                         else "Nothing was running.")
-            return
+            return None
         if is_owner:
             self._owner_spoke()
             from ophelia.mind import quiet
@@ -411,17 +465,16 @@ class ChannelSession:
                     await self._hold_while_quiet(channel, text, q, reply=reply,
                                                  media_reply=media_reply,
                                                  log_context=log_context, actions=actions)
-                    return
+                    return None
                 quiet.end(channel)
                 text = f"{quiet.comeback_note(q, broken_by=text)}\n{text}"
         if await self.try_interject(channel, text, reply=reply, log_context=log_context):
-            return
-        turn_started = time.time()
-        sent_count = [0]
-        sender_id = _sender_id(channel)
-        logger = self._logger()
-        self._current_log_context = log_context
+            return None
+        return text
 
+    async def _begin_turn(self, turn: "_ChatTurn") -> None:
+        """Mark the turn as live and give the tools this turn's context."""
+        channel, is_owner, actions = turn.channel, turn.is_owner, turn.actions
         self.signals.last_user_message_at = time.time()
         await self.signals.set_user_talking(True)
         await self.signals.set_agent_thinking(True)
@@ -442,9 +495,11 @@ class ChannelSession:
                 except Exception as e:
                     log.debug("schedule_learner.record_failed", error=str(e))
 
-        # Tier A #1: director decides urgency + pacing for this reply. The
-        # owner is active by definition here, so the director won't defer —
-        # it just shapes HOW she responds, not whether.
+    async def _direct(self, turn: "_ChatTurn"):
+        """Tier A #1: the director's urgency and pacing for this reply. The
+        owner is active by definition here, so it won't defer: it shapes how
+        she answers, not whether."""
+        text = turn.text
         director_decision = None
         director = getattr(self.agent, "director", None)
         if director is not None and director.available():
@@ -456,8 +511,14 @@ class ChannelSession:
                 )
             except Exception as e:
                 log.debug("director.chat_decide_error", error=str(e))
+        return director_decision
 
-        await self._log_inbound(channel, text, is_owner=is_owner, log_context=log_context)
+    def _text_sender(self, turn: "_ChatTurn"):
+        """send(chunk): humanize, pace, send, then log (and mirror any file
+        the gateway delivered from the text)."""
+        channel, is_owner, actions = turn.channel, turn.is_owner, turn.actions
+        reply, logger, sender_id = turn.reply, turn.logger, turn.sender_id
+        log_context, settings = turn.log_context, self.agent.settings
 
         # Wrap the reply/media senders so every outbound chunk + media file is
         # logged too — including mid-turn send_message / preamble delivery.
@@ -481,9 +542,9 @@ class ChannelSession:
                 chunk = humanize.humanize(chunk)
                 if not chunk:
                     return
-            await self._pace(chunk, first=sent_count[0] == 0,
-                             elapsed=time.time() - turn_started, actions=actions)
-            sent_count[0] += 1
+            await self._pace(chunk, first=turn.sent == 0,
+                             elapsed=time.time() - turn.started, actions=actions)
+            turn.sent += 1
             await reply(chunk)
             if logger:
                 out_entry = {
@@ -528,6 +589,13 @@ class ChannelSession:
                     )
                     await self._emit_log_hook(media_entry)
 
+        return _logged_reply
+
+    def _media_sender(self, turn: "_ChatTurn"):
+        """send_media(path, caption) -> bool: send a file, and log it only if
+        it actually went through. None when the channel can't take files."""
+        channel, is_owner, media_reply = turn.channel, turn.is_owner, turn.media_reply
+        logger, sender_id, log_context = turn.logger, turn.sender_id, turn.log_context
         logged_media_reply: MediaReplyFn | None = None
         if media_reply is not None:
             async def _logged_media(path: Path, caption: str) -> bool:
@@ -552,121 +620,133 @@ class ChannelSession:
                     await self._emit_log_hook(media_entry)
                 return ok
             logged_media_reply = _logged_media
+        return logged_media_reply
 
-        # Wire mid-turn senders AFTER the logged wrappers exist so send_message
-        # and preamble delivery hit the chat log / Discord mirror too.
-        self.agent.tools.set_message_sender(_logged_reply)
-        if logged_media_reply is not None:
-            self.agent.tools.set_media_sender(logged_media_reply)
-
-        try:
-            voice_on = self.voice_enabled(channel, settings.voice_reply_default)
-            turn_extra = tts_turn_extra(settings, voice_reply=voice_on)
-            # Tier A #1: director pace hint composes with the TTS turn extra.
-            if director_decision is not None and director_decision.pace_hint:
-                turn_extra = (
-                    (turn_extra + "\n" if turn_extra else "")
-                    + f"# Director pacing (urgency={director_decision.urgency})\n"
-                    + director_decision.pace_hint
-                )
-            if is_owner and self.agent.humor:
-                await self.agent.humor.score_inbound_reply(text)
-            # Ensemble Reaction: director "react" → fast one-liner; fall back
-            # to full chat if the reaction mind is off / empty / errors.
-            out = ""
-            used_reaction = False
-            reaction = getattr(self.agent, "reaction_mind", None)
-            if (
-                director_decision is not None
-                and director_decision.is_fast_reaction
-                and reaction is not None
-                and getattr(reaction, "enabled", False)
-                and not await self._needs_action(channel, text, is_owner=is_owner)
-            ):
-                try:
-                    out = await self.agent.run_reaction_turn(
-                        channel,
-                        text,
-                        is_owner=is_owner,
-                        decision=director_decision,
-                    )
-                    used_reaction = bool(out)
-                except Exception as e:
-                    log.debug("reaction.chat_path_failed", error=str(e))
-                    out = ""
-            tools = self.agent.tools
-            if hasattr(tools, "_tools_called"):
-                tools._tools_called = []  # what this turn actually does
-                tools._doing_results = []
-            if not out:
-                out = await self.agent.run_turn(
-                    channel, text, is_owner=is_owner, system_extra=turn_extra
-                )
-            elif used_reaction:
-                log.info(
-                    "reaction.chat_fast_path",
-                    channel=channel,
-                    chars=len(out),
-                    urgency=director_decision.urgency if director_decision else None,
-                )
-            from ophelia.channels.proactive_filter import (
-                is_outreach_junk,
-                strip_consciousness_tick_leak,
+    async def _compose(self, turn: "_ChatTurn", director_decision) -> str:
+        """Her reply: the fast reaction mind when the director says react,
+        otherwise a full turn; tick-JSON leaks and junk stripped, her drives
+        moved by what he said, and a claimed-but-unsent picture caught."""
+        channel, text, is_owner = turn.channel, turn.text, turn.is_owner
+        settings = self.agent.settings
+        voice_on = self.voice_enabled(channel, settings.voice_reply_default)
+        turn_extra = tts_turn_extra(settings, voice_reply=voice_on)
+        # Tier A #1: director pace hint composes with the TTS turn extra.
+        if director_decision is not None and director_decision.pace_hint:
+            turn_extra = (
+                (turn_extra + "\n" if turn_extra else "")
+                + f"# Director pacing (urgency={director_decision.urgency})\n"
+                + director_decision.pace_hint
             )
-
-            # Models sometimes echo consciousness-tick JSON into chat replies
-            # after seeing raw ticks in history. Strip before the owner sees it.
-            out = strip_consciousness_tick_leak(out or "")
-            if not out or is_outreach_junk(out):
+        if is_owner and self.agent.humor:
+            await self.agent.humor.score_inbound_reply(text)
+        # Ensemble Reaction: director "react" → fast one-liner; fall back
+        # to full chat if the reaction mind is off / empty / errors.
+        out = ""
+        used_reaction = False
+        reaction = getattr(self.agent, "reaction_mind", None)
+        if (
+            director_decision is not None
+            and director_decision.is_fast_reaction
+            and reaction is not None
+            and getattr(reaction, "enabled", False)
+            and not await self._needs_action(channel, text, is_owner=is_owner)
+        ):
+            try:
+                out = await self.agent.run_reaction_turn(
+                    channel,
+                    text,
+                    is_owner=is_owner,
+                    decision=director_decision,
+                )
+                used_reaction = bool(out)
+            except Exception as e:
+                log.debug("reaction.chat_path_failed", error=str(e))
                 out = ""
-            # Only the owner's messages shape her drives/will. Guests don't.
-            if is_owner:
-                self.drives.on_user_message(text)
-                await self.memory.save_drives(self.drives)
-            if is_owner and out:
-                out = await self._catch_phantom(channel, text, out, turn_extra)
-            self.signals.last_agent_message_at = time.time()
-            for i, chunk in enumerate(split_messages(out)):
-                cleaned = strip_consciousness_tick_leak(chunk)
-                if not cleaned or is_outreach_junk(cleaned):
-                    continue
-                if i:
-                    await asyncio.sleep(1.2)
-                await _logged_reply(cleaned)
-            if is_owner:
-                self._maybe_follow_through(
-                    channel, out, reply=reply, media_reply=media_reply,
-                    log_context=log_context, actions=actions)
-            # Tier B #8: track jokes/quips in her normal chat replies (owner
-            # only) so her humor can be calibrated from everyday conversation,
-            # not just spontaneous outreach.
-            if is_owner and self.agent.humor:
+        tools = self.agent.tools
+        if hasattr(tools, "_tools_called"):
+            tools._tools_called = []  # what this turn actually does
+            tools._doing_results = []
+        if not out:
+            out = await self.agent.run_turn(
+                channel, text, is_owner=is_owner, system_extra=turn_extra
+            )
+        elif used_reaction:
+            log.info(
+                "reaction.chat_fast_path",
+                channel=channel,
+                chars=len(out),
+                urgency=director_decision.urgency if director_decision else None,
+            )
+        from ophelia.channels.proactive_filter import (
+            is_outreach_junk,
+            strip_consciousness_tick_leak,
+        )
+
+        # Models sometimes echo consciousness-tick JSON into chat replies
+        # after seeing raw ticks in history. Strip before the owner sees it.
+        out = strip_consciousness_tick_leak(out or "")
+        if not out or is_outreach_junk(out):
+            out = ""
+        # Only the owner's messages shape her drives/will. Guests don't.
+        if is_owner:
+            self.drives.on_user_message(text)
+            await self.memory.save_drives(self.drives)
+        if is_owner and out:
+            out = await self._catch_phantom(channel, text, out, turn_extra)
+        return out
+
+    async def _deliver(self, turn: "_ChatTurn", out: str, send) -> None:
+        """Send the reply in pieces, then follow-through and humor bookkeeping."""
+        channel, is_owner = turn.channel, turn.is_owner
+        reply, media_reply = turn.reply, turn.media_reply
+        log_context, actions = turn.log_context, turn.actions
+        from ophelia.channels.proactive_filter import (
+            is_outreach_junk,
+            strip_consciousness_tick_leak,
+        )
+
+        self.signals.last_agent_message_at = time.time()
+        for i, chunk in enumerate(split_messages(out)):
+            cleaned = strip_consciousness_tick_leak(chunk)
+            if not cleaned or is_outreach_junk(cleaned):
+                continue
+            if i:
+                await asyncio.sleep(1.2)
+            await send(cleaned)
+        if is_owner:
+            self._maybe_follow_through(
+                channel, out, reply=reply, media_reply=media_reply,
+                log_context=log_context, actions=actions)
+        # Tier B #8: track jokes/quips in her normal chat replies (owner
+        # only) so her humor can be calibrated from everyday conversation,
+        # not just spontaneous outreach.
+        if is_owner and self.agent.humor:
+            try:
+                await self.agent.humor.note_chat_reply(out)
+            except Exception as e:
+                log.debug("humor.note_chat_reply_failed", error=str(e))
+
+    async def _end_turn(self, turn: "_ChatTurn", send_media) -> None:
+        """Always runs: send files still queued, clear the turn's context, and
+        stir her consciousness soon after the chat."""
+        if send_media is not None:
+            for path in self.agent.tools.consume_pending_artifacts():
                 try:
-                    await self.agent.humor.note_chat_reply(out)
+                    ok = await send_media(path, "")
+                    if ok:
+                        self.agent.tools._mark_artifact_delivered(path)
                 except Exception as e:
-                    log.debug("humor.note_chat_reply_failed", error=str(e))
-        except Exception as e:
-            log.exception("channel.chat_error", channel=channel)
-            await _logged_reply(f"Error: {e}")
-        finally:
-            if logged_media_reply is not None:
-                for path in self.agent.tools.consume_pending_artifacts():
-                    try:
-                        ok = await logged_media_reply(path, "")
-                        if ok:
-                            self.agent.tools._mark_artifact_delivered(path)
-                    except Exception as e:
-                        log.warning("channel.flush_media_failed", path=str(path), error=str(e))
-            self.agent.tools.clear_message_sender()
-            self.agent.tools.clear_media_sender()
-            self.agent.tools.clear_owner()
-            self.agent.tools._current_sender_channel = None
-            await self.signals.set_user_talking(False)
-            await self.signals.set_agent_thinking(False)
-            self._current_log_context = None
-            # Event-driven will: after a chat turn, stir consciousness soon so
-            # she can react/impulse without waiting for the full clock interval.
-            spawn(self._wake_after_chat(), name="wake_after_chat")
+                    log.warning("channel.flush_media_failed", path=str(path), error=str(e))
+        self.agent.tools.clear_message_sender()
+        self.agent.tools.clear_media_sender()
+        self.agent.tools.clear_owner()
+        self.agent.tools._current_sender_channel = None
+        await self.signals.set_user_talking(False)
+        await self.signals.set_agent_thinking(False)
+        self._current_log_context = None
+        # Event-driven will: after a chat turn, stir consciousness soon so
+        # she can react/impulse without waiting for the full clock interval.
+        spawn(self._wake_after_chat(), name="wake_after_chat")
 
     def _maybe_follow_through(self, channel: str, out: str, **plumbing) -> None:
         """She ended on "give me thirty seconds" / "I'll do it properly" and
