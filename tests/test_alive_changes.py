@@ -321,7 +321,9 @@ def test_fast_tick_skip_logic_present():
 
     from ophelia.mind.consciousness import ConsciousnessLoop
 
-    src = inspect.getsource(ConsciousnessLoop._tick)
+    # The skip lives in the steps _tick calls (_quiet / _settle_quiet).
+    src = inspect.getsource(ConsciousnessLoop._quiet) + inspect.getsource(
+        ConsciousnessLoop._settle_quiet)
     assert "fast_tick_skip" in src
     assert "pressure" in src
     # Event-driven consciousness: only very low pressure skips the LLM call.
