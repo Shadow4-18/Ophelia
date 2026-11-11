@@ -153,3 +153,47 @@ async def call_with_fallback(
         f"All providers failed for {role} (primary {primary_provider}). "
         "Last error was transient — retry later."
     )
+
+
+async def complete_text(
+    settings: Settings,
+    stack: ProviderStack,
+    *,
+    role: ProviderRole,
+    messages: list[dict[str, Any]],
+    log_tag: str,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+    gate: ModelGate | None = None,
+    model: str | None = None,
+) -> str:
+    """One model call for a background job (dream, diary, episode, curator,
+    prompt rewrite, eval judge...): the role's provider and model, the
+    provider's extra_body, transient-error fallback, the model gate, an
+    optional timeout. Returns the reply text; raises on failure (callers
+    decide what failing means for them).
+
+    Each of those jobs used to build this by hand, differently."""
+    import asyncio
+
+    from ophelia.providers.router import XAIBackend
+
+    backend = stack.backend(role)
+    client = (await backend.async_client_fresh() if isinstance(backend, XAIBackend)
+              else backend.async_client())
+
+    async def _make_call(cl, mdl, prov):
+        kw: dict[str, Any] = {"model": mdl, "messages": messages,
+                              "extra_body": extra_body_for(settings, prov)}
+        if max_tokens:
+            kw["max_tokens"] = max_tokens
+        return await cl.chat.completions.create(**kw)
+
+    call = call_with_fallback(
+        settings, stack, role=role, primary_provider=stack.name(role),
+        primary_model=model or stack.model(role), primary_client=client,
+        make_call=_make_call,
+        gate=gate or get_model_gate(), log_tag=log_tag,
+    )
+    resp = await (asyncio.wait_for(call, timeout) if timeout else call)
+    return (resp.choices[0].message.content or "").strip()

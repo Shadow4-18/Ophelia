@@ -179,8 +179,7 @@ JUDGE_PROMPT = (
 
 async def judge_reply(agent: Any, s: Scenario, reply: str) -> tuple[bool, str]:
     from ophelia.memory.bootstrap import load_soul
-    from ophelia.providers.fallback import call_with_fallback, extra_body_for
-    from ophelia.providers.model_gate import get_model_gate
+    from ophelia.providers.fallback import complete_text
 
     soul = (load_soul() or "")[:1500]
     messages = [
@@ -195,24 +194,10 @@ async def judge_reply(agent: Any, s: Scenario, reply: str) -> tuple[bool, str]:
         },
     ]
 
-    async def _make_call(cl, mdl, prov):
-        return await cl.chat.completions.create(
-            model=mdl, messages=messages, extra_body=extra_body_for(agent.settings, prov)
-        )
-
     try:
-        resp = await call_with_fallback(
-            agent.settings,
-            agent.stack,
-            role="curator",
-            primary_provider=agent.stack.name("curator"),
-            primary_model=agent._model("curator"),
-            primary_client=await agent._client("curator"),
-            make_call=_make_call,
-            gate=get_model_gate(),
-            log_tag="eval.judge",
-        )
-        raw = resp.choices[0].message.content or ""
+        raw = await complete_text(agent.settings, agent.stack, role="curator",
+                                  model=agent._model("curator"), messages=messages,
+                                  log_tag="eval.judge")
         m = re.search(r"\{[\s\S]*\}", raw)
         data = json.loads(m.group(0)) if m else {}
         return bool(data.get("pass")), str(data.get("reason") or raw[:200])

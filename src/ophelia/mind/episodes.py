@@ -355,28 +355,18 @@ class EpisodicMemory:
 
     async def _ask(self, system: str, user: str) -> str | None:
         from ophelia.mind.growth import persona_system
-        from ophelia.providers.fallback import call_with_fallback, extra_body_for
-        from ophelia.providers.model_gate import get_model_gate
+        from ophelia.providers.fallback import complete_text
 
         agent = self.agent
-        messages = [{"role": "system", "content": persona_system(system)},
-                    {"role": "user", "content": user}]
-
-        async def _make_call(cl, mdl, prov):
-            return await cl.chat.completions.create(
-                model=mdl, messages=messages, extra_body=extra_body_for(agent.settings, prov))
-
         try:
-            resp = await call_with_fallback(
-                agent.settings, agent.stack, role="curator",
-                primary_provider=agent.stack.name("curator"),
-                primary_model=agent._model("curator"),
-                primary_client=await agent._client("curator"),
-                make_call=_make_call, gate=get_model_gate(), log_tag="episodes.fallback")
+            return await complete_text(
+                agent.settings, agent.stack, role="curator", model=agent._model("curator"),
+                messages=[{"role": "system", "content": persona_system(system)},
+                          {"role": "user", "content": user}],
+                log_tag="episodes.fallback")
         except Exception as e:
             log.warning("episodes.llm_failed", error=str(e)[:200])
             return None
-        return (resp.choices[0].message.content or "").strip()
 
     async def _oldest_day(self) -> date | None:
         async with aiosqlite.connect(self.memory.db_path) as db:

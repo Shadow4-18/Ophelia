@@ -103,10 +103,6 @@ class DreamLoop:
         transcript = "\n".join(transcript_lines[-40:])
         inner_tail = self.inner.tail(20)[:2000] if self.inner else ""
 
-        client = await self.agent._client("curator")
-        model = self.agent._model("curator")
-        gate = get_model_gate()
-        provider = self.agent.stack.name("curator")  # type: ignore[attr-defined]
         dream_prompt = DREAM_PROMPT
         if self.agent.life and self.agent.life.is_sleep_mode():
             dream_prompt += (
@@ -119,33 +115,17 @@ class DreamLoop:
             {"role": "system", "content": persona_system(dream_prompt)},
             {"role": "user", "content": f"Recent experience:\n{transcript}\n\nRecent inner thoughts:\n{inner_tail or '(none)'}"},
         ]
-        from ophelia.providers.fallback import call_with_fallback, extra_body_for
-
-        async def _make_call(cl, mdl, prov):
-            return await cl.chat.completions.create(
-                model=mdl,
-                messages=messages,
-                extra_body=extra_body_for(self.agent.settings, prov),
-            )
+        from ophelia.providers.fallback import complete_text
 
         try:
-            resp = await call_with_fallback(
-                self.agent.settings,
-                self.agent.stack,  # type: ignore[attr-defined]
-                role="curator",
-                primary_provider=provider,
-                primary_model=model,
-                primary_client=client,
-                make_call=_make_call,
-                gate=gate,
-                log_tag="dream.fallback",
-            )
+            raw = await complete_text(
+                self.agent.settings, self.agent.stack, role="curator",  # type: ignore[attr-defined]
+                model=self.agent._model("curator"), messages=messages, log_tag="dream.fallback")
         except Exception as e:
             from ophelia.providers.errors import api_error_detail
 
             log.warning("dream.llm_failed", error=api_error_detail(e))
             return
-        raw = (resp.choices[0].message.content or "").strip()
 
         import json
         import re

@@ -14,8 +14,7 @@ from ophelia.memory.bootstrap import load_hermes_memories, parse_hermes_memory_f
 from ophelia.memory.hermes_sessions import search_hermes_sessions
 from ophelia.memory.store import MemoryStore
 from ophelia.providers.errors import api_error_detail
-from ophelia.providers.model_gate import get_model_gate
-from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
+from ophelia.providers.router import build_provider_stack
 
 log = structlog.get_logger()
 
@@ -226,47 +225,23 @@ class MemoryCurator:
         stored = "\n".join(f"- {e[:200]}" for e in known[-40:]) or "(nothing yet)"
 
         stack = build_provider_stack(self.settings)
-        backend = stack.backend("curator")
         model = stack.model("curator")
 
-        if isinstance(backend, XAIBackend):
-            client = await backend.async_client_fresh()
-        else:
-            client = backend.async_client()
-
         try:
-            gate = get_model_gate()
-            from ophelia.providers.fallback import call_with_fallback, extra_body_for
+            from ophelia.providers.fallback import complete_text
 
-            primary_provider = stack.name("curator")
-
-            async def _make_call(client, mdl, provider):
-                return await client.chat.completions.create(
-                    model=mdl,
-                    messages=[
-                        {"role": "system", "content": CURATOR_PROMPT},
-                        {
-                            "role": "user",
-                            "content": f"Already stored:\n{stored}\n\n"
-                            f"Recent conversation:\n{blob}\n{hermes_ctx}",
-                        },
-                    ],
-                    max_tokens=300,
-                    extra_body=extra_body_for(self.settings, provider),
-                )
-
-            resp = await call_with_fallback(
-                self.settings,
-                stack,
-                role="curator",
-                primary_provider=primary_provider,
-                primary_model=model,
-                primary_client=client,
-                make_call=_make_call,
-                gate=gate,
+            raw = await complete_text(
+                self.settings, stack, role="curator", max_tokens=300,
                 log_tag="curator.fallback",
+                messages=[
+                    {"role": "system", "content": CURATOR_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"Already stored:\n{stored}\n\n"
+                        f"Recent conversation:\n{blob}\n{hermes_ctx}",
+                    },
+                ],
             )
-            raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             log.warning("curator.llm_failed", error=api_error_detail(e), model=model)
             return 0
@@ -319,37 +294,14 @@ class MemoryCurator:
         prompt = RECONCILE_PROMPT.format(auth_block=auth_block, facts_block=facts_block)
 
         stack = build_provider_stack(self.settings)
-        backend = stack.backend("curator")
-        model = stack.model("curator")
-        if isinstance(backend, XAIBackend):
-            client = await backend.async_client_fresh()
-        else:
-            client = backend.async_client()
-
         try:
-            gate = get_model_gate()
-            from ophelia.providers.fallback import call_with_fallback, extra_body_for
+            from ophelia.providers.fallback import complete_text
 
-            async def _make_call(cl, mdl, provider):
-                return await cl.chat.completions.create(
-                    model=mdl,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=1200,
-                    extra_body=extra_body_for(self.settings, provider),
-                )
-
-            resp = await call_with_fallback(
-                self.settings,
-                stack,
-                role="curator",
-                primary_provider=stack.name("curator"),
-                primary_model=model,
-                primary_client=client,
-                make_call=_make_call,
-                gate=gate,
+            raw = await complete_text(
+                self.settings, stack, role="curator", max_tokens=1200,
                 log_tag="curator.reconcile_fallback",
+                messages=[{"role": "user", "content": prompt}],
             )
-            raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             log.warning("curator.reconcile_llm_failed", error=api_error_detail(e))
             return 0

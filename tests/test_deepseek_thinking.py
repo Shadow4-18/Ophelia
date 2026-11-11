@@ -74,3 +74,35 @@ def test_make_call_signature_accepts_provider():
     # The annotation is Callable[[Any, str, str], Awaitable[Any]] — three args.
     ann = str(make_call_param.annotation)
     assert "Any, str, str" in ann, ann
+
+
+@pytest.mark.asyncio
+async def test_shared_helper_turns_thinking_off(monkeypatch):
+    """reflect (now on complete_text) and the health ping passed the
+    provider_name *method* to extra_body_for, so the 'deepseek' check never
+    matched and thinking mode stayed on."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from ophelia.providers import fallback
+
+    sent = {}
+
+    async def fake_cwf(settings, stack, *, make_call, primary_client, primary_model, **kw):
+        client = MagicMock()
+
+        async def create(**k):
+            sent.update(k)
+            msg = SimpleNamespace(content='{"reflection": "x", "lessons": []}')
+            return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+        client.chat.completions.create = create
+        return await make_call(client, primary_model, "deepseek")
+
+    monkeypatch.setattr(fallback, "call_with_fallback", fake_cwf)
+    stack = MagicMock()
+    stack.name.return_value = "deepseek"
+    stack.model.return_value = "deepseek-chat"
+    out = await fallback.complete_text(SimpleNamespace(deepseek_thinking=False), stack,
+                                       role="chat", messages=[], log_tag="t")
+    assert out.startswith("{") and sent["extra_body"] == {"thinking": {"type": "disabled"}}

@@ -1427,22 +1427,22 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             f"Recent turns:\n{transcript}\n\n"
             f"Recent inner thoughts:\n{inner_tail or '(none)'}"
         )
-        client = self._backend.async_client()
-        model = self._model_for("chat")
         try:
-            from ophelia.providers.fallback import extra_body_for
+            from ophelia.providers.fallback import complete_text
 
-            resp = await client.chat.completions.create(
-                model=model,
+            # Shared helper: it passes the provider *name* to extra_body_for.
+            # This call passed the provider_name method itself, so DeepSeek's
+            # thinking mode was never turned off for reflections.
+            raw = await complete_text(
+                self.settings, self.stack, role="chat", model=self._model_for("chat"),
+                log_tag="reflect.fallback",
                 messages=[
                     {"role": "system", "content": persona_system(
                         "You are Ophelia reflecting privately. Output only valid JSON."
                     )},
                     {"role": "user", "content": prompt},
                 ],
-                extra_body=extra_body_for(self.settings, self._backend.provider_name),
             )
-            raw = (resp.choices[0].message.content or "").strip()
         except Exception as e:
             return f"Reflection failed: {e}"
         import json as _json
