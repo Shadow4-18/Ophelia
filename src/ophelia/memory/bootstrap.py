@@ -46,7 +46,17 @@ def build_system_context(
     user_entries: list[str],
     psyche_block: str,
     extra: str = "",
+    stable_extra: str = "",
 ) -> str:
+    """The system prompt, in an order that lets the provider cache it.
+
+    DeepSeek (and OpenAI-style APIs) bill the part of a prompt that matches
+    the start of a recent one at a fraction of the price and serve it faster.
+    So everything that rarely changes comes first (persona, growth, his
+    profile, long-term memory, standing policy, ``stable_extra``), and what
+    changes every turn (mood and drives, the time, recalled memories:
+    ``psyche_block`` and ``extra``) comes last. Her mood used to sit right
+    after the persona, so nothing after it could ever be reused."""
     blocks: list[str] = []
     if soul:
         blocks.append(f"# Persona (SOUL)\n{soul}")
@@ -58,8 +68,6 @@ def build_system_context(
             "# Who you're becoming (what you've learned about yourself — this "
             "deepens your SOUL, it never replaces it)\n" + growth
         )
-    if psyche_block:
-        blocks.append(f"# Internal state\n{psyche_block}")
     if user_entries:
         blocks.append("# User profile\n" + "\n---\n".join(user_entries[:40]))
     if memory_entries:
@@ -67,6 +75,11 @@ def build_system_context(
     prompter = load_prompter()
     if prompter:
         blocks.append(f"# Prompter policy (idle behavior)\n{prompter}")
+    if stable_extra:
+        blocks.append(stable_extra)
+    # ---- changes every turn from here on ----
+    if psyche_block:
+        blocks.append(f"# Internal state\n{psyche_block}")
     if extra:
         blocks.append(extra)
     return "\n\n".join(blocks)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +150,15 @@ Everything above is context; your SOUL is who you are. Speak exactly like her, w
 # typed or something she told the owner. Context-local, like tool state.
 _AUTONOMOUS = contextvars.ContextVar("ophelia_autonomous_turn", default=False)
 AUTONOMOUS_PROMPT_TYPES = ("autonomous", "autonomous_continuation")
+
+# Tools that only look things up: safe to run at the same time as each other.
+READ_ONLY_TOOLS = frozenset({
+    "recall_memory", "recall_day", "recall_guest_chat", "web_search", "fetch_url",
+    "look_at_web_page", "search_civitai_models", "list_inbox_images", "list_inbox_files",
+    "sqlite_list_databases", "site_status", "site_list_pages", "site_get_page",
+    "site_read_file", "site_list_files", "site_list_assets", "who_am_i_talking_to",
+    "list_guests", "whats_changed",
+})
 # The channel whose owner chat turn this task is running; that turn picks up
 # messages posted mid-turn. Context-local so autonomous turns never see it.
 _INTERJECT_CHANNEL = contextvars.ContextVar("ophelia_interject_channel", default="")
@@ -354,28 +365,47 @@ class AgentLoop:
         *,
         visible_history: set[str] | None = None,
     ) -> str:
-        honcho_ctx = ""
-        if self.honcho and self.honcho.enabled and channel:
-            honcho_ctx = await self.honcho.get_context(
+        # The reads below don't depend on each other (each its own query or
+        # file): run them together instead of one after another.
+        async def _honcho() -> str:
+            if not (self.honcho and self.honcho.enabled and channel):
+                return ""
+            ctx = await self.honcho.get_context(
                 session_id=channel.replace(":", "_"),
                 tokens=self.settings.honcho_context_tokens,
             )
-            if honcho_ctx:
-                honcho_ctx = f"# Honcho memory\n{honcho_ctx}"
-        drives_block = self.drives.to_context_block()
-        body = self.body_status or ""
-        skills = skills_context_block()
-        self_improve = await self._self_improvement_block()
-        tts_block = tts_system_block(self.settings)
-        life_block = ""
-        humor_block = ""
-        if self.life is not None:
+            return f"# Honcho memory\n{ctx}" if ctx else ""
+
+        async def _life() -> str:
+            if self.life is None:
+                return ""
             try:
                 await self.life.refresh()
-                life_block = self.life.to_context_block()
+                return self.life.to_context_block()
             except Exception as e:
                 log.warning("agent.life_context_failed", error=str(e))
                 self.life = None
+                return ""
+
+        async def _humor() -> str:
+            return await self.humor.hints_for_prompt() if self.humor is not None else ""
+
+        (honcho_ctx, self_improve, life_block, humor_block, guests_block, prefetch_block,
+         continuity_block) = await asyncio.gather(
+            _honcho(),
+            self._self_improvement_block(),
+            _life(),
+            _humor(),
+            self._guests_context_block(channel),
+            # Background memory prefetch: past messages/lessons relevant to
+            # what he said, without a blocking recall_memory tool call.
+            self._memory_prefetch(user_text, channel, skip_contents=visible_history),
+            self._continuity_block(user_text, channel),
+        )
+        drives_block = self.drives.to_context_block()
+        body = self.body_status or ""
+        skills = skills_context_block()
+        tts_block = tts_system_block(self.settings)
         if not life_block:
             # Always inject the current time so the agent never loses track
             # of when "now" is — even if LifeContext is unavailable or
@@ -392,37 +422,26 @@ class AgentLoop:
                 "(change with set_timezone — do not invent a different clock)\n"
                 "Never invent the date or time. Use the lines above."
             )
-        if self.humor is not None:
-            humor_block = await self.humor.hints_for_prompt()
-        guests_block = await self._guests_context_block(channel)
         identity_block = self._identity_block(channel, is_owner=True)
         # Playful output mode: when social + agency drives are both high,
         # loosen the social filter so she can tease and mess around freely.
         from ophelia.mind.mood_behavior import play_hint
 
         play_block = play_hint(self.drives, self.psyche)
-        # Background memory prefetch: pull relevant past messages/lessons for
-        # the current user text so she can reference them without an explicit
-        # blocking recall_memory tool call. Neuro-style parallel memory access.
-        prefetch_block = await self._memory_prefetch(
-            user_text, channel, skip_contents=visible_history
-        )
-        continuity_block = await self._continuity_block(user_text, channel)
         return build_system_context(
             soul=load_soul(),
             memory_entries=self._memory_entries,
             user_entries=self._user_entries,
             psyche_block=self.psyche.to_context_block(drives_block),
+            # Same every turn in this chat: cacheable, so before her mood.
+            stable_extra="\n\n".join(x for x in (identity_block, skills, tts_block) if x),
             extra="\n\n".join(
                 x
                 for x in (
-                    identity_block,
                     body,
                     life_block,
-                    skills,
                     self_improve,
                     humor_block,
-                    tts_block,
                     honcho_ctx,
                     guests_block,
                     play_block,
@@ -920,13 +939,18 @@ class AgentLoop:
         inner_budget = (self.HISTORY_LIMIT if channel == "consciousness"
                         else self.INNER_IN_CHAT)
         inner = await self.memory.recent_across_channels(["consciousness"],
-                                                         limit=inner_budget * 3)
+                                                         limit=max(80, inner_budget * 4))
         if not current_is_tick:
-            # Tick JSON is never rendered in a chat turn: don't let it take slots.
+            # In a chat turn the slots go to what she actually thought or did
+            # ([inner] thoughts, things she saw or said on her own), not to
+            # the "how are you feeling right now" prompts that woke her, nor
+            # the raw tick JSON, which is never rendered here anyway.
             inner = [m for m in inner if not (
-                m["role"] == "assistant"
-                and ((m.get("metadata") or {}).get("type") == "consciousness_json"
-                     or is_consciousness_tick_payload(m.get("content") or "")))]
+                ((m.get("metadata") or {}).get("type") == "consciousness_tick"
+                 and m["role"] == "user")
+                or (m["role"] == "assistant"
+                    and ((m.get("metadata") or {}).get("type") == "consciousness_json"
+                         or is_consciousness_tick_payload(m.get("content") or ""))))]
         inner = inner[-inner_budget:]
         return sorted(rows + inner, key=lambda m: m.get("created_at") or 0)
 
@@ -1463,10 +1487,22 @@ class AgentLoop:
                         "tool_calls": tool_call_dicts,
                     }
                 )
+                # Several lookups in one round (recall_memory + web_search...)
+                # don't depend on each other: start them all now, then take
+                # the results in order. Anything that acts stays sequential.
+                prefetched: dict[str, asyncio.Future] = {}
+                lookups = [tc for tc in tool_call_dicts
+                           if tc["function"]["name"] in READ_ONLY_TOOLS]
+                if len(lookups) > 1:
+                    for tc in lookups:
+                        prefetched[tc["id"]] = asyncio.ensure_future(self.tools.dispatch(
+                            tc["function"]["name"], tc["function"].get("arguments") or "{}"))
                 for tc in tool_call_dicts:
                     name = tc["function"]["name"]
                     arguments = tc["function"].get("arguments") or "{}"
-                    if name == "load_tools":
+                    if tc["id"] in prefetched:
+                        result = await prefetched.pop(tc["id"])
+                    elif name == "load_tools":
                         import json
 
                         try:

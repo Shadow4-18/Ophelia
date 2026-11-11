@@ -90,7 +90,21 @@ def record_reaction(settings: Any, chat_id: Any, message_id: Any, emoji: str) ->
     return name
 
 
+_JSONL_CACHE: dict[tuple[str, int], tuple[tuple[int, int], list[dict]]] = {}
+
+
 def _read_jsonl(path: Path, limit: int) -> list[dict]:
+    """The last ``limit`` JSON lines of a log, parsed once per change: one
+    image used to re-read and re-parse the whole ledger five-plus times
+    (scores, pairs, liked weights per LoRA, liked prompts)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    key, stamp = (str(path), limit), (st.st_mtime_ns, st.st_size)
+    hit = _JSONL_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
     try:
         lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
     except Exception:
@@ -101,6 +115,7 @@ def _read_jsonl(path: Path, limit: int) -> list[dict]:
             out.append(json.loads(line))
         except Exception:
             continue
+    _JSONL_CACHE[key] = (stamp, out)
     return out
 
 
