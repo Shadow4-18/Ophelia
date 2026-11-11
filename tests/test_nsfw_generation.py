@@ -270,7 +270,7 @@ async def test_plan_puts_it_together(tmp_path, monkeypatch):
     plan = await plan_generation(_settings(tmp_path), GenerationRequest(
         prompt="anime, her, nude, ahegao", nsfw=True))
     assert plan.recipe.key == "hassaku" and plan.fallback.key == "illustrious"
-    assert plan.loras == {"urn:air:sdxl:lora:civitai:5@5": 0.75}
+    assert plan.loras == {"urn:air:sdxl:lora:civitai:5@5": 0.7}  # no creator weight given
     assert plan.prompt.startswith("masterpiece, best quality, amazing quality, 1girl")
     assert plan.added and all(a in plan.prompt for a in plan.added)
     assert "ahegao" in plan.prompt
