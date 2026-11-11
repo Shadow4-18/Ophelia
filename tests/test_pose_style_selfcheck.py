@@ -186,3 +186,44 @@ async def test_good_picture_and_solo_are_left_alone(tmp_path, monkeypatch):
                                            again)) == "Pending: still rendering"
     again.assert_not_awaited()
     assert check.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_refusals_in_any_order_are_each_fixed_once(fake, tmp_path, monkeypatch):  # noqa: F811,E501
+    """The old fixed chain checked the seed before the pose, so a seed
+    refusal that came after a pose refusal failed the image."""
+    from ophelia.providers.civitai.orchestration import CivitaiClient
+
+    pose = tmp_path / "pose.png"
+    pose.write_bytes(b"\x89PNG" + b"p" * 64)
+    orig_submit = CivitaiClient.submit
+    seen = []
+
+    async def submit(self, body, **kw):
+        inp = body["steps"][0]["input"]
+        seen.append((inp.get("engine"), "seed" in inp))
+        if inp.get("engine") == "comfy":
+            return httpx.Response(400, text='{"errors": {"controlNets": ["unsupported"]}}')
+        if "seed" in inp:
+            return httpx.Response(400, text='{"errors": {"seed": ["unknown property"]}}')
+        return await orig_submit(self, body, **kw)
+
+    monkeypatch.setattr(CivitaiClient, "submit", submit)
+    out = await _gen(fake, "1girl, anime", pose_image=str(pose))
+    assert out.startswith("Image saved to")
+    assert seen == [("comfy", True), ("sdcpp", True), ("sdcpp", False)]
+
+
+@pytest.mark.asyncio
+async def test_an_unfixable_refusal_fails_after_one_try(fake, monkeypatch):  # noqa: F811
+    from ophelia.providers.civitai.orchestration import CivitaiClient
+
+    calls = []
+
+    async def submit(self, body, **kw):
+        calls.append(1)
+        return httpx.Response(400, text="prompt too long")
+
+    monkeypatch.setattr(CivitaiClient, "submit", submit)
+    out = await _gen(fake, "1girl, anime", model="illustrious")
+    assert out.startswith("Civitai submit failed HTTP 400") and len(calls) == 1
