@@ -252,3 +252,31 @@ def parse_loras(raw: Any) -> dict[str, float]:
         except ValueError:
             out[urn.strip()] = 0.8
     return out
+
+
+def explicit_lora_weights(raw: Any) -> set[str]:
+    """LoRAs given with a weight ("urn|0.7", {"urn": 0.7}); the rest got 0.8
+    by default and are free for the stack planner to weigh."""
+    if not raw:
+        return set()
+    if isinstance(raw, dict):
+        return {str(k) for k, v in raw.items() if v not in (None, "", "auto")}
+    text = str(raw).strip()
+    if text.startswith("{"):
+        try:
+            return explicit_lora_weights(json.loads(text))
+        except json.JSONDecodeError:
+            return set()
+    out = set()
+    for part in text.split(","):
+        part = part.strip()
+        for sep in ("|", "="):
+            if sep in part:
+                urn, _, w = part.partition(sep)
+                try:
+                    float(w)
+                    out.add(urn.strip())
+                except ValueError:
+                    pass
+                break
+    return out

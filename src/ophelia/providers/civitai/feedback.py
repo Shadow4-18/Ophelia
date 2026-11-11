@@ -141,3 +141,27 @@ def multiplier(score: tuple[float, int] | None) -> float:
     total, n = score
     avg = total / (n + 2)
     return max(0.3, min(1.8, 1.0 + 0.8 * avg))
+
+
+def liked_prompts(settings: Any, recipe_key: str, limit: int = 2) -> list[dict]:
+    """His favourite images on this model, best first: the ledger lines
+    (prompt, loras) of images he reacted to with a like."""
+    from ophelia.providers.civitai.pipeline import ledger_path
+
+    by_file: dict[str, dict] = {}
+    for rec in _read_jsonl(ledger_path(settings), 4000):
+        for p in rec.get("paths") or ([rec["path"]] if rec.get("path") else []):
+            by_file[os.path.basename(str(p))] = rec
+    best: dict[str, tuple[float, dict]] = {}
+    for item in _read_jsonl(_feedback_path(settings), 4000):
+        rec = by_file.get(str(item.get("file", "")))
+        score = item.get("score")
+        if not rec or not isinstance(score, (int, float)) or rec.get("recipe") != recipe_key:
+            continue
+        prompt = str(rec.get("prompt") or "")
+        if not prompt:
+            continue
+        old = best.get(prompt, (0.0, rec))
+        best[prompt] = (old[0] + float(score), rec)
+    ranked = sorted((v for v in best.values() if v[0] > 0), key=lambda v: -v[0])
+    return [rec for _, rec in ranked[:limit]]

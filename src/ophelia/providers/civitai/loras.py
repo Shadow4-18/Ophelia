@@ -24,27 +24,46 @@ from ophelia.providers.civitai.catalog import Recipe
 
 log = structlog.get_logger()
 
-# (prompt pattern, search query, the LoRA name must match, name must not match)
-CONCEPTS: list[tuple[str, str, str, str]] = [
-    (r"x-?ray|cross-?section|internal view", "x-ray", r"x-?ray|cross", r"glasses|phone"),
-    (r"ahegao", "ahegao", r"ahegao", ""),
-    (r"tentacles?", "tentacles", r"tentacle", ""),
-    (r"cowgirl|girl on top", "cowgirl", r"cowgirl|girl on top|riding", ""),
-    (r"missionary", "missionary", r"missionary", ""),
-    (r"doggy ?style|from behind sex", "doggystyle", r"doggy", ""),
-    (r"mating press", "mating press", r"mating press", ""),
-    (r"blowjob|fellatio|deepthroat", "blowjob", r"blowjob|fellatio|deepthroat", r"x-?ray"),
-    (r"paizuri|titjob|titfuck", "paizuri", r"paizuri|titjob|titfuck", ""),
-    (r"bukkake|cum on \w+|cum covered|covered in cum|cum on face", "cum",
-     r"cum|bukkake|facial", ""),
-    (r"lactation|lactating|breast milk", "lactation", r"lactat|milk", ""),
-    (r"shibari|rope bondage|bound with rope", "shibari", r"shibari|rope", ""),
-    (r"glory ?hole", "glory hole", r"glory ?hole", ""),
-    (r"futanari|futa", "futanari", r"futa", ""),
+# (prompt pattern, search query, the LoRA name must match, name must not
+# match, group). One LoRA per group: two positions in one picture fight.
+CONCEPTS: list[tuple[str, str, str, str, str]] = [
+    (r"x-?ray|cross-?section|internal view", "x-ray", r"x-?ray|cross", r"glasses|phone",
+     "effect"),
+    (r"ahegao", "ahegao", r"ahegao", "", "face"),
+    (r"tentacles?", "tentacles", r"tentacle", "", "partner"),
+    (r"reverse cowgirl", "reverse cowgirl", r"reverse cowgirl", "", "position"),
+    (r"(?<!reverse )cowgirl|girl on top", "cowgirl", r"cowgirl|girl on top|riding",
+     r"reverse", "position"),
+    (r"missionary", "missionary", r"missionary", "", "position"),
+    (r"doggy ?style|from behind sex|sex from behind", "doggystyle", r"doggy|from behind",
+     "", "position"),
+    (r"mating press", "mating press", r"mating press", "", "position"),
+    (r"prone bone", "prone bone", r"prone", "", "position"),
+    (r"full nelson", "full nelson", r"full nelson", "", "position"),
+    (r"spooning|spoon position", "spooning", r"spoon", "", "position"),
+    (r"standing sex|suspended congress|lifted sex|against (?:the )?wall",
+     "standing sex", r"standing|suspended|lift|wall", "", "position"),
+    (r"69|sixty-?nine", "69 position", r"69|sixty", "", "position"),
+    (r"blowjob|fellatio|deepthroat", "blowjob", r"blowjob|fellatio|deepthroat", r"x-?ray",
+     "oral"),
+    (r"cunnilingus|eating (?:her )?(?:out|pussy)", "cunnilingus", r"cunnilingus|licking",
+     "", "oral"),
+    (r"paizuri|titjob|titfuck", "paizuri", r"paizuri|titjob|titfuck", "", "act"),
+    (r"footjob", "footjob", r"footjob", "", "act"),
+    (r"handjob", "handjob", r"handjob", "", "act"),
+    (r"fingering", "fingering", r"finger", "", "act"),
+    (r"bukkake|cum on \w+|cum covered|covered in cum|cum on face|facial(?! expression)", "cum",
+     r"cum|bukkake|facial", "", "fluid"),
+    (r"creampie|cum inside|cum dripping", "creampie", r"creampie|cum", "", "fluid"),
+    (r"lactation|lactating|breast milk", "lactation", r"lactat|milk", "", "fluid"),
+    (r"squirt|squirting", "squirting", r"squirt", "", "fluid"),
+    (r"shibari|rope bondage|bound with rope", "shibari", r"shibari|rope", "", "restraint"),
+    (r"bondage|restrained|tied up", "bondage", r"bondage|restrain|tied", "", "restraint"),
+    (r"glory ?hole", "glory hole", r"glory ?hole", "", "setting"),
+    (r"futanari|futa", "futanari", r"futa", "", "body"),
     (r"spitroast|double penetration|\bdp\b", "double penetration",
-     r"double penetration|spitroast|\bdp\b", ""),
-    (r"squirt|squirting", "squirting", r"squirt", ""),
-    (r"bondage|restrained|tied up", "bondage", r"bondage|restrain|tied", ""),
+     r"double penetration|spitroast|\bdp\b", "", "position"),
+    (r"after sex|afterglow", "after sex", r"after ?sex", "", "effect"),
 ]
 
 _FAMILY_BASE = {"illustrious": "Illustrious", "pony": "Pony", "sdxl": "SDXL 1.0"}
@@ -81,11 +100,23 @@ def enabled(settings: Any) -> bool:
 
 def concepts_in(prompt: str) -> list[tuple[str, str, str]]:
     """(query, name must match, name must not match) for concepts in the prompt."""
+    return [(q, m, n) for q, m, n, _ in concepts_with_groups(prompt)]
+
+
+def concepts_with_groups(prompt: str) -> list[tuple[str, str, str, str]]:
+    """(query, must, must_not, group), one per group, in prompt order."""
     low = (prompt or "").lower()
-    out = []
-    for pat, query, must, must_not in CONCEPTS:
-        if re.search(rf"(?<![a-z0-9])(?:{pat})(?![a-z0-9])", low):
-            out.append((query, must, must_not))
+    hits = []
+    for pat, query, must, must_not, group in CONCEPTS:
+        m = re.search(rf"(?<![a-z0-9])(?:{pat})(?![a-z0-9])", low)
+        if m:
+            hits.append((m.start(), query, must, must_not, group))
+    out, groups = [], set()
+    for _, query, must, must_not, group in sorted(hits):
+        if group in groups:
+            continue  # the first one she named wins its group
+        groups.add(group)
+        out.append((query, must, must_not, group))
     return out
 
 
@@ -113,44 +144,62 @@ async def _find(settings: Any, query: str, must: str, must_not: str,
     except Exception as e:
         log.info("civitai.auto_lora_search_failed", query=query, error=str(e)[:200])
         return None  # not cached: try again next time
-    for r in sorted(results, key=lambda r: r.download_count, reverse=True):
+    def rank(r) -> float:
+        # Downloads, nudged by how well liked it is (thumbs per download).
+        liked = min(1.0, (r.thumbs_up + 1) / max(1, r.download_count) * 20)
+        return r.download_count * (0.6 + 0.4 * liked)
+
+    for r in sorted(results, key=rank, reverse=True):
         name = r.name.lower()
         if base_family(r.base_model, r.air) != family or r.download_count < _MIN_DOWNLOADS:
             continue
         if not re.search(must, name) or (must_not and re.search(must_not, name)):
             continue
-        found = {"air": r.air, "name": r.name, "triggers": trigger_tags(r.trained_words)}
+        found = {"air": r.air, "name": r.name, "triggers": trigger_tags(r.trained_words),
+                 "category": r.category, "rec": r.rec_weight}
         break
     cache[key] = {"ts": time.time(), "lora": found}
     _store(settings, cache)
     return found
 
 
+async def concept_picks(settings: Any, recipe: Recipe, prompt: str) -> tuple[list, list[str]]:
+    """(LoraPicks, notes) for concepts the prompt names, one per group."""
+    from ophelia.providers.civitai.stack import LoraPick
+
+    if not (enabled(settings) and recipe.loras and recipe.family in _FAMILY_BASE):
+        return [], []
+    scored = feedback.scores(settings)
+    picks: list[LoraPick] = []
+    notes: list[str] = []
+    for query, must, must_not, group in concepts_with_groups(prompt)[:_MAX_AUTO]:
+        lora = await _find(settings, query, must, must_not, recipe.family)
+        if not lora or lora["air"] in {p.air for p in picks}:
+            continue
+        if feedback.multiplier(scored.get(lora["air"])) < 0.6:
+            notes.append(f"skipped LoRA {lora['name']} (he didn't like it before)")
+            continue
+        picks.append(LoraPick(
+            air=lora["air"], name=lora["name"], category=lora.get("category") or "concept",
+            rec=lora.get("rec"), source="concept", group=group, query=query,
+            triggers=list(lora.get("triggers") or []),
+        ))
+    return picks, notes
+
+
 async def pick_loras(settings: Any, recipe: Recipe, prompt: str) -> tuple[dict[str, float],
                                                                          list[str], list[str]]:
     """({air: weight}, trigger tags to add, notes) for concepts in the prompt."""
-    if not (enabled(settings) and recipe.loras and recipe.family in _FAMILY_BASE):
-        return {}, [], []
-    found: list[dict[str, Any]] = []
-    for query, must, must_not in concepts_in(prompt)[:_MAX_AUTO]:
-        lora = await _find(settings, query, must, must_not, recipe.family)
-        if lora and lora["air"] not in {f["air"] for f in found}:
-            found.append(lora)
-    if not found:
-        return {}, [], []
-    scored = feedback.scores(settings)
-    base_w = _WEIGHT.get(len(found), 0.6)
+    picks, notes = await concept_picks(settings, recipe, prompt)
+    if not picks:
+        return {}, [], notes
+    base_w = _WEIGHT.get(len(picks), 0.6)
     loras: dict[str, float] = {}
     triggers: list[str] = []
-    notes: list[str] = []
-    for lora in found:
-        mult = feedback.multiplier(scored.get(lora["air"]))
-        if mult < 0.6:
-            notes.append(f"skipped LoRA {lora['name']} (he didn't like it before)")
-            continue
-        loras[lora["air"]] = base_w
-        triggers.extend(lora.get("triggers") or [])
-        notes.append(f"auto LoRA {lora['name']} @{base_w}")
+    for p in picks:
+        loras[p.air] = base_w
+        triggers.extend(p.triggers)
+        notes.append(f"auto LoRA {p.name} @{base_w}")
     return loras, triggers, notes
 
 
@@ -183,19 +232,31 @@ def style_queries(terms: list[str], limit: int = 3) -> list[tuple[str, str]]:
     return out
 
 
-async def pick_style_lora(settings: Any, recipe: Recipe,
-                          terms: list[str]) -> tuple[dict[str, float], list[str], list[str]]:
-    """({air: weight}, trigger tags, notes): the most downloaded LoRA in the
-    model's family for the reference's most distinctive style term."""
+async def style_picks(settings: Any, recipe: Recipe, terms: list[str]) -> tuple[list, list[str]]:
+    """([LoraPick], notes): the most downloaded LoRA in the model's family for
+    the reference's most distinctive style term."""
+    from ophelia.providers.civitai.stack import LoraPick
+
     if not (enabled(settings) and recipe.loras and recipe.family in _FAMILY_BASE):
-        return {}, [], []
+        return [], []
     scored = feedback.scores(settings)
     for query, must in style_queries(terms):
         lora = await _find(settings, query, must, "", recipe.family)
-        if not lora:
+        if not lora or feedback.multiplier(scored.get(lora["air"])) < 0.6:
             continue
-        if feedback.multiplier(scored.get(lora["air"])) < 0.6:
-            continue
-        return ({lora["air"]: 0.6}, list(lora.get("triggers") or []),
-                [f"style LoRA {lora['name']} @0.6 (for '{query}')"])
-    return {}, [], []
+        return ([LoraPick(air=lora["air"], name=lora["name"], category="style",
+                          rec=min(0.7, lora.get("rec") or 0.6), source="style",
+                          triggers=list(lora.get("triggers") or []))],
+                [f"style LoRA {lora['name']} (for '{query}')"])
+    return [], []
+
+
+async def pick_style_lora(settings: Any, recipe: Recipe,
+                          terms: list[str]) -> tuple[dict[str, float], list[str], list[str]]:
+    """({air: weight}, trigger tags, notes) for a style reference's terms."""
+    picks, notes = await style_picks(settings, recipe, terms)
+    if not picks:
+        return {}, [], []
+    p = picks[0]
+    return {p.air: 0.6}, list(p.triggers), [f"style LoRA {p.name} @0.6 (for "
+                                            + notes[0].split("(for ", 1)[1]]

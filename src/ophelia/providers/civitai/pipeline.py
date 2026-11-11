@@ -22,7 +22,8 @@ import structlog
 
 from ophelia.config import Settings
 from ophelia.providers.civitai import loras as auto_loras
-from ophelia.providers.civitai import discovery, selection, site, variety
+from ophelia.providers.civitai.stack import LoraPick, plan_stack
+from ophelia.providers.civitai import discovery, feedback, selection, site, variety
 from ophelia.providers.civitai.air import (
     air_kind,
     base_family,
@@ -30,6 +31,7 @@ from ophelia.providers.civitai.air import (
     is_air,
     lora_family_error,
     model_id,
+    explicit_lora_weights,
     parse_loras,
     sanitize_air,
     version_id,
@@ -187,11 +189,21 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
 
     lora_base: dict[str, str] = {}
     triggers: list[str] = []
+    explicit = {sanitize_air(a) for a in explicit_lora_weights(req.loras)}
+    her_picks: list[LoraPick] = []
     for air in list(loras)[:5]:
         meta = await _meta(settings, air)
         if meta:
             lora_base[air] = meta.base_model or ""
-            triggers.extend(t for t in meta.trained_words[:3] if t)
+            trig = auto_loras.trigger_tags(meta.trained_words)
+            triggers.extend(trig)
+            her_picks.append(LoraPick(
+                air=air, name=meta.name, category=meta.category, rec=meta.rec_weight,
+                weight=loras[air] if air in explicit else None, source="hers",
+                triggers=trig))
+        else:
+            her_picks.append(LoraPick(air=air, source="hers",
+                                      weight=loras[air] if air in explicit else None))
 
     fallback: Recipe | None = None
     if pin and is_air(pin):
@@ -237,29 +249,38 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     if moved:
         notes.append("moved to negative: " + ", ".join(moved[:8]))
     found: dict[str, float] = {}
-    pin_loras = bool(loras)  # hers: auto never adds to a set she chose
-    if not loras and not pin and req.nsfw and not req.image:
-        found, trig, lora_notes = await auto_loras.pick_loras(settings, recipe, prompt)
-        if found:
-            loras.update(found)
-            lora_base.update({a: recipe.base_model for a in found})
-            low = prompt.lower()
-            fresh = [t for t in trig if t.lower() not in low]
-            if fresh:
-                prompt = ", ".join(fresh) + ", " + prompt
+    auto_picks: list[LoraPick] = []
+    if not pin and req.nsfw and not req.image:
+        picks, lora_notes = await auto_loras.concept_picks(settings, recipe, prompt)
+        # Her LoRAs come first: skip a concept one of hers already covers.
+        hers = " ".join(f"{p.name} {' '.join(p.triggers)}".lower() for p in her_picks)
+        picks = [p for p in picks if not (p.query and p.query.lower() in hers)]
+        auto_picks.extend(picks)
         notes.extend(lora_notes)
-    if req.style_terms and not pin_loras and not req.image:
-        style, trig, style_notes = await auto_loras.pick_style_lora(settings, recipe,
-                                                                    req.style_terms)
-        if style:
-            loras.update(style)
-            lora_base.update({a: recipe.base_model for a in style})
-            found.update(style)
-            low = prompt.lower()
-            fresh = [t for t in trig if t.lower() not in low]
-            if fresh:
-                prompt = ", ".join(fresh) + ", " + prompt
+    if req.style_terms and not req.image:
+        picks, style_notes = await auto_loras.style_picks(settings, recipe, req.style_terms)
+        auto_picks.extend(picks)
         notes.extend(style_notes)
+    if her_picks or auto_picks:
+        kept, weights, stack_notes = plan_stack(her_picks + auto_picks)
+        loras = weights
+        notes.extend(stack_notes)
+        for p in kept:
+            if p.source != "hers":
+                found[p.air] = weights[p.air]
+                lora_base[p.air] = recipe.base_model
+                notes.append(f"auto {p.category} LoRA {p.label} @{weights[p.air]:g}")
+        # Every kept LoRA's trigger words go in (hers too: a LoRA without its
+        # trigger mostly does nothing).
+        low = prompt.lower()
+        fresh: list[str] = []
+        for p in kept:
+            for t in p.triggers:
+                if t.lower() not in low and t.lower() not in {f.lower() for f in fresh}:
+                    fresh.append(t)
+        if fresh:
+            prompt = ", ".join(fresh) + ", " + prompt
+            notes.append("trigger words added: " + ", ".join(fresh[:8]))
     added: list[str] = []
     if not req.image and variety.enabled(settings):
         prompt, added = variety.add_variety(settings, prompt,
@@ -457,7 +478,8 @@ async def collect_images(
 # --- run --------------------------------------------------------------------
 
 
-def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "") -> str:
+def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "",
+             settings: Settings | None = None) -> str:
     head = "\n".join(f"Image saved to {p}" for p in paths)
     bits = [f"civitai {record.get('operation')}", f"model={plan.recipe.key} ({record.get('model')})"]
     if plan.quality != "standard":
@@ -471,6 +493,12 @@ def _summary(plan: Plan, record: dict, paths: list[Path], note: str = "") -> str
     bits.append(plan.buzz_label)
     if plan.notes:
         bits.append("picked: " + "; ".join(plan.notes))
+    try:
+        fav = feedback.liked_prompts(settings, plan.recipe.key, limit=1) if settings else []
+    except Exception:
+        fav = []
+    if fav and fav[0].get("prompt") != plan.prompt:
+        bits.append(f"he loved this one on {plan.recipe.key}: {str(fav[0]['prompt'])[:220]}")
     missing = [t for t in plan.lora_triggers if t.lower() not in plan.prompt.lower()]
     if missing:
         bits.append("LoRA trigger words not in your prompt: " + ", ".join(missing[:6]))
@@ -677,4 +705,4 @@ async def run_generation(
     log.info("image.saved", provider="civitai", recipe=recipe.key, model=record["model"],
              loras=dict(plan.loras) or None, seed=seed, paths=record["paths"], bytes=total,
              est_buzz=plan.est_buzz, cost=record["cost"])
-    return _summary(plan, record, paths, note=err)
+    return _summary(plan, record, paths, note=err, settings=settings)

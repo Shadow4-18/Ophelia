@@ -38,6 +38,15 @@ class CivitaiResource:
     description: str = ""
     availability: str = ""  # Public | EarlyAccess | ... ("" = not reported)
     newest_base_model: str = ""  # baseModel of the model's newest version
+    tags: list[str] = field(default_factory=list)  # site tags: concept, style, character...
+
+    @property
+    def category(self) -> str:
+        return lora_category(self.tags, self.name)
+
+    @property
+    def rec_weight(self) -> float | None:
+        return recommended_weight(self.description)
 
     @property
     def ecosystem(self) -> str:
@@ -52,8 +61,12 @@ class CivitaiResource:
         style = self.prompt_style
         hint = _PROMPT_STYLE_HINTS.get(style, _PROMPT_STYLE_HINTS["mixed"])
         neg = default_negative_for(self.ecosystem)
+        kind = self.type
+        if self.type.upper() == "LORA":
+            w = self.rec_weight
+            kind = f"LORA, {self.category}" + (f", weight {w:g}" if w else "")
         lines = [
-            f"- {self.name} [{self.type}] v{self.version_name}",
+            f"- {self.name} [{kind}] v{self.version_name}",
             f"  air: {self.air}",
             f"  baseModel: {self.base_model or '?'} → ecosystem={self.ecosystem}, "
             f"prompt_style={style}",
@@ -67,6 +80,88 @@ class CivitaiResource:
         if self.description:
             lines.append(f"  about: {self.description[:160]}")
         return "\n".join(lines)
+
+
+# Site tags → what a LoRA does, for stacking (one style, one position...).
+_CATEGORY_TAGS = (
+    ("character", ("character", "celebrity", "person", "real person", "oc", "vtuber")),
+    ("style", ("style", "art style", "artist", "artstyle", "aesthetic", "photography")),
+    ("pose", ("poses", "pose", "position", "sex position", "action")),
+    ("clothing", ("clothing", "outfit", "costume", "lingerie", "underwear", "swimsuit")),
+    ("concept", ("concept", "concepts", "sex", "nsfw", "fetish", "effect", "body")),
+    ("detail", ("detail", "details", "enhancer", "quality", "slider", "tool", "hands",
+                "skin")),
+)
+_NAME_HINTS = (
+    ("style", r"\bstyle\b|\bartist\b|aesthetic"),
+    ("detail", r"detail|enhanc|slider|tweaker|\bfix\b|quality"),
+    ("pose", r"missionary|cowgirl|doggy|position|mating press|\bpose\b|spoon|prone|"
+             r"full nelson|standing sex|reverse"),
+    ("clothing", r"outfit|lingerie|costume|dress|uniform|bikini|clothes"),
+)
+
+
+def lora_category(tags: list[str], name: str = "") -> str:
+    """character | style | pose | clothing | concept | detail | other."""
+    low = {str(t).strip().lower() for t in tags or []}
+    for cat, words in _CATEGORY_TAGS:
+        if low & set(words):
+            if cat == "concept":
+                # "concept" + a position name is a position.
+                for hint, pat in _NAME_HINTS:
+                    if hint == "pose" and re.search(pat, (name or "").lower()):
+                        return "pose"
+            return cat
+    for cat, pat in _NAME_HINTS:
+        if re.search(pat, (name or "").lower()):
+            return cat
+    return "other"
+
+
+_WEIGHT_RE = re.compile(
+    r"(?:weight|strength|str|lora weight|recommended(?: weight)?)\s*[:=]?\s*"
+    r"(?:of\s*|is\s*|around\s*|about\s*)?"
+    r"([0-1](?:\.\d+)?|\.\d+)(?:\s*(?:~|-|–|to)\s*([0-1](?:\.\d+)?|\.\d+))?",
+    re.I,
+)
+
+
+_WEIGHT_AFTER_RE = re.compile(
+    r"(?<![\d.])([0-1]\.\d+)(?:\s*(?:~|-|–|to)\s*([0-1]\.\d+))?\s*(?:weight|strength)",
+    re.I,
+)
+
+
+def recommended_weight(description: str) -> float | None:
+    """The creator's suggested weight ("Weight: 1.0", "strength 0.8~0.6",
+    "0.65-0.85 strength"), the middle of a range, or None."""
+    m = _WEIGHT_RE.search(description or "") or _WEIGHT_AFTER_RE.search(description or "")
+    if not m:
+        return None
+    try:
+        a = float(m.group(1))
+        b = float(m.group(2)) if m.group(2) else a
+    except ValueError:
+        return None
+    w = round((a + b) / 2, 2)
+    return w if 0.1 <= w <= 1.5 else None
+
+
+async def get_model_info(settings: Settings, model_id: int) -> tuple[list[str], str]:
+    """(site tags, plain-text description) of a model; ([], "") on failure."""
+    if not model_id:
+        return [], ""
+    url = f"{SITE_API}/models/{int(model_id)}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
+            r = await _site_get(http, url, settings)
+            if r.status_code >= 400:
+                return [], ""
+            data = r.json()
+    except Exception:
+        return [], ""
+    desc = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", data.get("description") or "")).strip()
+    return [str(t) for t in data.get("tags") or []], desc
 
 
 def _auth_headers(settings: Settings) -> dict[str, str]:
@@ -209,6 +304,7 @@ async def search_models(
                 description=desc,
                 availability=str(ver.get("availability") or ""),
                 newest_base_model=newest_base,
+                tags=[str(t) for t in item.get("tags") or []],
             )
         )
     return out
@@ -223,6 +319,12 @@ async def get_version(settings: Settings, version_id: int) -> CivitaiResource | 
             return None
         ver = r.json()
     model = ver.get("model") or {}
+    tags: list[str] = []
+    desc = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", ver.get("description") or "")).strip()
+    if str(model.get("type") or "").upper() == "LORA":
+        # Tags and the creator's notes (recommended weight) live on the model.
+        tags, model_desc = await get_model_info(settings, int(ver.get("modelId") or 0))
+        desc = f"{desc} {model_desc}".strip()
     return CivitaiResource(
         name=str(model.get("name") or ver.get("name") or "unknown"),
         type=str(model.get("type") or "Checkpoint"),
@@ -235,6 +337,8 @@ async def get_version(settings: Settings, version_id: int) -> CivitaiResource | 
         nsfw=bool(model.get("nsfw")),
         download_count=int((ver.get("stats") or {}).get("downloadCount") or 0),
         thumbs_up=int((ver.get("stats") or {}).get("thumbsUpCount") or 0),
+        description=desc,
+        tags=tags,
     )
 
 

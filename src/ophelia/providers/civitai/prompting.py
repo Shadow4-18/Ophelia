@@ -373,13 +373,61 @@ def _append_missing(text: str, tags: list[str]) -> str:
     return (text + ", " + ", ".join(missing)) if missing else text
 
 
+# Everyday words → the danbooru tag the anime/Pony models were trained on.
+# A tag they never saw is just noise ("doggy style" vs "doggystyle").
+_TAG_ALIASES = {
+    "doggy style": "doggystyle", "doggy": "doggystyle", "from behind sex": "sex from behind",
+    "cowgirl": "cowgirl position", "girl on top": "cowgirl position",
+    "reverse cowgirl": "reverse cowgirl position", "blow job": "fellatio",
+    "blowjob": "fellatio", "titjob": "paizuri", "titfuck": "paizuri", "tit job": "paizuri",
+    "boob job": "paizuri", "hand job": "handjob", "foot job": "footjob",
+    "eating pussy": "cunnilingus", "pussy licking": "cunnilingus",
+    "boobs": "breasts", "tits": "breasts", "big boobs": "large breasts",
+    "big tits": "large breasts", "huge boobs": "huge breasts", "huge tits": "huge breasts",
+    "small boobs": "small breasts", "small tits": "small breasts",
+    "big ass": "large ass", "big butt": "large ass", "butt": "ass",
+    "naked": "nude", "fully nude": "completely nude", "totally naked": "completely nude",
+    "cum on face": "facial", "cum in pussy": "cum in pussy", "cum inside": "creampie",
+    "eyes rolled back": "rolling eyes", "eyes rolling back": "rolling eyes",
+    "thigh highs": "thighhighs", "thigh-highs": "thighhighs", "stockings": "thighhighs",
+    "garter belt": "garter belt", "fishnets": "fishnets", "bunny girl": "playboy bunny",
+    "pigtails": "twintails", "pig tails": "twintails", "pony tail": "ponytail",
+    "pov sex": "pov", "first person": "pov", "point of view": "pov",
+    "close up": "close-up", "closeup": "close-up", "looking at camera": "looking at viewer",
+    "looking at the viewer": "looking at viewer", "tongue out": "tongue out",
+    "on her back": "on back", "on her stomach": "on stomach", "on all fours": "all fours",
+    "spread legs": "spread legs", "legs spread": "spread legs", "legs apart": "spread legs",
+    "red hair": "red hair", "redhead": "red hair", "blonde": "blonde hair",
+    "blond": "blonde hair", "brunette": "brown hair", "dark skin": "dark skin",
+    "tan": "tan", "tanned": "tan", "muscular man": "muscular male", "abs": "abs",
+    "sweating": "sweat", "sweaty": "sweat", "crying": "tears", "drooling": "drooling",
+    "moaning": "open mouth, moaning", "orgasming": "orgasm", "cumming": "orgasm",
+    "lesbian": "yuri", "lesbians": "yuri", "boyfriend": "1boy", "husband": "1boy",
+}
+_COUNT_FIRST = re.compile(r"^(?:\d\+?(?:girls?|boys?|others?)|solo|multiple (?:girls|boys)|"
+                          r"hetero|yuri|solo focus)$")
+
+
+def normalize_tags(text: str) -> str:
+    """Danbooru prompts: everyday words to real tags, count tags first."""
+    out: list[str] = []
+    for tag in split_tags(text):
+        key = _tag_key(tag)
+        out.extend(split_tags(_TAG_ALIASES.get(key, tag)))
+    count = sorted((t for t in out if _COUNT_FIRST.match(_tag_key(t))),
+                   key=lambda t: (not _tag_key(t)[0].isdigit(), not _tag_key(t).endswith(
+                       ("girl", "girls"))))
+    rest = [t for t in out if not _COUNT_FIRST.match(_tag_key(t))]
+    return tidy_tags(", ".join(count + rest))
+
+
 def format_prompt(recipe: Recipe, prompt: str, *, nsfw: bool) -> str:
     """The prompt as this model likes it. Light touch: WAI's author warns
     that piling on quality tags makes images blurrier."""
     text = (prompt or "").strip()
     style = recipe.prompt_style
     if style in ("danbooru", "pony"):
-        text = ensure_subject(tidy_tags(text))
+        text = normalize_tags(ensure_subject(tidy_tags(text)))
     low = text.lower()
     if style == "pony":
         if "score_9" not in low:

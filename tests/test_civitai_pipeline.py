@@ -196,9 +196,9 @@ async def test_pinned_pony_with_lora(fake):
     inp = _input(fake)
     assert inp["model"] == PONY and inp["loras"] == {PONY_LORA: 0.7}
     assert inp["steps"] == 25 and inp["cfgScale"] == 7.0
-    assert inp["prompt"].startswith("score_9, score_8_up, score_7_up, 1girl")
+    assert inp["prompt"].startswith("score_9, score_8_up, score_7_up, 1girl, ponychar")
     assert "source_anime" in inp["prompt"] and "rating_explicit" in inp["prompt"]
-    assert "ponychar" not in inp["prompt"]  # triggers are reported, not injected
+    # Her LoRA's trigger goes in: without it the LoRA mostly does nothing.
     _show("pinned pony", _ledger(fake)[-1])
 
 
@@ -206,8 +206,8 @@ async def test_pinned_pony_with_lora(fake):
 async def test_lora_in_model_moves_and_picks_its_family(fake):
     out = await _gen(fake, "1girl, anime", model=PONY_LORA)
     inp = _input(fake)
-    assert inp["model"] == PONY and inp["loras"] == {PONY_LORA: 0.8}
-    assert "ponychar" in out  # told about the trigger word she didn't use
+    assert inp["model"] == PONY and inp["loras"] == {PONY_LORA: 0.7}  # no weight given
+    assert "trigger words added: ponychar" in out and "ponychar" in inp["prompt"]
 
 
 @pytest.mark.asyncio
