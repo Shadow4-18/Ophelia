@@ -77,7 +77,7 @@ def _registry(tmp_path):
     reg.artifacts_dir = tmp_path
     reg.set_owner(True)
     reg._current_sender_channel = "telegram:1"
-    reg._finalize_media_tool_result = AsyncMock(side_effect=lambda r: r)
+    reg._finalize_media_tool_result = AsyncMock(side_effect=lambda r, **kw: r)
     return reg
 
 
@@ -95,11 +95,11 @@ async def test_grok_first_unless_actually_explicit(tmp_path, monkeypatch, prompt
 
     seen = {}
 
-    async def fake_generate(settings, stack, p, **kw):
-        seen.update(kw)
+    async def fake_generate(settings, stack, job, artifacts_dir):
+        seen.update(vars(job))
         return "Image saved to x.png"
 
-    monkeypatch.setattr(reg_mod, "generate_image", fake_generate)
+    monkeypatch.setattr(reg_mod, "run_image_job", fake_generate)
     reg = _registry(tmp_path)
     await reg._generate_image(prompt, nsfw=True, model=model)
     assert seen["nsfw"] is expect_nsfw

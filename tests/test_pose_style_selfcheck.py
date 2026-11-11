@@ -167,7 +167,7 @@ async def test_wrong_picture_is_remade_and_only_the_good_one_sent(tmp_path, monk
     again = AsyncMock(return_value=f"Image saved to {b}")
     out = await reg._self_check_image(f"Image saved to {a}", "a man and a woman, sex", again)
     again.assert_awaited_once()
-    assert str(b) in out and str(a) not in out and "made again" in out
+    assert out.paths == [b] and str(a) not in out.text and "made again" in out.text
 
 
 @pytest.mark.asyncio
@@ -178,11 +178,11 @@ async def test_good_picture_and_solo_are_left_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(self_check, "check_image", check)
     reg = _registry(tmp_path)
     again = AsyncMock()
-    assert await reg._self_check_image(f"Image saved to {a}", "1girl, 1boy, sex", again) \
-        == f"Image saved to {a}"
-    assert await reg._self_check_image(f"Image saved to {a}", "nude woman", again) == \
+    assert str(await reg._self_check_image(f"Image saved to {a}", "1girl, 1boy, sex",
+                                           again)) == f"Image saved to {a}"
+    assert str(await reg._self_check_image(f"Image saved to {a}", "nude woman", again)) == \
         f"Image saved to {a}"
-    assert await reg._self_check_image("Pending: still rendering", "1girl, 1boy", again) \
-        == "Pending: still rendering"
+    assert str(await reg._self_check_image("Pending: still rendering", "1girl, 1boy",
+                                           again)) == "Pending: still rendering"
     again.assert_not_awaited()
     assert check.await_count == 1

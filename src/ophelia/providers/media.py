@@ -15,6 +15,7 @@ import httpx
 import structlog
 
 from ophelia.config import Settings
+from ophelia.providers.image_job import FAILED, REFUSED, ImageJob, ImageResult
 from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend
 
@@ -200,25 +201,19 @@ async def _dispatch_image_provider(
     *,
     settings: Settings,
     stack: ProviderStack,
-    prompt: str,
-    aspect_ratio: str,
+    job: ImageJob,
     resolved_model: str,
     artifacts_dir: Path,
     nsfw: bool,
-    negative_prompt: str | None,
-    loras: dict[str, float] | str | None,
-    image: str | None,
-    strength: float,
     auto_pick: bool,
-    quality: str = "",
-    count: int = 1,
-    deliver_to: str = "",
-    civitai_extra: dict | None = None,
 ) -> str:
-    """Call a single image backend. Raises on hard misconfiguration."""
-    if provider in ("xai-oauth", "xai") and image:
+    """Call a single image backend with ``job``. Raises on hard
+    misconfiguration. ``nsfw``/``resolved_model``/``auto_pick`` are this
+    attempt's (a fallback attempt can differ from the job)."""
+    prompt, aspect_ratio = job.prompt, job.aspect_ratio
+    if provider in ("xai-oauth", "xai") and job.image:
         return await _xai_image_edit(
-            settings, stack, prompt, image, resolved_model, artifacts_dir
+            settings, stack, prompt, job.image, resolved_model, artifacts_dir
         )
     if provider in ("xai-oauth", "xai"):
         return await _xai_image(
@@ -253,23 +248,7 @@ async def _dispatch_image_provider(
             settings, prompt, aspect_ratio, resolved_model, artifacts_dir
         )
     if provider == "civitai":
-        return await _civitai_image(
-            settings,
-            prompt,
-            aspect_ratio,
-            resolved_model,
-            artifacts_dir,
-            nsfw=nsfw,
-            negative_prompt=negative_prompt,
-            loras=loras,
-            image=image,
-            strength=strength,
-            auto_pick=auto_pick,
-            quality=quality,
-            count=count,
-            deliver_to=deliver_to,
-            **(civitai_extra or {}),
-        )
+        return await _civitai_image(settings, job, resolved_model, artifacts_dir, nsfw=nsfw)
     if provider == "modelslab":
         return await _modelslab_image(
             settings, prompt, aspect_ratio, resolved_model, artifacts_dir, nsfw=nsfw
@@ -341,40 +320,42 @@ async def generate_image(
     stack: ProviderStack,
     prompt: str,
     *,
-    aspect_ratio: str = "1:1",
     artifacts_dir: Path,
-    nsfw: bool = False,
-    model: str | None = None,
-    negative_prompt: str | None = None,
-    loras: dict[str, float] | str | None = None,
-    image: str | None = None,
-    strength: float = 0.7,
-    auto_pick: bool = False,
-    quality: str = "",
-    count: int = 1,
-    attempts: int = 1,
-    deliver_to: str = "",
-    fallback_mature: bool = False,
-    pose_image: str | None = None,
-    style_terms: list[str] | None = None,
+    **options,
 ) -> str:
+    """Text form of run_image_job (kept for callers that want a string).
+    ``options`` are ImageJob fields (aspect_ratio, nsfw, model, loras...)."""
+    job = ImageJob.from_kwargs(prompt, **options)
+    return str(await run_image_job(settings, stack, job, artifacts_dir))
+
+
+async def run_image_job(
+    settings: Settings,
+    stack: ProviderStack,
+    job: ImageJob,
+    artifacts_dir: Path,
+) -> ImageResult:
     """Route one image request. SFW goes to the image provider (Grok by
     default), explicit to the NSFW provider (Civitai). A failed generation is
-    not retried unless ``attempts`` > 1 (the owner asked her to keep trying);
-    only connection-level errors get one automatic retry."""
+    not retried unless ``job.attempts`` > 1 (the owner asked her to keep
+    trying); only connection-level errors get one automatic retry."""
+    def refused(text: str) -> ImageResult:
+        return ImageResult(status=REFUSED, text=text)
+
+    nsfw = job.nsfw
     if nsfw and not settings.image_nsfw_allowed:
-        return (
+        return refused(
             "Refused: explicit image requested but OPHELIA_IMAGE_NSFW_ALLOWED is off. "
             "Enable it in ~/.ophelia/.env to route explicit prompts to an uncensored "
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
         )
 
-    aspect_ratio = normalize_aspect_ratio(aspect_ratio)
+    job = job.but(aspect_ratio=normalize_aspect_ratio(job.aspect_ratio))
     provider = stack.image_provider_for(nsfw=nsfw)
     # Defensive: never let an explicit prompt reach a censored backend, even if
     # the user mis-configured OPHELIA_IMAGE_NSFW_PROVIDER to point at one.
     if nsfw and provider in _CENSORED_IMAGE_PROVIDERS:
-        return (
+        return refused(
             f"Refused: explicit image would route to {provider}, which refuses NSFW and "
             "may flag the account. Set OPHELIA_IMAGE_NSFW_PROVIDER to an uncensored "
             "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
@@ -382,30 +363,24 @@ async def generate_image(
 
     # img2img: Grok edits SFW images, Civitai explicit ones. Other backends
     # would ignore the source image and draw from scratch, so never use them.
-    if image and provider not in _IMG2IMG_PROVIDERS:
+    if job.image and provider not in _IMG2IMG_PROVIDERS:
         if settings.civitai_api_key:
             log.info("image.reroute_img2img_to_civitai", from_provider=provider)
             provider = "civitai"
         else:
-            return (
+            return ImageResult(status=FAILED, text=(
                 f"img2img needs Grok or Civitai; {provider} can't take a source image. "
-                "Call again without image= for a fresh text-to-image."
-            )
+                "Call again without image= for a fresh text-to-image."))
 
     # Pose control only exists on Civitai (ControlNet on SDXL).
-    if pose_image and provider != "civitai":
+    if job.pose_image and provider != "civitai":
         if settings.civitai_api_key:
             log.info("image.reroute_pose_to_civitai", from_provider=provider)
             provider = "civitai"
         else:
-            pose_image = None
-    civitai_extra: dict = {}
-    if pose_image:
-        civitai_extra["pose_image"] = pose_image
-    if style_terms:
-        civitai_extra["style_terms"] = list(style_terms)
+            job = job.but(pose_image=None)
 
-    agent_model = (model or "").strip()
+    agent_model = job.model
     # Civitai models must never hit xAI/OpenAI (404): an AIR URN, or one of
     # her Civitai recipe names ("hassaku", "prefect-pony"...) which went to
     # Grok as a model name, 404'd, and the fallback lost her choice. Route to
@@ -427,18 +402,18 @@ async def generate_image(
             agent_model = ""
 
     resolved_model, auto_pick = _resolve_image_model(
-        stack, provider, agent_model, nsfw=nsfw, auto_pick=auto_pick
+        stack, provider, agent_model, nsfw=nsfw, auto_pick=job.auto_pick
     )
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
     cap = max(1, int(getattr(settings, "image_max_attempts", 5) or 1))
-    tries = max(1, min(int(attempts or 1), cap))
+    tries = max(1, min(int(job.attempts or 1), cap))
     attempts_list = [provider]
     # Free fallback backends for normal images when the primary fails. Never
     # for img2img (would silently become txt2img) or Civitai (a submitted job
     # failing is an answer to report, and the owner decides on retrying).
-    may_fall_back = not image and provider != "civitai"
+    may_fall_back = not job.image and provider != "civitai"
     if may_fall_back:
         attempts_list += _fallback_image_providers(settings, provider, nsfw=nsfw)
     errors: list[str] = []
@@ -452,7 +427,7 @@ async def generate_image(
                 stack, attempt_provider, "", nsfw=nsfw, auto_pick=True
             )
         # A suggestive image Grok refused may be mature on Civitai (owner only).
-        attempt_nsfw = nsfw or (attempt_idx > 0 and fallback_mature
+        attempt_nsfw = nsfw or (attempt_idx > 0 and job.fallback_mature
                                 and attempt_provider not in _CENSORED_IMAGE_PROVIDERS)
         tried = 0
         network_retry_used = False
@@ -465,21 +440,11 @@ async def generate_image(
                         attempt_provider,
                         settings=settings,
                         stack=stack,
-                        prompt=prompt,
-                        aspect_ratio=aspect_ratio,
+                        job=job,
                         resolved_model=attempt_model,
                         artifacts_dir=artifacts_dir,
                         nsfw=attempt_nsfw,
-                        negative_prompt=negative_prompt,
-                        loras=loras,
-                        image=image,
-                        strength=strength,
                         auto_pick=attempt_auto,
-                        quality=quality,
-                        count=count,
-                        deliver_to=deliver_to,
-                        civitai_extra=civitai_extra if attempt_provider == "civitai"
-                        else None,
                     )
             except Exception as e:
                 errors.append(f"{attempt_provider}: {e}")
@@ -488,7 +453,7 @@ async def generate_image(
                 )
                 _route_ledger(settings, provider=attempt_provider, model=attempt_model,
                               ok=False, error=str(e), primary=provider, nsfw=attempt_nsfw,
-                              prompt=prompt)
+                              prompt=job.prompt)
                 if _is_connection_error(e) and not network_retry_used:
                     network_retry_used = True  # never reached the backend: free retry
                     await asyncio.sleep(1.0)
@@ -498,26 +463,31 @@ async def generate_image(
             failed = _image_result_failed(result)
             _route_ledger(settings, provider=attempt_provider, model=attempt_model,
                           ok=not failed, error=result if failed else "", primary=provider,
-                          nsfw=attempt_nsfw, prompt=prompt)
+                          nsfw=attempt_nsfw, prompt=job.prompt)
             if not failed:
                 if attempt_idx > 0:
                     log.info("image.fallback_succeeded", primary=provider, used=attempt_provider,
                              reason=errors[0][:200] if errors else "")
                 if result.startswith(("Refused:", "Pending:")):
-                    return result
+                    return ImageResult.from_text(result, provider=attempt_provider,
+                                                 model=attempt_model)
                 label = attempt_model or "auto"
                 why = f" because {errors[0][:160]}" if errors else ""
                 notes = f"; fell back from {provider}{why}" if attempt_idx > 0 else ""
                 if tried > 1:
                     notes += f"; succeeded on attempt {tried}"
-                return f"{result} (backend: {attempt_provider}/{label}{nsfw_tag}{notes})"
+                out = ImageResult.from_text(result, provider=attempt_provider,
+                                            model=attempt_model)
+                return out.but(
+                    text=f"{result} (backend: {attempt_provider}/{label}{nsfw_tag}{notes})")
             errors.append(f"{attempt_provider}: {result[:300]}")
             log.warning("image.attempt_failed", provider=attempt_provider, attempt=tried,
                         error=result[:200])
 
     summary = errors[-1] if errors else (result or "unknown error")
     tried_note = f" ({tries} attempts)" if tries > 1 else ""
-    return f"Image generation failed{tried_note}: {summary}"
+    return ImageResult(status=FAILED, text=f"Image generation failed{tried_note}: {summary}",
+                       provider=provider)
 
 
 def _route_ledger(settings: Settings, *, provider: str, model: str | None, ok: bool,
@@ -1088,34 +1058,23 @@ async def _replicate_image(
 
 async def _civitai_image(
     settings: Settings,
-    prompt: str,
-    aspect_ratio: str,
+    job: ImageJob,
     model: str,
     artifacts_dir: Path,
     *,
-    nsfw: bool = False,
-    negative_prompt: str | None = None,
-    loras: dict[str, float] | str | None = None,
-    image: str | None = None,
-    strength: float = 0.7,
-    auto_pick: bool = True,
-    quality: str = "",
-    count: int = 1,
-    deliver_to: str = "",
-    pose_image: str | None = None,
-    style_terms: list[str] | None = None,
+    nsfw: bool,
 ) -> str:
     """Civitai orchestration: see ophelia.providers.civitai.pipeline."""
     from ophelia.providers.civitai import GenerationRequest, run_generation
 
-    del auto_pick  # auto unless a model is named; kept for callers
     return await run_generation(
         settings,
         GenerationRequest(
-            prompt=prompt, aspect_ratio=aspect_ratio, nsfw=nsfw, model=model or "",
-            quality=quality, loras=loras, negative_prompt=negative_prompt, image=image,
-            strength=strength, count=count, deliver_to=deliver_to,
-            pose_image=pose_image, style_terms=list(style_terms or []),
+            prompt=job.prompt, aspect_ratio=job.aspect_ratio, nsfw=nsfw, model=model or "",
+            quality=job.quality, loras=job.loras, negative_prompt=job.negative_prompt,
+            image=job.image, strength=job.strength, count=job.count,
+            deliver_to=job.deliver_to, pose_image=job.pose_image,
+            style_terms=list(job.style_terms),
         ),
         artifacts_dir,
     )

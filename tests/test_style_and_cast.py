@@ -110,11 +110,11 @@ async def test_style_image_reaches_the_prompt_once(tmp_path, monkeypatch):
     reg.artifacts_dir = tmp_path / "art"
     seen = {}
 
-    async def fake_generate(settings, stack, prompt, **kw):
-        seen["prompt"] = prompt
+    async def fake_generate(settings, stack, job, artifacts_dir):
+        seen["prompt"] = job.prompt
         return "Image saved to /x.png"
 
-    monkeypatch.setattr("ophelia.tools.registry.generate_image", fake_generate)
+    monkeypatch.setattr("ophelia.tools.registry.run_image_job", fake_generate)
     reg._finalize_media_tool_result = AsyncMock(side_effect=lambda r, **k: r)
     out = await reg._generate_image("a woman on a balcony", style_image=str(ref_img))
     assert seen["prompt"] == "photo, a woman on a balcony, film grain, 35mm photo"
