@@ -15,16 +15,16 @@ import httpx
 import structlog
 
 from ophelia.config import Settings
-from ophelia.providers.image_job import FAILED, REFUSED, ImageJob, ImageResult
+from ophelia.providers import image_routing
+from ophelia.providers.image_job import FAILED, ImageJob, ImageResult
 from ophelia.providers.model_gate import get_model_gate
 from ophelia.providers.router import ProviderStack, XAIBackend
 
 log = structlog.get_logger()
 
 
-# Censored backends — never send explicit prompts to these (they refuse and may
-# flag the account). NSFW requests are auto-routed away from them.
-_CENSORED_IMAGE_PROVIDERS = frozenset({"xai-oauth", "xai", "openai"})
+# Routing constants live in image_routing; kept here under their old names.
+_CENSORED_IMAGE_PROVIDERS = image_routing.CENSORED
 
 _ASPECT_DIMS: dict[str, tuple[int, int]] = {
     "1:1": (1024, 1024),
@@ -36,18 +36,6 @@ _ASPECT_DIMS: dict[str, tuple[int, int]] = {
     "2:3": (811, 1216),
 }
 
-# Prefer these when the primary image backend fails (timeouts, filters, 5xx).
-# Civitai first (real quality); free Pollinations only as the last resort.
-_IMAGE_FALLBACK_ORDER = (
-    "civitai",
-    "fal",
-    "replicate",
-    "modelslab",
-    "ollama",
-    "a1111",
-    "comfyui",
-    "pollinations",
-)
 
 
 def normalize_aspect_ratio(aspect_ratio: str | None) -> str:
@@ -260,59 +248,6 @@ async def _dispatch_image_provider(
     )
 
 
-def _resolve_image_model(
-    stack: ProviderStack,
-    provider: str,
-    agent_model: str,
-    *,
-    nsfw: bool,
-    auto_pick: bool,
-) -> tuple[str, bool]:
-    """Return (resolved_model, auto_pick) for a provider attempt."""
-    if provider == "civitai":
-        resolved = agent_model
-        if not agent_model:
-            return "", True
-        if agent_model.lower() in ("auto", "pick", "dynamic"):
-            return "", True
-        return resolved, auto_pick
-    resolved = agent_model or stack.image_model_for(provider, nsfw=nsfw)
-    if (resolved or "").lower().startswith("urn:air:"):
-        log.warning("image.stripped_air_from_non_civitai", provider=provider)
-        resolved = stack.image_model_for(provider, nsfw=nsfw)
-    return resolved, auto_pick
-
-
-def _fallback_image_providers(
-    settings: Settings,
-    primary: str,
-    *,
-    nsfw: bool,
-) -> list[str]:
-    """Configured alternate backends to try when the primary fails."""
-    out: list[str] = []
-    for name in _IMAGE_FALLBACK_ORDER:
-        if name == primary:
-            continue
-        if nsfw and name in _CENSORED_IMAGE_PROVIDERS:
-            continue
-        try:
-            configured = settings.image_backend_configured(name)
-        except Exception:
-            continue
-        # Require exact True so MagicMock / odd stubs don't enable every backend.
-        if configured is True:
-            out.append(name)
-    # Pollinations is usually zero-config — always offer it as last resort
-    # for SFW (and NSFW when allowed) unless it was already primary.
-    if "pollinations" not in out and primary != "pollinations":
-        nsfw_ok = getattr(settings, "image_nsfw_allowed", False) is True
-        if not nsfw or nsfw_ok:
-            out.append("pollinations")
-    return out
-
-
-_IMG2IMG_PROVIDERS = ("civitai", "xai", "xai-oauth")
 
 
 async def generate_image(
@@ -339,83 +274,18 @@ async def run_image_job(
     default), explicit to the NSFW provider (Civitai). A failed generation is
     not retried unless ``job.attempts`` > 1 (the owner asked her to keep
     trying); only connection-level errors get one automatic retry."""
-    def refused(text: str) -> ImageResult:
-        return ImageResult(status=REFUSED, text=text)
-
-    nsfw = job.nsfw
-    if nsfw and not settings.image_nsfw_allowed:
-        return refused(
-            "Refused: explicit image requested but OPHELIA_IMAGE_NSFW_ALLOWED is off. "
-            "Enable it in ~/.ophelia/.env to route explicit prompts to an uncensored "
-            "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
-        )
-
     job = job.but(aspect_ratio=normalize_aspect_ratio(job.aspect_ratio))
-    provider = stack.image_provider_for(nsfw=nsfw)
-    # Defensive: never let an explicit prompt reach a censored backend, even if
-    # the user mis-configured OPHELIA_IMAGE_NSFW_PROVIDER to point at one.
-    if nsfw and provider in _CENSORED_IMAGE_PROVIDERS:
-        return refused(
-            f"Refused: explicit image would route to {provider}, which refuses NSFW and "
-            "may flag the account. Set OPHELIA_IMAGE_NSFW_PROVIDER to an uncensored "
-            "backend (pollinations/a1111/comfyui/fal/replicate/civitai/modelslab/ollama)."
-        )
-
-    # img2img: Grok edits SFW images, Civitai explicit ones. Other backends
-    # would ignore the source image and draw from scratch, so never use them.
-    if job.image and provider not in _IMG2IMG_PROVIDERS:
-        if settings.civitai_api_key:
-            log.info("image.reroute_img2img_to_civitai", from_provider=provider)
-            provider = "civitai"
-        else:
-            return ImageResult(status=FAILED, text=(
-                f"img2img needs Grok or Civitai; {provider} can't take a source image. "
-                "Call again without image= for a fresh text-to-image."))
-
-    # Pose control only exists on Civitai (ControlNet on SDXL).
-    if job.pose_image and provider != "civitai":
-        if settings.civitai_api_key:
-            log.info("image.reroute_pose_to_civitai", from_provider=provider)
-            provider = "civitai"
-        else:
-            job = job.but(pose_image=None)
-
-    agent_model = job.model
-    # Civitai models must never hit xAI/OpenAI (404): an AIR URN, or one of
-    # her Civitai recipe names ("hassaku", "prefect-pony"...) which went to
-    # Grok as a model name, 404'd, and the fallback lost her choice. Route to
-    # Civitai with the model kept when a key is configured; otherwise drop it.
-    from ophelia.providers.civitai.catalog import recipe_by_name
-
-    is_civitai_air = agent_model.lower().startswith("urn:air:") or (
-        bool(agent_model) and recipe_by_name(agent_model) is not None)
-    if is_civitai_air and provider != "civitai":
-        if settings.civitai_api_key:
-            log.info(
-                "image.reroute_air_to_civitai", from_provider=provider, model=agent_model[:80]
-            )
-            provider = "civitai"
-        else:
-            log.warning(
-                "image.ignored_civitai_urn", provider=provider, model=agent_model[:80]
-            )
-            agent_model = ""
-
-    resolved_model, auto_pick = _resolve_image_model(
-        stack, provider, agent_model, nsfw=nsfw, auto_pick=job.auto_pick
-    )
+    plan = image_routing.route(settings, stack, job)
+    if plan.refused:
+        return plan.refusal
+    job, provider, nsfw = plan.job, plan.provider, plan.job.nsfw
+    resolved_model, auto_pick = plan.model, plan.auto_pick
 
     gate = get_model_gate()
     nsfw_tag = " [nsfw]" if nsfw else ""
     cap = max(1, int(getattr(settings, "image_max_attempts", 5) or 1))
     tries = max(1, min(int(job.attempts or 1), cap))
-    attempts_list = [provider]
-    # Free fallback backends for normal images when the primary fails. Never
-    # for img2img (would silently become txt2img) or Civitai (a submitted job
-    # failing is an answer to report, and the owner decides on retrying).
-    may_fall_back = not job.image and provider != "civitai"
-    if may_fall_back:
-        attempts_list += _fallback_image_providers(settings, provider, nsfw=nsfw)
+    attempts_list = [provider, *plan.fallbacks]
     errors: list[str] = []
     result = ""
 
@@ -423,7 +293,7 @@ async def run_image_job(
         if attempt_idx == 0:
             attempt_model, attempt_auto = resolved_model, auto_pick
         else:
-            attempt_model, attempt_auto = _resolve_image_model(
+            attempt_model, attempt_auto = image_routing.resolve_model(
                 stack, attempt_provider, "", nsfw=nsfw, auto_pick=True
             )
         # A suggestive image Grok refused may be mature on Civitai (owner only).
