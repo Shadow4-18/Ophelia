@@ -342,8 +342,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         if self.on_memories_changed is not None:
             try:
                 self.on_memories_changed()
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("registry.correct_memory_ignored", error=str(_err))
         verb = "Replaced" if right.strip() else "Removed"
         return f"{verb}: " + " | ".join(f'"{c[:100]}"' for c in changed) + (
             f' -> "{right.strip()[:100]}"' if right.strip() else "")
@@ -591,15 +591,15 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         args, dropped = _known_args(handler, args)
         try:
             self._tools_called.append(name)
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("registry.dispatch_ignored", error=str(_err))
         result = await handler(**args)
         self._remember_doing(name, args, result)
         if name.startswith(("generate_", "text_to_speech", "send_file")):
             try:
                 self._doing_results.append((name, str(result)[:400]))
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("registry.dispatch_ignored", error=str(_err))
         if dropped and isinstance(result, str):
             # She invented a parameter (one crashed generate_image with
             # "unexpected keyword argument 'already_delivered'"): run with
@@ -1475,8 +1475,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         if reflection and self.inner and hasattr(self.inner, "write"):
             try:
                 await self.inner.write(reflection, kind="reflection")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("registry.reflect_ignored", error=str(_err))
         if reflection:
             await self.memory.set_fact(f"memory:{int(time.time())}", f"[reflection] {reflection}")
         out = f"Reflection complete. Saved {saved} lesson(s).\nReflection: {reflection}"

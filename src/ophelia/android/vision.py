@@ -157,8 +157,8 @@ def _font(size: int):
             continue
     try:
         return ImageFont.load_default(size=size)  # Pillow >= 10.1: scalable
-    except Exception:
-        pass
+    except Exception as _err:
+        log.debug("vision.font_ignored", error=str(_err))
     try:
         return ImageFont.load_default()
     except Exception:

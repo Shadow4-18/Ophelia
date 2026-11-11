@@ -345,8 +345,8 @@ class Orchestrator:
                     self.signals.autonomy_paused = False
                     log.info("autonomy.resumed", source="cli_flag")
                 was_paused = self.signals.autonomy_paused
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("orchestrator.pause_poll_loop_ignored", error=str(_err))
             await asyncio.sleep(5)
 
     async def _ensure_ollama_running(self) -> None:
@@ -602,8 +602,8 @@ class Orchestrator:
 
         try:
             install_asyncio_handler()
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("orchestrator.start_ignored", error=str(_err))
 
         await self.memory.init()
         await self._load_persisted_state()
@@ -857,8 +857,8 @@ class Orchestrator:
             try:
                 await self.memory.save_psyche(self.psyche)
                 await self.memory.save_drives(self.drives)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("orchestrator.start_ignored", error=str(_err))
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

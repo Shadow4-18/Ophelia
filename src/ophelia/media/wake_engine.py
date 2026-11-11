@@ -133,8 +133,8 @@ class WakeEngine:
                 continue
             try:
                 chunk_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("wake_engine.listen_for_wake_ignored", error=str(_err))
             if self._impl.process(frames):
                 log.info("wake_engine.detected", engine=self.engine_name)
                 return True

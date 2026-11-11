@@ -88,8 +88,8 @@ class DailyNarrative:
         if self.inner:
             try:
                 await self.inner.write(f"Diary ({day}): {text}", kind="narrative")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("narrative.maybe_write_ignored", error=str(_err))
         log.info("narrative.written", day=day, chars=len(text))
         return text
 

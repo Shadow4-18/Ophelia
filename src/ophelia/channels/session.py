@@ -235,8 +235,8 @@ class ChannelSession:
             try:
                 await logger.log(channel=channel, direction="in", text=note,
                                  sender_id=_sender_id(channel), is_owner=is_owner, role="user")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("session.note_reaction_ignored", error=str(_err))
         log.info("reaction.received", channel=channel, emoji=emoji)
 
     async def _needs_action(self, channel: str, text: str, *, is_owner: bool) -> bool:
@@ -251,8 +251,8 @@ class ChannelSession:
                           else memory.recent_guest(channel, limit=4))
             her_last = next((m.get("content") or "" for m in reversed(hist)
                              if m.get("role") == "assistant"), "")
-        except Exception:
-            pass
+        except Exception as _err:
+            log.debug("session.needs_action_ignored", error=str(_err))
         if follow_through.needs_action(text, her_last):
             log.info("reaction.skipped_for_action", channel=channel, preview=text[:60])
             return True
@@ -948,8 +948,8 @@ class ChannelSession:
         if _ollama_reachable is not None:
             try:
                 lines.append(f"ollama reachable: {_ollama_reachable(self.agent.settings)}")
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("session.cmd_status_ignored", error=str(_err))
         await reply("\n".join(lines)[:4000])
 
     async def cmd_models(self, reply: ReplyFn) -> None:

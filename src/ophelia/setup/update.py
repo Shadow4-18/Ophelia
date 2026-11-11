@@ -85,8 +85,8 @@ def find_repo_root(start: Path | None = None) -> Path | None:
         # src/ophelia -> repo ; or site-packages/ophelia (no .git)
         candidates.append(pkg.parent.parent)  # …/src → repo
         candidates.append(pkg.parent)  # flat layout
-    except Exception:
-        pass
+    except Exception as _err:
+        log.debug("update.find_repo_root_ignored", error=str(_err))
     candidates.append(Path.cwd().resolve())
 
     seen: set[Path] = set()

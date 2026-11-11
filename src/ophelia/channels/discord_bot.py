@@ -544,8 +544,8 @@ class DiscordGateway:
                 await message.channel.send(
                     f"Couldn't upload {Path(path).name} to Discord ({err_msg[:200]})."
                 )
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("discord_bot.send_discord_file_ignored", error=str(_err))
             return False
         except Exception as e:
             log.warning("discord.send_file_failed", path=str(path), error=str(e))

@@ -109,8 +109,8 @@ def create_app(workstation: Workstation) -> FastAPI:
         finally:
             try:
                 tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as _err:
+                log.debug("server.voice_ignored", error=str(_err))
 
     @app.get("/api/artifacts/ui_voice/{name}")
     async def ui_voice_artifact(name: str) -> FileResponse:
