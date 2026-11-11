@@ -94,8 +94,7 @@ class DailyNarrative:
         return text
 
     async def _generate(self, day: str, lines: list[str]) -> str | None:
-        from ophelia.providers.fallback import call_with_fallback, extra_body_for
-        from ophelia.providers.model_gate import get_model_gate
+        from ophelia.providers.fallback import complete_text
 
         agent = self.agent
         inner_tail = self.inner.tail(15)[:1500] if self.inner else ""
@@ -125,27 +124,13 @@ class DailyNarrative:
             },
         ]
 
-        async def _make_call(cl, mdl, prov):
-            return await cl.chat.completions.create(
-                model=mdl, messages=messages, extra_body=extra_body_for(agent.settings, prov)
-            )
-
         try:
-            resp = await call_with_fallback(
-                agent.settings,
-                agent.stack,
-                role="curator",
-                primary_provider=agent.stack.name("curator"),
-                primary_model=agent._model("curator"),
-                primary_client=await agent._client("curator"),
-                make_call=_make_call,
-                gate=get_model_gate(),
-                log_tag="narrative.fallback",
-            )
+            text = await complete_text(agent.settings, agent.stack, role="curator",
+                                       model=agent._model("curator"), messages=messages,
+                                       log_tag="narrative.fallback")
         except Exception as e:
             log.warning("narrative.llm_failed", error=str(e)[:200])
             return None
-        text = (resp.choices[0].message.content or "").strip()
         return text[:1200] or None
 
     async def recent_block(self) -> str:

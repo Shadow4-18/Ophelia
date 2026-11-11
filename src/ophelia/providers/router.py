@@ -838,7 +838,7 @@ class ProviderStack:
                     model=self.model(role),
                     messages=[{"role": "user", "content": "ping"}],
                     max_tokens=1,
-                    extra_body=extra_body_for(self.settings, backend.provider_name),
+                    extra_body=extra_body_for(self.settings, backend.provider_name()),
                 ),
                 timeout=8.0,
             )
