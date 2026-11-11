@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextvars
 import json
-import re
 import time
 from typing import Any, Awaitable, Callable
 from pathlib import Path
@@ -13,6 +12,7 @@ from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore, game_tool_definitions
 from ophelia.android.vision import ScreenVision
 from ophelia.config import Settings
+from ophelia.providers import image_routing
 from ophelia.providers.image_job import ImageJob, ImageResult
 from ophelia.providers.media import generate_video, run_image_job
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
@@ -69,20 +69,7 @@ GUEST_ALLOWED_TOOLS: frozenset[str] = frozenset(
 )
 
 
-_EXPLICIT_RE = re.compile(
-    r"\b(?:nude|naked|nudity|topless|bottomless|nsfw|nipples?|areolas?|"
-    r"genitals?|vagina|pussy|penis|cock|dick|cum|orgasm\w*|masturbat\w*|"
-    r"fingering|erotic|lewd|hentai|spread (?:legs|pussy)|touching (?:herself|himself)|"
-    r"explicit|uncensored|undressed|unclothed|"
-    r"(?:no|without)\s+clothes|bare\s+(?:breasts?|chest)|exposed\s+breasts?|"
-    r"porn\w*|sex(?:ual)?)\b",
-    re.IGNORECASE,
-)
-
-
-def looks_explicit(prompt: str) -> bool:
-    """True if an image prompt clearly asks for nudity/sexual content."""
-    return bool(_EXPLICIT_RE.search(prompt or ""))
+from ophelia.providers.image_routing import looks_explicit  # noqa: E402,F401
 
 
 def guest_may_use(name: str) -> bool:
@@ -665,46 +652,13 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         if (style_image or "").strip():
             prompt, style_note, style_terms = await self._apply_style_reference(
                 prompt, style_image)
-        if not self._is_owner:
-            pose_image = None
-        # Guests get 1:1 only — wider aspect ratios cost more tokens and the
-        # experience is "see I can make images," not "produce wallpaper for
-        # strangers." Owner is unaffected. Same for batches, retries and
-        # the pricier quality profiles.
-        if not self._is_owner:
-            aspect_ratio = "1:1"
-            quality, count, attempts = "standard", 1, 1
-        # Civitai: always let her pick unless she pinned a model AIR.
-        if not (model or "").strip():
-            auto_pick = True
-        # Safety net: an explicit prompt sent without nsfw=true went to the
-        # normal (censored) backend, which painted clothes back on and risks
-        # flagging the account. For the owner, with the NSFW tier on, route
-        # clearly explicit prompts to the uncensored backend anyway.
-        if (
-            not nsfw
-            and self._is_owner
-            and getattr(self.settings, "image_nsfw_allowed", False)
-            and looks_explicit(prompt)
-        ):
-            nsfw = True
-            log.info("generate_image.nsfw_auto_routed")
-        # Grok first for anything that isn't actually explicit (lingerie,
-        # suggestive, a torn dress): she sometimes flagged ordinary images
-        # nsfw and they went to paid Civitai. If Grok refuses, the fallback
-        # is Civitai with mature content allowed. A pinned Civitai model or
-        # an img2img edit keeps her choice.
-        mature_ok = self._is_owner and getattr(self.settings, "image_nsfw_allowed", False) is True
-        if nsfw and not looks_explicit(prompt) and not (model or "").strip() and not image:
-            nsfw = False
-            log.info("generate_image.sfw_first", preview=prompt[:80])
-        job = ImageJob(
+        job = image_routing.prepare_job(self.settings, ImageJob(
             prompt=prompt, aspect_ratio=aspect_ratio, nsfw=nsfw, model=(model or "").strip(),
             loras=loras, negative_prompt=negative_prompt, image=image, strength=strength,
             auto_pick=auto_pick, quality=quality, count=count, attempts=attempts,
-            deliver_to=self._current_sender_channel or "", fallback_mature=mature_ok,
+            deliver_to=self._current_sender_channel or "",
             pose_image=(pose_image or "").strip() or None, style_terms=style_terms,
-        )
+        ), is_owner=self._is_owner)
         result = await run_image_job(self.settings, self.stack, job, self.artifacts_dir)
         result = await self._self_check_image(
             result, prompt,

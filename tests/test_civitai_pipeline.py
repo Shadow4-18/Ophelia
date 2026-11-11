@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from ophelia.providers import civitai as civ
-from ophelia.providers import media
+from ophelia.providers import image_routing, media
 from ophelia.providers.civitai import pipeline, site
 from ophelia.providers.civitai.pending import PendingLoop, PendingStore
 
@@ -432,7 +432,7 @@ async def test_pending_is_not_a_failure(monkeypatch, tmp_path):
         return "Pending: still rendering"
 
     monkeypatch.setattr(media, "_dispatch_image_provider", dispatch)
-    monkeypatch.setattr(media, "_fallback_image_providers", lambda *a, **k: ["pollinations"])
+    monkeypatch.setattr(image_routing, "fallback_providers", lambda *a, **k: ["pollinations"])
     settings = SimpleNamespace(image_nsfw_allowed=True, civitai_api_key="k")
     out = await media.generate_image(settings, _stack(), "x", artifacts_dir=tmp_path, nsfw=True)
     assert out == "Pending: still rendering"
@@ -447,7 +447,7 @@ async def test_img2img_routing(monkeypatch, tmp_path):
         return "Civitai img2img source failed: boom"
 
     monkeypatch.setattr(media, "_dispatch_image_provider", dispatch)
-    monkeypatch.setattr(media, "_fallback_image_providers", lambda *a, **k: ["pollinations"])
+    monkeypatch.setattr(image_routing, "fallback_providers", lambda *a, **k: ["pollinations"])
     settings = SimpleNamespace(image_nsfw_allowed=True, civitai_api_key="key")
     # SFW edit stays on Grok; explicit edit goes to Civitai; never a fallback.
     await media.generate_image(settings, _stack(), "night", artifacts_dir=tmp_path, image="/x.png")
