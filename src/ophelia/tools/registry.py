@@ -13,7 +13,8 @@ from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore, game_tool_definitions
 from ophelia.android.vision import ScreenVision
 from ophelia.config import Settings
-from ophelia.providers.media import generate_image, generate_video
+from ophelia.providers.image_job import ImageJob, ImageResult
+from ophelia.providers.media import generate_video, run_image_job
 from ophelia.providers.router import ProviderStack, XAIBackend, build_provider_stack
 from ophelia.tools.android_tools import ANDROID_TOOL_DEFINITIONS
 from ophelia.tools.apk_tools import APK_TOOL_DEFINITIONS, ApkToolsMixin
@@ -141,6 +142,10 @@ def _known_args(handler: Any, args: dict) -> tuple[dict, list[str]]:
         return args, []
     keep = {k: v for k, v in args.items() if k in params}
     return keep, sorted(k for k in args if k not in params)
+
+
+def _as_result(value: ImageResult | str) -> ImageResult:
+    return value if isinstance(value, ImageResult) else ImageResult.from_text(str(value))
 
 
 class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMixin):
@@ -693,42 +698,21 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         if nsfw and not looks_explicit(prompt) and not (model or "").strip() and not image:
             nsfw = False
             log.info("generate_image.sfw_first", preview=prompt[:80])
-        result = await generate_image(
-            self.settings,
-            self.stack,
-            prompt,
-            aspect_ratio=aspect_ratio,
-            artifacts_dir=self.artifacts_dir,
-            nsfw=nsfw,
-            model=model,
-            loras=loras,
-            negative_prompt=negative_prompt,
-            image=image,
-            strength=strength,
-            auto_pick=auto_pick,
-            quality=quality,
-            count=count,
-            attempts=attempts,
-            deliver_to=self._current_sender_channel or "",
-            fallback_mature=mature_ok,
-            pose_image=(pose_image or "").strip() or None,
-            style_terms=style_terms or None,
+        job = ImageJob(
+            prompt=prompt, aspect_ratio=aspect_ratio, nsfw=nsfw, model=(model or "").strip(),
+            loras=loras, negative_prompt=negative_prompt, image=image, strength=strength,
+            auto_pick=auto_pick, quality=quality, count=count, attempts=attempts,
+            deliver_to=self._current_sender_channel or "", fallback_mature=mature_ok,
+            pose_image=(pose_image or "").strip() or None, style_terms=style_terms,
         )
+        result = await run_image_job(self.settings, self.stack, job, self.artifacts_dir)
         result = await self._self_check_image(
             result, prompt,
-            lambda: generate_image(
-                self.settings, self.stack, prompt, aspect_ratio=aspect_ratio,
-                artifacts_dir=self.artifacts_dir, nsfw=nsfw, model=model, loras=loras,
-                negative_prompt=negative_prompt, image=image, strength=strength,
-                auto_pick=auto_pick, quality=quality, count=count, attempts=1,
-                deliver_to=self._current_sender_channel or "", fallback_mature=mature_ok,
-                pose_image=(pose_image or "").strip() or None,
-                style_terms=style_terms or None,
-            ),
+            lambda: run_image_job(self.settings, self.stack, job.but(attempts=1),
+                                  self.artifacts_dir),
         )
-        if style_note:
-            result = f"{style_note}\n{result}"
-        return await self._finalize_media_tool_result(result)
+        text = f"{style_note}\n{result.text}" if style_note else result.text
+        return await self._finalize_media_tool_result(text, paths=result.paths or None)
 
     async def _apply_style_reference(self, prompt: str,
                                      source: str) -> tuple[str, str, list[str]]:
@@ -752,38 +736,39 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         return (styled, f"Style from the reference ({ref.medium}): {', '.join(ref.tags)}.",
                 list(ref.tags))
 
-    async def _self_check_image(self, result: str, prompt: str, again) -> str:
+    async def _self_check_image(self, result: ImageResult | str, prompt: str,
+                                again) -> ImageResult:
         """Look at the picture before it's sent; a wrong one (cast, merged
         bodies, wrong act) is made once more and the better one goes out."""
         from ophelia.media import self_check
 
-        if not self._is_owner or not isinstance(result, str):
-            return result
-        if result.startswith(("Refused", "Pending")) or not self_check.wants_check(
+        result = _as_result(result)
+        if not self._is_owner or not result.ok or not self_check.wants_check(
                 self.settings, prompt):
             return result
-        paths = artifact_paths_in_text(result)
-        if not paths:
-            return result
-        first = await self_check.check_image(self.settings, paths[0], prompt, stack=self.stack)
+        first = await self_check.check_image(self.settings, result.paths[0], prompt,
+                                             stack=self.stack)
         if first.ok:
             return result
         try:
-            retry = await again()
+            retry = _as_result(await again())
         except Exception as e:
             log.warning("self_check.retry_failed", error=str(e)[:200])
-            return f"{result}\n(Self-check: {first.problem}. Retry failed: {e})"
-        retry_paths = artifact_paths_in_text(retry) if isinstance(retry, str) else []
-        if not retry_paths:
-            return f"{result}\n(Self-check: {first.problem}. Retry failed: {str(retry)[:200]})"
-        second = await self_check.check_image(self.settings, retry_paths[0], prompt,
+            return result.but(text=f"{result.text}\n(Self-check: {first.problem}. "
+                                   f"Retry failed: {e})")
+        if not retry.ok:
+            return result.but(text=f"{result.text}\n(Self-check: {first.problem}. Retry "
+                                   f"failed: {retry.text[:200]})")
+        second = await self_check.check_image(self.settings, retry.paths[0], prompt,
                                               stack=self.stack)
         if second.ok:
-            return (f"{retry}\n(Self-check: the first image had {first.problem}, so it was "
-                    "made again; this one checks out. Only this one was sent.)")
-        return (f"{retry}\n(Self-check: the first image had {first.problem}; the remake "
-                f"still has {second.problem}. Only the remake was sent. Say so honestly "
-                "if he notices; a different model or simpler scene may work better.)")
+            return retry.but(text=f"{retry.text}\n(Self-check: the first image had "
+                                  f"{first.problem}, so it was made again; this one checks "
+                                  "out. Only this one was sent.)")
+        return retry.but(text=f"{retry.text}\n(Self-check: the first image had "
+                              f"{first.problem}; the remake still has {second.problem}. Only "
+                              "the remake was sent. Say so honestly if he notices; a "
+                              "different model or simpler scene may work better.)")
 
     async def _search_civitai_models(
         self,

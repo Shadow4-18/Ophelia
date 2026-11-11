@@ -443,7 +443,7 @@ async def test_img2img_routing(monkeypatch, tmp_path):
     seen = []
 
     async def dispatch(provider, **kw):
-        seen.append((provider, kw.get("image")))
+        seen.append((provider, kw["job"].image))
         return "Civitai img2img source failed: boom"
 
     monkeypatch.setattr(media, "_dispatch_image_provider", dispatch)
@@ -508,11 +508,11 @@ async def test_guests_get_no_batches_retries_or_pricier_quality(monkeypatch):
 
     captured = {}
 
-    async def fake_generate(settings, stack, prompt, **kw):
-        captured.update(kw)
+    async def fake_generate(settings, stack, job, artifacts_dir):
+        captured.update(vars(job))
         return "Refused: test"
 
-    monkeypatch.setattr(reg_mod, "generate_image", fake_generate)
+    monkeypatch.setattr(reg_mod, "run_image_job", fake_generate)
     reg = reg_mod.ToolRegistry.__new__(reg_mod.ToolRegistry)
     reg.settings = SimpleNamespace(image_nsfw_allowed=True)
     reg.stack = None

@@ -100,14 +100,14 @@ async def test_guest_generate_image_forced_to_1_1(monkeypatch):
     """A guest requesting 16:9 must actually produce 1:1."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **_):
-        captured["aspect_ratio"] = aspect_ratio
+    async def fake_generate_image(settings, stack, job, artifacts_dir):
+        captured["aspect_ratio"] = job.aspect_ratio
         return "ok"
 
-    async def fake_finalize(self, result):  # noqa: ARG001
+    async def fake_finalize(self, result, **kw):  # noqa: ARG001
         return result
 
-    monkeypatch.setattr("ophelia.tools.registry.generate_image", fake_generate_image)
+    monkeypatch.setattr("ophelia.tools.registry.run_image_job", fake_generate_image)
     monkeypatch.setattr(ToolRegistry, "_finalize_media_tool_result", fake_finalize)
     reg = _registry()
     reg._is_owner = False  # guest turn
@@ -120,14 +120,14 @@ async def test_owner_generate_image_keeps_requested_aspect(monkeypatch):
     """Owner is unaffected — 16:9 stays 16:9."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **_):
-        captured["aspect_ratio"] = aspect_ratio
+    async def fake_generate_image(settings, stack, job, artifacts_dir):
+        captured["aspect_ratio"] = job.aspect_ratio
         return "ok"
 
-    async def fake_finalize(self, result):  # noqa: ARG001
+    async def fake_finalize(self, result, **kw):  # noqa: ARG001
         return result
 
-    monkeypatch.setattr("ophelia.tools.registry.generate_image", fake_generate_image)
+    monkeypatch.setattr("ophelia.tools.registry.run_image_job", fake_generate_image)
     monkeypatch.setattr(ToolRegistry, "_finalize_media_tool_result", fake_finalize)
     reg = _registry()
     reg._is_owner = True  # owner turn
@@ -147,7 +147,7 @@ async def test_guest_generate_video_forced_to_1_1_480p(monkeypatch):
         captured["resolution"] = resolution
         return "ok"
 
-    async def fake_finalize(self, result):  # noqa: ARG001
+    async def fake_finalize(self, result, **kw):  # noqa: ARG001
         return result
 
     monkeypatch.setattr("ophelia.tools.registry.generate_video", fake_generate_video)
@@ -169,7 +169,7 @@ async def test_owner_generate_video_keeps_requested_quality(monkeypatch):
         captured["resolution"] = resolution
         return "ok"
 
-    async def fake_finalize(self, result):  # noqa: ARG001
+    async def fake_finalize(self, result, **kw):  # noqa: ARG001
         return result
 
     monkeypatch.setattr("ophelia.tools.registry.generate_video", fake_generate_video)
@@ -316,14 +316,14 @@ async def test_explicit_owner_prompt_auto_routes_to_nsfw(monkeypatch):
     back on. Owner + NSFW tier on → routed to the uncensored backend."""
     captured: dict = {}
 
-    async def fake_generate_image(settings, stack, prompt, *, aspect_ratio, artifacts_dir, nsfw, **kwargs):
-        captured["nsfw"] = nsfw
+    async def fake_generate_image(settings, stack, job, artifacts_dir):
+        captured["nsfw"] = job.nsfw
         return "ok"
 
     async def fake_finalize(self, result, **kw):
         return result
 
-    monkeypatch.setattr("ophelia.tools.registry.generate_image", fake_generate_image)
+    monkeypatch.setattr("ophelia.tools.registry.run_image_job", fake_generate_image)
     monkeypatch.setattr(ToolRegistry, "_finalize_media_tool_result", fake_finalize)
     reg = _registry()
     reg.settings.image_nsfw_allowed = True
