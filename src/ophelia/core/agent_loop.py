@@ -803,7 +803,7 @@ class AgentLoop:
         if include_consciousness and "consciousness" not in channels:
             channels.append("consciousness")
 
-        history = await self.memory.recent_across_channels(channels, limit=35)
+        history = await self._history(channels, channel, current_is_tick=current_is_tick)
         system = BASE_PROMPT + "\n\n" + await self._system_prompt(
             system_extra,
             channel,
@@ -894,6 +894,41 @@ class AgentLoop:
         if not seen_current_user_turn:
             messages.append({"role": "user", "content": user_text})
         return messages
+
+    # Conversation turns kept in the prompt, and her inner check-ins shown
+    # next to them in a chat turn (a tick turn gets the full inner budget).
+    HISTORY_LIMIT = 35
+    INNER_IN_CHAT = 8
+    TALK_IN_TICK = 12
+
+    async def _history(self, channels: list[str], channel: str, *,
+                       current_is_tick: bool) -> list[dict]:
+        """Recent messages for the prompt: the conversation and her inner
+        check-ins, each with its own budget. One shared limit let ticks (two
+        rows each, the raw JSON half never even shown) push the actual
+        conversation out of the window after she'd been thinking a while."""
+        from ophelia.channels.proactive_filter import is_consciousness_tick_payload
+
+        talk = [c for c in channels if c != "consciousness"]
+        # On her own check-in the conversation is context, not the thread she's
+        # answering: a shorter slice keeps frequent ticks cheap.
+        talk_limit = self.TALK_IN_TICK if channel == "consciousness" else self.HISTORY_LIMIT
+        rows = (await self.memory.recent_across_channels(talk, limit=talk_limit)
+                if talk else [])
+        if "consciousness" not in channels:
+            return rows
+        inner_budget = (self.HISTORY_LIMIT if channel == "consciousness"
+                        else self.INNER_IN_CHAT)
+        inner = await self.memory.recent_across_channels(["consciousness"],
+                                                         limit=inner_budget * 3)
+        if not current_is_tick:
+            # Tick JSON is never rendered in a chat turn: don't let it take slots.
+            inner = [m for m in inner if not (
+                m["role"] == "assistant"
+                and ((m.get("metadata") or {}).get("type") == "consciousness_json"
+                     or is_consciousness_tick_payload(m.get("content") or "")))]
+        inner = inner[-inner_budget:]
+        return sorted(rows + inner, key=lambda m: m.get("created_at") or 0)
 
     async def _store(
         self, channel: str, role: str, content: str, *, is_owner: bool,

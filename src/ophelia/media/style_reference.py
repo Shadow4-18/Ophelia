@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from ophelia.fileio import atomic_write_json
 import structlog
 
 log = structlog.get_logger()
@@ -118,7 +119,7 @@ def _save_cache(settings: Any, cache: dict[str, dict]) -> None:
         path = _cache_path(settings)
         path.parent.mkdir(parents=True, exist_ok=True)
         keep = dict(list(cache.items())[-200:])
-        path.write_text(json.dumps(keep), encoding="utf-8")
+        atomic_write_json(path, keep)
     except Exception as e:
         log.debug("style_ref.cache_save_failed", error=str(e))
 

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.core.background import supervise
 from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore
 from ophelia.android.vision import ScreenVision
@@ -211,28 +212,28 @@ class Workstation:
                 except Exception as e:
                     log.warning("ui.oauth_startup", error=str(e))
 
-        self._tasks.append(asyncio.create_task(self._oauth_refresh_loop()))
-        self._tasks.append(asyncio.create_task(self._status_loop()))
+        self._tasks.append(supervise("oauth_refresh_loop", self._oauth_refresh_loop))
+        self._tasks.append(supervise("status_loop", self._status_loop))
         if self.semantic.mode != "off":
-            self._tasks.append(asyncio.create_task(self.semantic.run()))
+            self._tasks.append(supervise("semantic", lambda: self.semantic.run()))
         from ophelia.storage import HousekeepingLoop
 
-        self._tasks.append(asyncio.create_task(HousekeepingLoop(self.settings).run()))
+        self._tasks.append(supervise("HousekeepingLoop", lambda: HousekeepingLoop(self.settings).run()))
         if self.settings.civitai_api_key:
             # Slow Civitai images still get saved (and logged) after the wait.
             from ophelia.providers.civitai.pending import PendingLoop
 
-            self._tasks.append(asyncio.create_task(PendingLoop(self.settings, ui=True).run()))
+            self._tasks.append(supervise("PendingLoop", lambda: PendingLoop(self.settings, ui=True).run()))
         if self.settings.backup_enabled:
             from ophelia.backup import BackupLoop
 
-            self._tasks.append(asyncio.create_task(BackupLoop(self.settings).run()))
+            self._tasks.append(supervise("BackupLoop", lambda: BackupLoop(self.settings).run()))
         from ophelia.mind.narrative import DailyNarrative
 
         self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
         if self.settings.diary_enabled:
             self.agent.narrative = self.narrative
-            self._tasks.append(asyncio.create_task(self.narrative.run()))
+            self._tasks.append(supervise("narrative", lambda: self.narrative.run()))
         if getattr(self.settings, "episodic_memory", True):
             from ophelia.mind.episodes import EpisodicMemory
 
@@ -240,12 +241,12 @@ class Workstation:
                                            settings=self.settings)
             self.agent.episodes = self.episodes
             self.agent.tools.episodes = self.episodes
-            self._tasks.append(asyncio.create_task(self.episodes.run()))
+            self._tasks.append(supervise("episodes", lambda: self.episodes.run()))
         if self.settings.avatar_enabled:
-            self._tasks.append(asyncio.create_task(self._avatar_loop()))
+            self._tasks.append(supervise("avatar_loop", self._avatar_loop))
 
         if self.curator:
-            self._tasks.append(asyncio.create_task(self._curator_loop()))
+            self._tasks.append(supervise("curator_loop", self._curator_loop))
 
         if self.settings.consciousness_on():
             self.consciousness = ConsciousnessLoop(
@@ -266,7 +267,7 @@ class Workstation:
                 settings=self.settings,
                 curiosity=self.curiosity,
             )
-            self._tasks.append(asyncio.create_task(self.consciousness.run()))
+            self._tasks.append(supervise("consciousness", lambda: self.consciousness.run()))
 
         self._ready = True
         log.info("workstation.ready", channel=UI_CHANNEL)

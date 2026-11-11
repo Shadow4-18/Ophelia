@@ -16,16 +16,12 @@ async def test_build_messages_does_not_duplicate_current_user_turn():
     memory = MagicMock()
     memory.recent_lessons = AsyncMock(return_value=[])
     memory.recent_inner_thoughts = AsyncMock(return_value=[])
-    memory.recent_across_channels = AsyncMock(
-        return_value=[
-            {
-                "channel": "telegram:1",
-                "role": "user",
-                "content": "hello",
-                "metadata": {},
-            }
-        ]
-    )
+    async def recent(channels, limit=35):
+        row = {"channel": "telegram:1", "role": "user", "content": "hello", "metadata": {},
+               "created_at": 1.0}
+        return [row] if "telegram:1" in channels else []
+
+    memory.recent_across_channels = AsyncMock(side_effect=recent)
 
     agent = AgentLoop.__new__(AgentLoop)
     agent.memory = memory

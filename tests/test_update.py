@@ -218,14 +218,38 @@ def test_update_refuses_to_restart_into_broken_code(tmp_path):
     assert not ok
 
 
-def test_dirty_update_names_the_files(tmp_path):
-    remote, phone = tmp_path / "remote.git", tmp_path / "phone"
+def test_her_edits_are_set_aside_and_the_update_runs(tmp_path, monkeypatch):
+    """Her self-edits (written with run_code) used to stop every /update."""
+    import subprocess
+
+    remote, phone, dev = tmp_path / "remote.git", tmp_path / "phone", tmp_path / "dev"
     _sh(tmp_path, "git", "init", "-q", "--bare", "-b", "main", str(remote))
-    _sh(tmp_path, "git", "clone", "-q", str(remote), str(phone))
-    (phone / "a.py").write_text("x = 1\n")
-    _sh(phone, "git", "add", "-A")
-    _sh(phone, "git", "commit", "-qm", "one")
-    (phone / "a.py").write_text("x = 2\n")
-    with patch("ophelia.setup.update.find_repo_root", return_value=phone):
+    _sh(tmp_path, "git", "clone", "-q", str(remote), str(dev))
+    (dev / "a.py").write_text("x = 1\n")
+    (dev / "b.py").write_text("y = 1\n")
+    _sh(dev, "git", "add", "-A")
+    _sh(dev, "git", "commit", "-qm", "one")
+    _sh(dev, "git", "push", "-q", "origin", "HEAD:main")
+    _sh(tmp_path, "git", "clone", "-q", "-b", "main", str(remote), str(phone))
+    (dev / "b.py").write_text("y = 2\n")
+    _sh(dev, "git", "commit", "-qam", "two")
+    _sh(dev, "git", "push", "-q", "origin", "HEAD:main")
+    (phone / "a.py").write_text("x = 99  # her edit\n")
+    monkeypatch.setenv("OPHELIA_HOME", str(tmp_path / "home"))
+
+    with patch("ophelia.setup.update.find_repo_root", return_value=phone), \
+            patch("ophelia.setup.update._pip_install", return_value=(0, "")), \
+            patch.dict("os.environ", {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                                      "GIT_COMMITTER_NAME": "t",
+                                      "GIT_COMMITTER_EMAIL": "t@t"}):
         r = run_update()
-    assert not r.ok and "a.py" in r.error and "/update dirty" in r.error
+    assert r.ok, r.error
+    assert (phone / "b.py").read_text() == "y = 2\n"  # updated
+    assert (phone / "a.py").read_text() == "x = 1\n"  # her edit set aside, not mixed in
+    assert r.set_aside == ["a.py"]
+    diff = Path(r.set_aside_diff)
+    assert diff.parent == tmp_path / "home" / "data" / "self_edits"
+    assert "x = 99" in diff.read_text()
+    assert "set aside" in r.summary() and r.set_aside_diff in r.summary()
+    stash = subprocess.run(["git", "stash", "list"], cwd=phone, capture_output=True, text=True)
+    assert "ophelia self-edits" in stash.stdout

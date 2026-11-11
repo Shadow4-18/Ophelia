@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from ophelia.fileio import atomic_write_json
 import structlog
 
 log = structlog.get_logger()
@@ -237,7 +238,7 @@ def save_oauth_state(path: Path, state: dict[str, Any]) -> None:
     }
     existing["providers"] = providers
     existing["active_provider"] = existing.get("active_provider") or "xai-oauth"
-    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    atomic_write_json(path, existing, indent=2)
 
 
 def needs_refresh(access_token: str) -> bool:

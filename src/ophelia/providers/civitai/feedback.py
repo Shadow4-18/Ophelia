@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ophelia.fileio import atomic_write_json
 import structlog
 
 log = structlog.get_logger()
@@ -54,7 +55,7 @@ def remember_sent(settings: Any, chat_id: Any, message_id: Any, filename: str) -
             data = []
         data.append([str(chat_id), int(message_id), os.path.basename(filename)])
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data[-_SENT_CAP:]), encoding="utf-8")
+        atomic_write_json(path, data[-_SENT_CAP:])
     except Exception as e:
         log.debug("image_feedback.remember_failed", error=str(e))
 

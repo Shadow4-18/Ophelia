@@ -9,6 +9,7 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.core.background import spawn
 from ophelia.android.games import GameStore
 from ophelia.channels.chat_actions import ChatActions
 from ophelia.channels.chat_log import ChatLogger
@@ -193,7 +194,7 @@ class ChannelSession:
         log.info("quiet.holding", channel=channel, waiting=len(q.waiting))
         if not q.comeback_scheduled:
             q.comeback_scheduled = True
-            asyncio.create_task(self._comeback(channel, q))
+            spawn(self._comeback(channel, q), name="comeback")
 
     async def _comeback(self, channel: str, q) -> None:
         from ophelia.mind import quiet
@@ -665,7 +666,7 @@ class ChannelSession:
             self._current_log_context = None
             # Event-driven will: after a chat turn, stir consciousness soon so
             # she can react/impulse without waiting for the full clock interval.
-            asyncio.create_task(self._wake_after_chat())
+            spawn(self._wake_after_chat(), name="wake_after_chat")
 
     def _maybe_follow_through(self, channel: str, out: str, **plumbing) -> None:
         """She ended on "give me thirty seconds" / "I'll do it properly" and
@@ -685,7 +686,8 @@ class ChannelSession:
         delay = ft.follow_through_delay(line)
         log.info("follow_through.scheduled", channel=channel, line=line[:80],
                  delay=round(delay))
-        asyncio.create_task(self._follow_through(channel, line, delay, time.time(), plumbing))
+        spawn(self._follow_through(channel, line, delay, time.time(), plumbing),
+              name="follow_through")
 
     async def _catch_phantom(self, channel: str, owner_text: str, out: str,
                              turn_extra: str = "") -> str:

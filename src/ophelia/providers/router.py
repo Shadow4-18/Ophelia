@@ -80,6 +80,11 @@ class LLMBackend(Protocol):
     def model_for_role(self, role: ProviderRole) -> str | None: ...
 
 
+# base_url → ((token, base_url), client): one live xAI client per endpoint,
+# shared across backends (the provider stack is rebuilt in several places).
+_XAI_CLIENTS: dict[str, tuple[tuple[str, str, int], AsyncOpenAI]] = {}
+
+
 class XAIBackend:
     """xAI Grok — SuperGrok OAuth or API key."""
 
@@ -130,8 +135,19 @@ class XAIBackend:
         return self._client
 
     async def async_client_fresh(self) -> AsyncOpenAI:
+        """A client with a current token. Reused until the token changes: a new
+        client per call opened a new connection pool each time (TLS handshake
+        on every request) and never closed the old ones."""
         token = await self.bearer_fresh()
-        return AsyncOpenAI(api_key=token, base_url=self.settings.xai_base_url)
+        # Also per event loop: an httpx pool can't be reused across loops
+        # (the CLI and tests start new ones).
+        key = (token, self.settings.xai_base_url, id(asyncio.get_running_loop()))
+        cached = _XAI_CLIENTS.get(self.settings.xai_base_url)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        client = AsyncOpenAI(api_key=token, base_url=self.settings.xai_base_url)
+        _XAI_CLIENTS[self.settings.xai_base_url] = (key, client)
+        return client
 
     def default_model(self) -> str:
         return self.settings.xai_model
