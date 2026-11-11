@@ -82,3 +82,22 @@ async def test_tool_delivers_the_result_paths(monkeypatch, tmp_path):
     reg._finalize_media_tool_result = AsyncMock(side_effect=lambda r, **kw: r)
     await reg._generate_image("a cat")
     assert reg._finalize_media_tool_result.await_args.kwargs["paths"] == [img]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider, fn", [
+    ("fal", "_fal_image"), ("replicate", "_replicate_image"), ("a1111", "_a1111_image"),
+    ("comfyui", "_comfyui_image"), ("modelslab", "_modelslab_image"),
+    ("ollama", "_ollama_image"), ("openai", "_openai_image"),
+])
+async def test_moved_backends_still_dispatch(monkeypatch, tmp_path, provider, fn):
+    from ophelia.providers import image_backends_extra as extra
+
+    async def fake(*a, **kw):
+        return f"from {provider}"
+
+    monkeypatch.setattr(extra, fn, fake)
+    out = await media._dispatch_image_provider(
+        provider, settings=SimpleNamespace(), stack=None, job=ImageJob(prompt="x"),
+        resolved_model="m", artifacts_dir=tmp_path, nsfw=False, auto_pick=False)
+    assert out == f"from {provider}"
