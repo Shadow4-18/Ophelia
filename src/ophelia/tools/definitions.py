@@ -1661,8 +1661,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
-def all_tool_definitions(settings: Settings) -> list[dict[str, Any]]:
-    stack = build_provider_stack(settings)
+def all_tool_definitions(settings: Settings, stack=None) -> list[dict[str, Any]]:
+    """Every tool she can use now. Pass the registry's ``stack``: building a
+    new one on every turn re-read provider auth just to decide this list."""
+    stack = stack or build_provider_stack(settings)
     tools = list(TOOL_DEFINITIONS)
     skip: set[str] = set()
     if not settings.web_search_enabled:

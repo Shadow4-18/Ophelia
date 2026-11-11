@@ -45,13 +45,19 @@ async def test_chat_history_keeps_its_own_budget():
         ticks.append({"channel": "consciousness", "role": "assistant",
                       "content": '{"internal_thought": "x", "action": "reflect"}',
                       "metadata": {"type": "consciousness_json"}, "created_at": t + 0.5})
+        if i % 3 == 0:
+            ticks.append({"channel": "consciousness", "role": "assistant",
+                          "content": f"[inner] thought {i}", "metadata": {"type": "inner"},
+                          "created_at": t + 0.6})
     agent = _agent({"telegram:1": chat, "consciousness": ticks})
     rows = await agent._history(["telegram:1", "consciousness"], "telegram:1",
                                 current_is_tick=False)
     talk = [r for r in rows if r["channel"] == "telegram:1"]
     inner = [r for r in rows if r["channel"] == "consciousness"]
     assert len(talk) == agent.HISTORY_LIMIT  # all 35 conversation turns kept
-    assert len(inner) == agent.INNER_IN_CHAT and all(r["role"] == "user" for r in inner)
+    # Her actual thoughts fill the inner slots, not the prompts that woke her.
+    assert len(inner) == agent.INNER_IN_CHAT
+    assert all(r["content"].startswith("[inner] thought") for r in inner)
     assert [r["created_at"] for r in rows] == sorted(r["created_at"] for r in rows)
     # A tick turn sees its full inner history.
     rows = await agent._history(["consciousness", "telegram:1"], "consciousness",

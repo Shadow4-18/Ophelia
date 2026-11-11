@@ -175,7 +175,7 @@ async def test_guests_only_see_allowed_tool_definitions(monkeypatch):
         {"type": "function", "function": {"name": n}}
         for n in ("web_search", "edit_soul", "run_code", "relay_to_owner")
     ]
-    monkeypatch.setattr(r, "all_tool_definitions", lambda settings: list(fake))
+    monkeypatch.setattr(r, "all_tool_definitions", lambda settings, stack=None: list(fake))
     reg = _registry()
     reg.settings = MagicMock()
     reg.mcp.definitions = MagicMock(return_value=[{"function": {"name": "mcp_x"}}])

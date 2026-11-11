@@ -427,6 +427,10 @@ def ledger_path(settings: Settings) -> Path:
     return Path(settings.data_dir) / "logs" / "image_generations.jsonl"
 
 
+_LEDGER_MAX_BYTES = 8 * 1024 * 1024
+_LEDGER_KEEP_LINES = 5000
+
+
 def write_ledger(settings: Settings, record: dict) -> None:
     """One line per generation (success, failure or pending): what was sent
     and what came back. Never raises."""
@@ -435,6 +439,14 @@ def write_ledger(settings: Settings, record: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": round(time.time(), 3), **record}, default=str) + "\n")
+        if path.stat().st_size > _LEDGER_MAX_BYTES:
+            # It only ever grew, and several places read it whole. Keep the
+            # recent history (all anything looks at) and drop the rest.
+            from ophelia.fileio import atomic_write_text
+
+            keep = path.read_text(encoding="utf-8").splitlines()[-_LEDGER_KEEP_LINES:]
+            atomic_write_text(path, "\n".join(keep) + "\n")
+            log.info("image.ledger_trimmed", kept=len(keep))
     except Exception as e:
         log.debug("image.ledger_failed", error=str(e))
 

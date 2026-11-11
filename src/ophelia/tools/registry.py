@@ -557,7 +557,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             self._mcp_ready = True
 
     async def tool_definitions(self, *, for_guest: bool = False) -> list[dict[str, Any]]:
-        tools = all_tool_definitions(self.settings)
+        tools = all_tool_definitions(self.settings, getattr(self, "stack", None))
         if for_guest:
             # Don't even show guests tools they can't call (and skip MCP).
             return [t for t in tools if guest_may_use(t["function"]["name"])]
