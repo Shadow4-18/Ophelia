@@ -1075,7 +1075,14 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
         except TimeoutError:
-            return "Code execution timed out (30s)."
+            # wait_for only stops waiting: the script would keep running in
+            # the background on the phone. Kill it and reap it.
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except (ProcessLookupError, TimeoutError):
+                pass
+            return "Code execution timed out (30s) and was stopped."
         finally:
             path.unlink(missing_ok=True)
 

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ophelia.fileio import atomic_write_json
 import structlog
 
 from ophelia.providers.civitai import discovery, feedback
@@ -47,7 +48,7 @@ def bench(settings: Any, air: str, reason: str = "") -> None:
         data[air] = time.time()
         path = _bench_path(settings)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_json(path, data)
         log.warning("civitai.benched", model=air, reason=reason[:200])
     except Exception as e:
         log.debug("civitai.bench_failed", error=str(e))

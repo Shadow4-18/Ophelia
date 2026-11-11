@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import aiosqlite
+from ophelia.fileio import atomic_write_json
 import structlog
 
 from ophelia.config import OPHELIA_HOME, Settings
@@ -49,15 +50,13 @@ def retired_facts(home: Path) -> list[str]:
 
 
 def _retire(home: Path, facts: list[str]) -> None:
-    import json
-
     have = retired_facts(home)
     for f in facts:
         if f not in have:
             have.append(f)
     path = _retired_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(have[-500:], ensure_ascii=False, indent=0), encoding="utf-8")
+    atomic_write_json(path, have[-500:], ensure_ascii=False, indent=0)
 
 
 def is_retired(home: Path, fact: str) -> bool:

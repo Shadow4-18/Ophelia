@@ -37,6 +37,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
 
+from ophelia.fileio import atomic_write_json
 import structlog
 
 from ophelia.config import OPHELIA_HOME
@@ -283,7 +284,7 @@ def _load_state(home: Path) -> dict[str, float]:
 def _save_state(home: Path, state: dict[str, float]) -> None:
     path = home / "data" / STATE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state), encoding="utf-8")
+    atomic_write_json(path, state)
 
 
 OffsiteSender = Callable[[Path, str], Awaitable[bool]]

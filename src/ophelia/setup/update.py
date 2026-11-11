@@ -34,6 +34,8 @@ class UpdateResult:
     steps: list[str] = field(default_factory=list)
     error: str | None = None
     restart_scheduled: bool = False
+    set_aside: list[str] = field(default_factory=list)  # her local edits, stashed
+    set_aside_diff: str = ""  # copy of them, to review or send over
 
     def summary(self, *, max_chars: int = 3500) -> str:
         lines: list[str] = []
@@ -49,6 +51,14 @@ class UpdateResult:
             before = (self.before_sha or "?")[:8]
             after = (self.after_sha or "?")[:8]
             lines.append(f"Commit: {before} → {after}")
+        if self.set_aside:
+            lines.append("")
+            lines.append(
+                f"Local edits to {', '.join(self.set_aside[:6])}"
+                + (f" (+{len(self.set_aside) - 6} more)" if len(self.set_aside) > 6 else "")
+                + f" were set aside so the update could run. Copy: {self.set_aside_diff} "
+                "(send it over to have anything worth keeping ported); the change is "
+                "also in `git stash list`.")
         if self.steps:
             lines.append("")
             lines.extend(self.steps[-12:])
@@ -251,6 +261,32 @@ def schedule_restart(*, delay_sec: float = 3.0) -> bool:
         return False
 
 
+def _self_edits_dir() -> Path:
+    home = Path(os.environ.get("OPHELIA_HOME") or (Path.home() / ".ophelia"))
+    return home / "data" / "self_edits"
+
+
+def _set_aside(repo: Path, files: list[str]) -> Path | None:
+    """Save the local edits as a .diff (to review or port) and stash them.
+    The saved path, or None if git couldn't do it."""
+    rc, diff = _git(repo, "diff", "HEAD")
+    if rc != 0:
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out = _self_edits_dir() / f"{stamp}.diff"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(diff or "", encoding="utf-8")
+    except OSError:
+        return None
+    rc, msg = _git(repo, "stash", "push", "-m", f"ophelia self-edits {stamp}")
+    if rc != 0 or _working_tree_dirty(repo):
+        log.warning("update.set_aside_failed", error=(msg or "")[:200])
+        return None
+    log.info("update.set_aside", files=files[:20], diff=str(out))
+    return out
+
+
 def run_update(
     *,
     branch: str | None = None,
@@ -281,15 +317,28 @@ def run_update(
 
     dirty = _working_tree_dirty(repo)
     if dirty and not allow_dirty:
+        # Her own edits to her source (she writes them with run_code) used to
+        # stop every update. Set them aside instead: a copy for review, the
+        # change itself in `git stash`, and the update goes ahead clean.
         files = _dirty_files(repo)
-        shown = ", ".join(files[:8]) + (f" (+{len(files) - 8} more)" if len(files) > 8 else "")
-        result.error = (
-            f"Uncommitted local changes in: {shown or 'tracked files'}. "
-            "`/update dirty` updates anyway (if they clash, the update wins and "
-            "your changes are kept in `git stash list`)."
-        )
-        result.steps.append("git status: dirty")
-        return result
+        saved = _set_aside(repo, files)
+        if saved is None:
+            shown = ", ".join(files[:8]) + (f" (+{len(files) - 8} more)"
+                                            if len(files) > 8 else "")
+            result.error = (
+                f"Uncommitted local changes in: {shown or 'tracked files'}, and they "
+                "couldn't be set aside. `/update dirty` updates anyway (if they clash, "
+                "the update wins and your changes are kept in `git stash list`)."
+            )
+            result.steps.append("git status: dirty")
+            return result
+        dirty = False
+        result.set_aside = files
+        result.set_aside_diff = str(saved)
+        result.steps.append(
+            f"set aside local edits to {', '.join(files[:8])}"
+            + (f" (+{len(files) - 8} more)" if len(files) > 8 else "")
+            + f": copy in {saved}, change in `git stash list`")
 
     result.before_sha = _head_sha(repo)
     result.branch = branch or _current_branch(repo)

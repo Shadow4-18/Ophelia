@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.core.background import spawn
 from ophelia.channels.guest_approval import (
     GuestApprovals,
     append_user_to_allowlist,
@@ -286,7 +287,7 @@ class DiscordGateway:
                     async def _media(path: Path, caption: str) -> bool:
                         return await gw._send_discord_file_to_user(user, path, caption)
 
-                    asyncio.create_task(
+                    spawn(
                         gw.session.handle_chat(
                             f"discord:{uid}",
                             first_msg,

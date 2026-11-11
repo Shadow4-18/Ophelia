@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ophelia.fileio import atomic_write_json
 import structlog
 
 log = structlog.get_logger()
@@ -317,7 +318,7 @@ def save_profile(data_dir: Path | str, profile: dict) -> None:
     data[f"{w}x{h}"] = profile
     path = _path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    atomic_write_json(path, data, indent=1)
 
 
 def correct(data_dir: Path | str, x: int, y: int, w: int, h: int,

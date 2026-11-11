@@ -7,6 +7,7 @@ from pathlib import Path
 
 import structlog
 
+from ophelia.core.background import spawn, supervise
 from ophelia.android.factory import build_android_body
 from ophelia.android.games import GameStore
 from ophelia.android.harden import HealthCheckLoop
@@ -627,19 +628,19 @@ class Orchestrator:
         # background — never blocks startup.
         try:
             from ophelia.media.vision_input import warmup_vision
-            asyncio.create_task(warmup_vision(self.settings, stack=self.stack))
+            spawn(warmup_vision(self.settings, stack=self.stack), name="warmup_vision")
         except Exception as e:
             log.warning("vision.warmup_skip", error=str(e))
 
         tasks: list[asyncio.Task] = [
-            asyncio.create_task(self._oauth_refresh_loop()),
-            asyncio.create_task(self._heartbeat_loop()),
-            asyncio.create_task(self._pause_poll_loop()),
+            supervise("oauth_refresh_loop", self._oauth_refresh_loop),
+            supervise("heartbeat_loop", self._heartbeat_loop),
+            supervise("pause_poll_loop", self._pause_poll_loop),
         ]
         # Optional semantic recall: indexes while the local model is idle; a
         # no-op loop when embeddings are off / unavailable (default on Termux).
         if self.semantic.mode != "off":
-            tasks.append(asyncio.create_task(self.semantic.run()))
+            tasks.append(supervise("semantic", lambda: self.semantic.run()))
         # Backups of who she is (daily local; optional off-phone to the owner).
         self.backup_loop = None
         if self.settings.backup_enabled:
@@ -648,12 +649,12 @@ class Orchestrator:
             self.backup_loop = BackupLoop(
                 self.settings, offsite_sender=self.hub.send_owner_document
             )
-            tasks.append(asyncio.create_task(self.backup_loop.run()))
+            tasks.append(supervise("backup_loop", lambda: self.backup_loop.run()))
         # Keep data/ from eating the phone (old vision screenshots etc.).
         from ophelia.storage import HousekeepingLoop
 
         self.housekeeping = HousekeepingLoop(self.settings)
-        tasks.append(asyncio.create_task(self.housekeeping.run()))
+        tasks.append(supervise("housekeeping", lambda: self.housekeeping.run()))
         # Civitai images that outlived the chat wait: deliver when done.
         if self.settings.civitai_api_key:
             from ophelia.providers.civitai.pending import PendingLoop
@@ -663,14 +664,14 @@ class Orchestrator:
                 deliver_media=self._deliver_late_media,
                 deliver_text=self._deliver_late_text,
             )
-            tasks.append(asyncio.create_task(self.civitai_pending.run()))
+            tasks.append(supervise("civitai_pending", lambda: self.civitai_pending.run()))
         # Daily diary entry (one short curator call per day, when idle).
         from ophelia.mind.narrative import DailyNarrative
 
         self.narrative = DailyNarrative(self.agent, self.memory, inner=self.inner)
         if self.settings.diary_enabled:
             self.agent.narrative = self.narrative
-            tasks.append(asyncio.create_task(self.narrative.run()))
+            tasks.append(supervise("narrative", lambda: self.narrative.run()))
         # Episodic memory: each day/week written down as the story of it.
         self.episodes = None
         if getattr(self.settings, "episodic_memory", True):
@@ -680,16 +681,16 @@ class Orchestrator:
                                            settings=self.settings)
             self.agent.episodes = self.episodes
             self.agent.tools.episodes = self.episodes
-            tasks.append(asyncio.create_task(self.episodes.run()))
+            tasks.append(supervise("episodes", lambda: self.episodes.run()))
 
         # Tier C #12: Android kill-switch health check. Runs every 10min on
         # Termux and re-applies the wake-lock / boot script if they vanish.
         # No-op off Termux.
         self.health_check = HealthCheckLoop(self.settings, self.signals)
-        tasks.append(asyncio.create_task(self.health_check.run()))
+        tasks.append(supervise("health_check", lambda: self.health_check.run()))
 
         if self.curator:
-            tasks.append(asyncio.create_task(self._curator_loop()))
+            tasks.append(supervise("curator_loop", self._curator_loop))
             try:
                 n = await self.curator.run_cycle()
                 if n:
@@ -738,7 +739,7 @@ class Orchestrator:
                 director=self.director,
                 curiosity=self.curiosity,
             )
-            tasks.append(asyncio.create_task(self.consciousness.run()))
+            tasks.append(supervise("consciousness", lambda: self.consciousness.run()))
 
         if self.settings.dream_enabled:
             self.dream = DreamLoop(
@@ -749,15 +750,15 @@ class Orchestrator:
                 interval_hours=self.settings.dream_interval_hours,
                 notify=self._notify_spontaneous,
             )
-            tasks.append(asyncio.create_task(self.dream.run()))
+            tasks.append(supervise("dream", lambda: self.dream.run()))
 
         self.wake_listen = WakeWordListenLoop(self.settings, self.agent, self.signals)
         if self.wake_listen.available():
-            tasks.append(asyncio.create_task(self.wake_listen.run()))
+            tasks.append(supervise("wake_listen", lambda: self.wake_listen.run()))
         else:
             self.listen = LocalListenLoop(self.settings, self.agent, self.signals)
             if self.listen.available():
-                tasks.append(asyncio.create_task(self.listen.run()))
+                tasks.append(supervise("listen", lambda: self.listen.run()))
 
         if self.settings.alarms.strip():
             self.alarms = AlarmLoop(
@@ -768,7 +769,7 @@ class Orchestrator:
                 notify_text=self._notify_spontaneous,
                 notify_voice=self._notify_spontaneous_voice,
             )
-            tasks.append(asyncio.create_task(self.alarms.run()))
+            tasks.append(supervise("alarms", lambda: self.alarms.run()))
 
         if self.vision and self.settings.ambient_commentary_enabled:
             self.ambient = AmbientCommentaryLoop(
@@ -780,13 +781,13 @@ class Orchestrator:
                 self.vision,
                 notify=self._notify_spontaneous,
             )
-            tasks.append(asyncio.create_task(self.ambient.run()))
+            tasks.append(supervise("ambient", lambda: self.ambient.run()))
 
         if self.settings.greet_on_start and self.hub.configured_names():
-            tasks.append(asyncio.create_task(self._greet_on_start()))
+            tasks.append(spawn(self._greet_on_start(), name="greet_on_start"))
 
         if self.settings.site_enabled:
-            tasks.append(asyncio.create_task(self._run_public_site()))
+            tasks.append(supervise("public_site", self._run_public_site))
 
         log.info(
             "ophelia.starting",

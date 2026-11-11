@@ -19,6 +19,7 @@ from telegram.ext import (
     filters,
 )
 
+from ophelia.core.background import spawn
 from ophelia.android.factory import build_android_body
 from ophelia.channels.guest_approval import (
     GuestApprovals,
@@ -377,9 +378,7 @@ class TelegramGateway:
                 except Exception as e:
                     log.warning("telegram.approval_notify_guest_failed", error=str(e))
             if first_msg:
-                asyncio.create_task(
-                    self._replay_guest_message(uid, first_msg)
-                )
+                spawn(self._replay_guest_message(uid, first_msg), name="guest_replay")
         elif action == "deny":
             self._guest_approvals.set_status(platform, uid, "denied")
             await q.edit_message_text(f"❌ Declined {name} (telegram:{uid}).")
@@ -1682,7 +1681,7 @@ class TelegramGateway:
         _install_conflict_filter()
         # If a conflict does appear, log the culprit process once (the second
         # poller is usually an external leftover our lock can't see).
-        asyncio.create_task(self._conflict_diagnostic())
+        spawn(self._conflict_diagnostic(), name="conflict_diagnostic")
         # Refuse to start a second poller on the same bot token — that's the
         # cause of the "terminated by other getUpdates request" spam. Let the
         # already-running instance keep Telegram; this one skips polling.

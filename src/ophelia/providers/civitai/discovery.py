@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ophelia.fileio import atomic_write_json
 import structlog
 
 from ophelia.providers.civitai import feedback, site
@@ -140,7 +141,7 @@ def _write(settings: Any, data: dict[str, Any]) -> None:
     try:
         path = _path(settings)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_json(path, data)
     except Exception as e:
         log.debug("civitai.discover_save_failed", error=str(e))
 
