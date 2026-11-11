@@ -36,6 +36,7 @@ class LoraPick:
     group: str = ""  # concept group: position, fluid, effect... (one each)
     triggers: list[str] = field(default_factory=list)
     query: str = ""  # the concept it was found for
+    liked: float | None = None  # its weight in images he liked
 
     @property
     def label(self) -> str:
@@ -45,6 +46,8 @@ class LoraPick:
 def _base_weight(p: LoraPick) -> float:
     if p.weight is not None:
         return p.weight
+    if p.liked is not None:
+        return max(0.3, min(1.2, p.liked))
     w = p.rec if p.rec is not None else _DEFAULT.get(p.category, 0.7)
     return max(0.4, min(1.0, w))
 

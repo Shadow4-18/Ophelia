@@ -23,7 +23,7 @@ import structlog
 from ophelia.config import Settings
 from ophelia.providers.civitai import loras as auto_loras
 from ophelia.providers.civitai.stack import LoraPick, plan_stack
-from ophelia.providers.civitai import discovery, feedback, selection, site, variety
+from ophelia.providers.civitai import discovery, feedback, rewrite, selection, site, variety
 from ophelia.providers.civitai.air import (
     air_kind,
     base_family,
@@ -248,10 +248,15 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
     prompt, moved = split_negatives(req.prompt)
     if moved:
         notes.append("moved to negative: " + ", ".join(moved[:8]))
+    if not req.image:
+        prompt, why = await rewrite.rewrite(settings, recipe, prompt, nsfw=req.nsfw)
+        if why:
+            notes.append(why)
     found: dict[str, float] = {}
     auto_picks: list[LoraPick] = []
     if not pin and req.nsfw and not req.image:
-        picks, lora_notes = await auto_loras.concept_picks(settings, recipe, prompt)
+        picks, lora_notes = await auto_loras.concept_picks(
+            settings, recipe, prompt, others=tuple(p.air for p in her_picks))
         # Her LoRAs come first: skip a concept one of hers already covers.
         hers = " ".join(f"{p.name} {' '.join(p.triggers)}".lower() for p in her_picks)
         picks = [p for p in picks if not (p.query and p.query.lower() in hers)]
@@ -262,6 +267,11 @@ async def plan_generation(settings: Settings, req: GenerationRequest) -> Plan:
         auto_picks.extend(picks)
         notes.extend(style_notes)
     if her_picks or auto_picks:
+        for p in her_picks + auto_picks:
+            if p.weight is None:
+                p.liked = feedback.liked_weight(settings, p.air, recipe.model)
+                if p.liked is not None:
+                    notes.append(f"{p.label} at {p.liked:g} (the weight he liked)")
         kept, weights, stack_notes = plan_stack(her_picks + auto_picks)
         loras = weights
         notes.extend(stack_notes)

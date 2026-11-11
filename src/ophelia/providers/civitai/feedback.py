@@ -165,3 +165,63 @@ def liked_prompts(settings: Any, recipe_key: str, limit: int = 2) -> list[dict]:
         best[prompt] = (old[0] + float(score), rec)
     ranked = sorted((v for v in best.values() if v[0] > 0), key=lambda v: -v[0])
     return [rec for _, rec in ranked[:limit]]
+
+
+def _scored_records(settings: Any) -> list[tuple[float, dict]]:
+    """(his score, ledger line) for every image he reacted to."""
+    from ophelia.providers.civitai.pipeline import ledger_path
+
+    by_file: dict[str, dict] = {}
+    for rec in _read_jsonl(ledger_path(settings), 4000):
+        for p in rec.get("paths") or ([rec["path"]] if rec.get("path") else []):
+            by_file[os.path.basename(str(p))] = rec
+    out = []
+    for item in _read_jsonl(_feedback_path(settings), 4000):
+        rec = by_file.get(str(item.get("file", "")))
+        if rec and isinstance(item.get("score"), (int, float)):
+            out.append((float(item["score"]), rec))
+    return out
+
+
+def pair_scores(settings: Any) -> dict[tuple[str, str], tuple[float, int]]:
+    """{(a, b) sorted: (sum, count)} for every checkpoint+LoRA and LoRA+LoRA
+    pair in the images he reacted to: which combinations worked together."""
+    out: dict[tuple[str, str], list[float]] = {}
+    for score, rec in _scored_records(settings):
+        parts = sorted({str(a) for a in [rec.get("model"), *(rec.get("loras") or {})] if a})
+        for i, a in enumerate(parts):
+            for b in parts[i + 1:]:
+                s = out.setdefault((a, b), [0.0, 0])
+                s[0] += score
+                s[1] += 1
+    return {k: (v[0], int(v[1])) for k, v in out.items()}
+
+
+def pair_multiplier(pairs: dict[tuple[str, str], tuple[float, int]], air: str,
+                    others: list[str]) -> float:
+    """How well ``air`` went with ``others`` before (1.0 = no history)."""
+    mult = 1.0
+    for o in others:
+        if not o or o == air:
+            continue
+        key = (air, o) if air < o else (o, air)
+        if key in pairs:
+            mult *= multiplier(pairs[key])
+    return max(0.2, min(2.5, mult))
+
+
+def liked_weight(settings: Any, air: str, model: str = "") -> float | None:
+    """The weight ``air`` had in images he liked (same checkpoint first)."""
+    same: list[float] = []
+    any_: list[float] = []
+    for score, rec in _scored_records(settings):
+        if score <= 0:
+            continue
+        w = (rec.get("loras") or {}).get(air)
+        if not isinstance(w, (int, float)):
+            continue
+        any_.append(float(w))
+        if model and rec.get("model") == model:
+            same.append(float(w))
+    pick = same or any_
+    return round(sum(pick) / len(pick), 2) if pick else None

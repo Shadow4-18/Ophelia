@@ -351,6 +351,15 @@ class Settings(BaseSettings):
             "checkpoint's family, unless she picked LoRAs herself."
         ),
     )
+    civitai_prompt_rewrite: str = Field(
+        default="auto",
+        alias="OPHELIA_CIVITAI_PROMPT_REWRITE",
+        description=(
+            "Rewrite her prompt for the model that draws it (tags for anime/Pony, "
+            "sentences for Chroma/Flux) with the curator model. auto: only when her "
+            "prompt's shape doesn't fit the model; always; off."
+        ),
+    )
     image_self_check: str = Field(
         default="people",
         alias="OPHELIA_IMAGE_SELF_CHECK",

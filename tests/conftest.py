@@ -91,3 +91,14 @@ class ResumeStub:
 @pytest.fixture
 def resume_stub(settings):
     return ResumeStub(settings)
+
+
+@pytest.fixture(autouse=True)
+def _no_civitai_prompt_rewrite():
+    """An orchestrator built by one test installs a real rewrite model; keep it
+    from leaking into image tests (they opt in with rewrite.set_llm)."""
+    from ophelia.providers.civitai import rewrite
+
+    rewrite.set_llm(None)
+    yield
+    rewrite.set_llm(None)

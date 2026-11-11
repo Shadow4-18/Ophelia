@@ -156,6 +156,9 @@ class Orchestrator:
 
         # Guest relay_to_owner with a file → owner DMs.
         self.tools.proactive_media_sender = _owner_media
+        from ophelia.providers.civitai import rewrite as civitai_rewrite
+
+        civitai_rewrite.install(self.agent)
         self.inner = (
             InnerMonologue(mirror_telegram=settings.inner_mirror_telegram)
             if settings.inner_log_enabled
