@@ -17,6 +17,10 @@ from ophelia.fileio import atomic_write_json, atomic_write_text
 
 # --- 1. her inner check-ins no longer push the conversation out ------------
 
+_TOPICS = ["rain", "moths", "pianos", "tarot", "neon", "ravens", "candles", "cellos",
+           "lanterns", "glaciers", "orchids", "comets", "velvet", "ferries", "mirrors",
+           "embers", "harbors", "ivy", "lockets", "monsoons"]
+
 
 def _agent(rows_by_channel):
     from ophelia.core.agent_loop import AgentLoop
@@ -47,7 +51,8 @@ async def test_chat_history_keeps_its_own_budget():
                       "metadata": {"type": "consciousness_json"}, "created_at": t + 0.5})
         if i % 3 == 0:
             ticks.append({"channel": "consciousness", "role": "assistant",
-                          "content": f"[inner] thought {i}", "metadata": {"type": "inner"},
+                          "content": f"[inner] thought {_TOPICS[i // 3]} today",
+                          "metadata": {"type": "inner"},
                           "created_at": t + 0.6})
     agent = _agent({"telegram:1": chat, "consciousness": ticks})
     rows = await agent._history(["telegram:1", "consciousness"], "telegram:1",

@@ -134,11 +134,28 @@ def delivery_status(doing_results: list[tuple[str, str]] | None, delivered: int 
     return "failed", f"{name}: {first}"
 
 
+# He asked for something to be made or sent, or says it never arrived.
+_DELIVERY_ASK = re.compile(
+    r"\b(send|sent|show|make|draw|generate|record|snap|take (a|another)|another|more|"
+    r"again|pics?|pictures?|photos?|images?|selfies?|nudes?|videos?|voice|"
+    r"didn'?t (get|receive|come|arrive)|still nothing|where is it|where'?s the|"
+    r"never (came|arrived|sent))\b", re.I)
+
+
+def delivery_expected(owner_text: str) -> bool:
+    """Only then can a 'here it is' with nothing sent be a phantom. Without
+    this, a normal reply to 'it works' was flagged, and the redo went and
+    did something else entirely (an unrelated audit)."""
+    return bool(_DELIVERY_ASK.search(owner_text or ""))
+
+
 def phantom_note(line: str) -> str:
     return (f"[Reality check: you just wrote \"{line}\" as if you sent him something, "
-            "but no tool ran this turn, so nothing reached him. Make it now: call "
-            "generate_image (or the right tool) for real. Don't blame the tool or "
-            "his phone, and don't describe it instead of sending it.]")
+            "but no tool ran this turn, so nothing reached him. Make exactly that thing "
+            "now with the right tool (generate_image, text_to_speech, send_file...). If "
+            "it was already sent in an earlier turn, just say so plainly. Don't start "
+            "anything else, don't blame the tool or his phone, and don't describe it "
+            "instead of sending it.]")
 
 
 def failed_note(line: str, why: str) -> str:

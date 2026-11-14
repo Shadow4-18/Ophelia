@@ -780,7 +780,7 @@ class ChannelSession:
         if channel in self._following_through:
             return out
         claimed = ft.claimed_delivery(out, owner_text)
-        if not claimed:
+        if not claimed or not ft.delivery_expected(owner_text):
             return out
         tools = self.agent.tools
         status, why = ft.delivery_status(
