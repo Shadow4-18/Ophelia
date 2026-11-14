@@ -84,6 +84,10 @@ def satiation_threshold_delta(
     return 0.35 * (0.5 ** (since / max(1.0, half)))
 
 
+# How long a due goal waits after overriding the director's "not now" once.
+GOAL_OVERRIDE_COOLDOWN_S = 20 * 60
+
+
 @dataclass
 class _TickState:
     """What one check-in knows, passed between its steps."""
@@ -528,9 +532,19 @@ class ConsciousnessLoop:
                 # don't let a deferral bias keep her permanently silent.
                 # ...except mid-conversation: a goal can wait until he's quiet
                 # (one fired 30 s after his message and talked over him).
-                soft_override = not conversation_live and (
-                    bool(due_goal) or bool(due_loops) or pressure >= effective_threshold
-                )
+                # A due goal alone overrides once, then gives the director's
+                # "not now" a while: overriding every tick had her checking in
+                # each minute, itching about the same goal, until it leaked
+                # into her chat with him.
+                pressing = pressure >= effective_threshold
+                due_key = (due_goal.id if due_goal else None) or ("loops" if due_loops else None)
+                overrides = self.__dict__.setdefault("_goal_override_at", {})
+                cooled = due_key is not None and (
+                    time.monotonic() - overrides.get(due_key, float("-inf"))
+                    >= GOAL_OVERRIDE_COOLDOWN_S)
+                soft_override = not conversation_live and (pressing or cooled)
+                if soft_override and not pressing and due_key is not None:
+                    overrides[due_key] = time.monotonic()
                 if soft_override:
                     log.info(
                         "consciousness.director_defer_overridden",

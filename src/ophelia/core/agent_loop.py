@@ -183,6 +183,28 @@ class _Loop:
     rounds_used: int = 0
 
 
+def _words(text: str) -> set[str]:
+    import re
+
+    text = re.sub(r"^\[(inner|saw)\]\s*", "", (text or "").strip(), flags=re.I)
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 2}
+
+
+def _without_repeats(rows: list[dict], *, overlap: float = 0.6) -> list[dict]:
+    """Her thoughts minus near-repeats (newest kept): ten rewordings of
+    'I should run the audit' became ten nudges in every chat turn."""
+    kept: list[dict] = []
+    seen: list[set[str]] = []
+    for m in reversed(rows):
+        w = _words(m.get("content") or "")
+        if w and any(len(w & s) / len(w | s) >= overlap for s in seen):
+            continue
+        kept.append(m)
+        if w:
+            seen.append(w)
+    return list(reversed(kept))
+
+
 # Tools that only look things up: safe to run at the same time as each other.
 READ_ONLY_TOOLS = frozenset({
     "recall_memory", "recall_day", "recall_guest_chat", "web_search", "fetch_url",
@@ -925,6 +947,26 @@ class AgentLoop:
                     and is_consciousness_tick_payload(content)
                 ):
                     continue
+            # Her own thoughts from check-ins, seen from a chat: a private
+            # note, not a line she said to him. Rendered as her messages they
+            # read as her saying "audit, audit" in the chat, and she followed
+            # her own lead.
+            if (m.get("channel") == "consciousness" and channel != "consciousness"
+                    and m["role"] == "assistant"):
+                thought = content
+                for tag in ("[inner] ", "[saw] "):
+                    if thought.startswith(tag):
+                        thought = thought[len(tag):]
+                        break
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "[INNER]\n(a private thought you had earlier; he never saw it. "
+                        "Background only: act on it only if it fits what he's saying "
+                        f"now)\n{thought}\n[END INNER]"
+                    ),
+                })
+                continue
             prefix = ""
             if m.get("channel") and m["channel"] != channel:
                 prefix = f"[{m['channel']}] "
@@ -983,6 +1025,7 @@ class AgentLoop:
                 or (m["role"] == "assistant"
                     and ((m.get("metadata") or {}).get("type") == "consciousness_json"
                          or is_consciousness_tick_payload(m.get("content") or ""))))]
+            inner = _without_repeats(inner)
         inner = inner[-inner_budget:]
         return sorted(rows + inner, key=lambda m: m.get("created_at") or 0)
 
@@ -1355,7 +1398,14 @@ class AgentLoop:
         # Resume an unfinished tool chain from the previous turn, if allowed and
         # if one exists for this channel and it wasn't stuck in a repeat loop.
         resumed = False
-        if self.settings.tool_loop_resume and store_channel in self._pending_resume:
+        # Her own unfinished work (an act/explore on her own that ran out of
+        # rounds) only resumes on her own time. It used to be picked up by
+        # his next message, so his reply became the end of her audit.
+        waiting = self._pending_resume.get(store_channel)
+        own_work_waiting = bool(waiting and waiting.get("autonomous")
+                                and not _AUTONOMOUS.get())
+        if (self.settings.tool_loop_resume and store_channel in self._pending_resume
+                and not own_work_waiting):
             pending = self._pending_resume.pop(store_channel)
             # A user turn consuming the resume breaks the autonomous chain —
             # reset the continuation counter (Tier C #14 follow-up).
@@ -1737,9 +1787,12 @@ class AgentLoop:
             )
         # Turn finished cleanly — drop any stale resume context and reset
         # the continuation counter (Tier C #14 follow-up: a fresh, finished
-        # turn means we're not mid-chain anymore).
-        self._pending_resume.pop(store_channel, None)
-        self._continuation_count.pop(store_channel, None)
+        # turn means we're not mid-chain anymore). Her own unfinished work
+        # stays when it's his turn that finished: it's hers to pick up.
+        waiting = self._pending_resume.get(store_channel)
+        if not (waiting and waiting.get("autonomous") and not _AUTONOMOUS.get()):
+            self._pending_resume.pop(store_channel, None)
+            self._continuation_count.pop(store_channel, None)
         log.info(
             "tool_loop.done",
             channel=store_channel,
@@ -1772,6 +1825,7 @@ class AgentLoop:
                 "messages": [m for m in messages if m.get("role") in ("assistant", "tool")],
                 "rounds": rounds_used,
                 "stuck": False,
+                "autonomous": _AUTONOMOUS.get(),  # hers: resumes only on her time
             }
             log.info(
                 "tool_loop.resume_queued",
