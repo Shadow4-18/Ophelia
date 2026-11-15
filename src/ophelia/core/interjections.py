@@ -15,6 +15,12 @@ up, she answers, then carries on where she left off.
 
 If the turn ends before it gets to a posted message, the message is handed
 back and handled as a normal turn, so nothing is lost.
+
+choose mode (default): she decides per message. interrupt: the task stops
+at its next step (its progress kept for her to finish later) and the
+message gets a full reply; fold in: the pause-mode path above; finish
+first: the message waits for the task, with a deadline, after which (or
+when he writes again) it becomes an interrupt.
 """
 
 from __future__ import annotations
@@ -60,6 +66,8 @@ _open: dict[str, int] = {}  # channel -> running turns accepting messages
 _mail: dict[str, list[Note]] = {}
 _task: dict[str, str] = {}  # channel -> what she was asked to do
 _steps: dict[str, deque] = {}  # channel -> her latest steps, newest last
+_stop: set[str] = set()  # channels whose running turn should stop at its next step
+_holding: dict[str, int] = {}  # channel -> his messages waiting for the task to end
 
 
 def open_for(channel: str) -> None:
@@ -75,6 +83,7 @@ def close_for(channel: str) -> None:
         _mail.pop(channel, None)
         _task.pop(channel, None)
         _steps.pop(channel, None)
+        _stop.discard(channel)
     else:
         _open[channel] = n
 
@@ -138,9 +147,54 @@ async def offer(channel: str, text: str) -> bool:
     return False
 
 
+def request_stop(channel: str) -> bool:
+    """Ask the turn running on ``channel`` to stop at its next step."""
+    if not accepting(channel):
+        return False
+    _stop.add(channel)
+    log.info("interjection.stop_requested", channel=channel)
+    return True
+
+
+def stop_requested(channel: str) -> bool:
+    return channel in _stop
+
+
+async def wait_until_done(channel: str, timeout: float) -> bool:
+    """Wait for the turn on ``channel`` to end. True if it did in time."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + max(0.0, timeout)
+    while accepting(channel):
+        if loop.time() >= end:
+            return False
+        await asyncio.sleep(_POLL_S)
+    return True
+
+
+def hold(channel: str) -> int:
+    """He's waiting for the task to end ("finish first"). Returns how many
+    of his messages are now waiting."""
+    _holding[channel] = _holding.get(channel, 0) + 1
+    return _holding[channel]
+
+
+def release(channel: str) -> None:
+    n = _holding.get(channel, 0) - 1
+    if n <= 0:
+        _holding.pop(channel, None)
+    else:
+        _holding[channel] = n
+
+
+def holding(channel: str) -> int:
+    return _holding.get(channel, 0)
+
+
 def reset() -> None:
     """For tests."""
     _open.clear()
     _mail.clear()
     _task.clear()
     _steps.clear()
+    _stop.clear()
+    _holding.clear()
