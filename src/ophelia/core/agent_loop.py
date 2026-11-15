@@ -205,6 +205,19 @@ def _without_repeats(rows: list[dict], *, overlap: float = 0.6) -> list[dict]:
     return list(reversed(kept))
 
 
+_CHOOSE_PROMPT = """You're in the middle of a task and he just sent a message.
+What you're doing:
+{status}
+
+His message: {message}
+
+Decide, as yourself, what to do with it:
+- "interrupt": drop the task for now (you can pick it up later) and give him your full attention. For a change of plan, something urgent, a new request that matters more, or when he plainly wants you now.
+- "fold": take it into the task (an extra detail, a correction, "also do X") or answer it between steps and keep going.
+- "finish": finish the task first, then reply. Only when you're nearly done and his message can wait a few minutes.
+Reply with JSON only: {{"choice": "interrupt|fold|finish", "say": "one short line to him, in your own voice, saying which you're doing"}}"""
+
+
 # Tools that only look things up: safe to run at the same time as each other.
 READ_ONLY_TOOLS = frozenset({
     "recall_memory", "recall_day", "recall_guest_chat", "web_search", "fetch_url",
@@ -1453,6 +1466,8 @@ class AgentLoop:
             if round_idx >= st.max_tool_rounds + st.bonus_rounds:
                 break
             st.rounds_used = round_idx + 1
+            if st.interject_here and interjections.stop_requested(st.store_channel):
+                return await self._set_aside(st)
             if st.interject_here:
                 await self._take_interjections(st, round_idx)
             msg = await self._ask_round(st, round_idx)
@@ -1468,6 +1483,26 @@ class AgentLoop:
                 continue
             return text
         return await self._cap_hit(st)
+
+    async def _set_aside(self, st: "_Loop") -> str:
+        """He interrupted and she chose to stop: keep the chain so far for
+        her to finish on her own time (not on his next message), leave
+        herself a private note, and say nothing more here; she already told
+        him she's dropping it."""
+        tail = [m for m in st.messages if m.get("role") in ("assistant", "tool")]
+        if self.settings.tool_loop_resume and tail:
+            self._pending_resume[st.store_channel] = {
+                "messages": tail, "rounds": st.rounds_used, "stuck": False,
+                "autonomous": True,
+            }
+        task = interjections.status(st.store_channel).splitlines()
+        what = task[0].replace("You were asked: ", "") if task else "what you were doing"
+        await self._store(
+            st.store_channel, "assistant",
+            f"(set aside when he interrupted: {what[:200]}. Pick it back up later.)",
+            is_owner=st.is_owner, metadata={"type": "autonomous_note"})
+        log.info("interjection.set_aside", channel=st.store_channel, rounds=st.rounds_used)
+        return ""
 
     async def _take_interjections(self, st: "_Loop", round_idx: int) -> None:
         """Messages he sent while she was mid-task: answered ones go into the
@@ -1904,6 +1939,34 @@ class AgentLoop:
             if isinstance(name, str) and name:
                 names.add(name)
         return names or None
+
+    async def choose_interjection(self, channel: str, text: str) -> tuple[str, str]:
+        """He wrote while she's mid-task: (interrupt | fold | finish, the short
+        line she says about it). Her call, in her voice; 'fold' (answer
+        between steps) when the decision can't be made."""
+        import json
+        import re
+
+        from ophelia.mind.growth import persona_system
+        from ophelia.providers.fallback import complete_text
+
+        prompt = _CHOOSE_PROMPT.format(status=interjections.status(channel), message=text)
+        try:
+            raw = await complete_text(
+                self.settings, self.stack, role="reaction", max_tokens=120, timeout=8.0,
+                log_tag="interjection.choose",
+                messages=[{"role": "system", "content": persona_system(prompt)},
+                          {"role": "user", "content": text}])
+            m = re.search(r"\{.*\}", raw or "", re.S)
+            data = json.loads(m.group(0)) if m else {}
+        except Exception as e:
+            log.info("interjection.choose_failed", error=str(e)[:200])
+            data = {}
+        choice = str(data.get("choice") or "").strip().lower()
+        if choice not in ("interrupt", "fold", "finish"):
+            choice = "fold"
+        say = " ".join(str(data.get("say") or "").split())[:200]
+        return choice, say
 
     async def side_reply(self, channel: str, text: str) -> str:
         """Answer the owner while a task keeps running on ``channel``: one

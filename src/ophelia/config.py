@@ -510,11 +510,18 @@ class Settings(BaseSettings):
         "messages always get through",
     )
     interjection_mode: str = Field(
-        default="parallel",
+        default="choose",
         alias="OPHELIA_INTERJECTIONS",
-        description="Owner messages that arrive mid-task: parallel = reply right away "
-        "while the task keeps going | pause = answer between steps, then carry on | "
-        "off = wait until the task finishes",
+        description="Owner messages that arrive mid-task: choose = she decides each "
+        "time (interrupt the task / fold it in / finish first, and says which) | "
+        "parallel = reply right away while the task keeps going | pause = answer "
+        "between steps, then carry on | off = wait until the task finishes",
+    )
+    interjection_finish_deadline_s: int = Field(
+        default=180,
+        alias="OPHELIA_INTERJECTION_DEADLINE",
+        description="choose mode: how long 'finish first' may keep him waiting before "
+        "it turns into an interrupt (also when he writes again while waiting)",
     )
     max_tool_rounds: int = Field(
         default=25,
@@ -1042,11 +1049,11 @@ class Settings(BaseSettings):
 
     def interjection_mode_resolved(self) -> str:
         m = (self.interjection_mode or "").strip().lower()
-        if m in ("true", "on", "1", "yes", ""):
-            return "parallel"
         if m in ("false", "0", "no"):
             return "off"
-        return m if m in ("parallel", "pause", "off") else "parallel"
+        if m in ("true", "on", "1", "yes", ""):
+            return "choose"
+        return m if m in ("choose", "parallel", "pause", "off") else "choose"
 
     def consciousness_on(self) -> bool:
         if self.autonomy_enabled is not None:

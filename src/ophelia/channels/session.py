@@ -57,6 +57,22 @@ def guest_welcome_message() -> str:
     )
 
 
+# "stop", "now", "wait"...: he's not asking, the task stops.
+import re as _re  # noqa: E402
+
+_FORCE_INTERRUPT = _re.compile(
+    r"^\s*(stop|wait|hold on|hang on|pause|cancel|nevermind|never mind|forget it|"
+    r"enough)\b|\b(right now|stop (that|it|what you'?re doing)|drop (it|that))\b", _re.I)
+# Said when she chose without a line of her own.
+_CHOICE_LINES = {
+    "interrupt": "Dropping that for now. What's up?",
+    "fold": "Adding that in.",
+    "finish": "Nearly done, give me a minute.",
+    "deadline": "Okay, that's taking too long. Stopping it.",
+}
+_STOP_WAIT_S = 120.0  # longest a stop waits for the current step to finish
+
+
 @dataclass
 class _ChatTurn:
     """One incoming message being answered."""
@@ -302,6 +318,9 @@ class ChannelSession:
         if not interjections.accepting(channel):
             return False
         self.signals.last_user_message_at = time.time()
+        if mode == "choose" and reply is not None:
+            return await self._choose_interjection(channel, text, reply,
+                                                   log_context=log_context)
         if mode == "parallel" and reply is not None and await self._side_reply(
             channel, text, reply, log_context=log_context
         ):
@@ -310,6 +329,50 @@ class ChannelSession:
             return False
         await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
         return True
+
+    async def _choose_interjection(self, channel: str, text: str, reply: ReplyFn, *,
+                                   log_context: dict | None) -> bool:
+        """choose mode: she decides what his mid-task message gets, says so,
+        and does it. True when handled here; False runs it as a normal turn
+        (after the task stopped or finished)."""
+        from ophelia.core import interjections
+
+        settings = self.agent.settings
+        if interjections.holding(channel):
+            # He wrote again while she was finishing: no more waiting.
+            choice, say, why = "interrupt", "", "he wrote again"
+        elif _FORCE_INTERRUPT.search(text):
+            choice, say, why = "interrupt", "", "he asked"
+        else:
+            choice, say = await self.agent.choose_interjection(channel, text)
+            why = "her call"
+        say = say or _CHOICE_LINES[choice]
+        log.info("interjection.choice", channel=channel, choice=choice, why=why,
+                 preview=text[:60])
+        await self._send_logged(channel, reply, say, log_context=log_context)
+        await self.agent._store(channel, "assistant", say, is_owner=True,
+                                metadata={"type": "interjection_choice", "choice": choice})
+
+        if choice == "fold":
+            if await interjections.offer(channel, text):
+                await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+                return True
+            return False  # the task ended first: a normal turn answers it
+        if choice == "finish":
+            interjections.hold(channel)
+            try:
+                deadline = float(getattr(settings, "interjection_finish_deadline_s", 180))
+                if await interjections.wait_until_done(channel, deadline):
+                    return False
+                # Out of time: what she promised becomes an interrupt.
+                log.info("interjection.deadline_hit", channel=channel, waited=deadline)
+                await self._send_logged(channel, reply, _CHOICE_LINES["deadline"],
+                                        log_context=log_context)
+            finally:
+                interjections.release(channel)
+        interjections.request_stop(channel)
+        await interjections.wait_until_done(channel, _STOP_WAIT_S)
+        return False
 
     def _owner_spoke(self) -> None:
         """His message comes first: something she started on her own (a
