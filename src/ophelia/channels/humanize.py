@@ -7,9 +7,14 @@ isn't primed to imitate them:
 - em/en dashes used as punctuation ("Short version—I'd said…") become a
   comma (or an ellipsis when they trail off); number ranges keep a hyphen;
 - whole-line bracketed narration ("[The lighthouse with no sea is still
-  standing]") is dropped;
+  standing]") is dropped, except song section tags ([Intro: whispered],
+  [Chorus]...) that Suno-style lyrics need;
 - Kokoro voice markup ([pause:0.8s]) is removed from text — it only means
   something to the voice engine.
+
+Anything inside a ``` code block is left exactly as written: she uses them
+for text meant to be copied (lyrics, prompts, code), and the cleaner ate the
+[Verse]/[Chorus] tags out of her Suno lyrics.
 
 Voice synthesis keeps the original text (dashes and pauses shape speech).
 Disable with OPHELIA_HUMANIZE_TEXT=false.
@@ -23,6 +28,14 @@ _RANGE_DASH = re.compile(r"(?<=\d)\s*[–—]\s*(?=\d)")
 _DASH = re.compile(r"[ \t]*[–—]+[ \t]*")
 _PAUSE = re.compile(r"[ \t]*\[pause:[^\]]*\][ \t]*", re.IGNORECASE)
 _NARRATION_LINE = re.compile(r"^[ \t]*\[(?!\[)[^\[\]\n]{2,}\][ \t]*$", re.MULTILINE)
+# Song structure tags (Suno, lyrics sheets): a line like [Pre-Chorus: breathy].
+_SECTION_TAG = re.compile(
+    r"^[ \t]*\[[ \t]*(intro|verse|pre[- ]?chorus|chorus|post[- ]?chorus|hook|bridge|"
+    r"outro|drop|break|breakdown|build|build[- ]?up|interlude|instrumental|solo|refrain|"
+    r"final chorus|end|fade|fade out|spoken|whispered|rap|beat|melody|vocal|choir|"
+    r"guitar|piano|synth|bass|drums|silence|pause|applause|song|music)\b[^\]\n]*\]"
+    r"[ \t]*$", re.IGNORECASE)
+_FENCE = re.compile(r"```")
 
 
 def _replace_dash(text: str) -> str:
@@ -47,15 +60,29 @@ def _replace_dash(text: str) -> str:
     return s
 
 
+def _drop_narration(text: str) -> str:
+    return _NARRATION_LINE.sub(
+        lambda m: m.group(0) if _SECTION_TAG.match(m.group(0)) else "", text)
+
+
+def _clean(text: str) -> str:
+    s = _RANGE_DASH.sub("-", text)
+    s = _PAUSE.sub(" ", s)
+    s = _drop_narration(s)
+    s = _replace_dash(s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s
+
+
 def humanize(text: str) -> str:
     if not text:
         return text
-    s = _RANGE_DASH.sub("-", text)
-    s = _PAUSE.sub(" ", s)
-    s = _NARRATION_LINE.sub("", s)
-    s = _replace_dash(s)
-    s = re.sub(r"[ \t]{2,}", " ", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)
+    # Even pieces are prose, odd pieces are inside ``` fences (kept as is).
+    # An unclosed fence (a long reply split mid-block) runs to the end.
+    parts = _FENCE.split(text)
+    out = [part if i % 2 else _clean(part) for i, part in enumerate(parts)]
+    s = "```".join(out)
+    s = re.sub(r"\n{3,}", "\n\n", s) if len(parts) == 1 else s
     return s.strip()
 
 
