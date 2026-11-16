@@ -861,6 +861,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         from pathlib import Path
 
         from ophelia.channels.inbound_media import (
+            AUDIO_EXTS,
             FILE_EXTS,
             IMAGE_EXTS,
             VIDEO_EXTS,
@@ -869,7 +870,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
 
         data_dir = Path(self.settings.data_dir)
         want = (kind or "all").strip().lower()
-        if want not in ("all", "image", "video", "file"):
+        if want not in ("all", "image", "video", "audio", "file"):
             want = "all"
         cutoff = _time.time() - within_hours * 3600.0
         candidates: list[tuple[Path, str]] = []
@@ -883,7 +884,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
                 classified = classify_attachment(filename=p.name)
                 if classified is None:
                     # Still list unknown inbound files as "file"
-                    if p.suffix.lower() in (IMAGE_EXTS | VIDEO_EXTS | FILE_EXTS):
+                    if p.suffix.lower() in (IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS | FILE_EXTS):
                         classified = "file"
                     else:
                         continue

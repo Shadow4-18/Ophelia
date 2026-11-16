@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import structlog
+from ophelia.channels.inbound_media import audio_prompt, too_big_for_telegram
 from ophelia.channels.telegram_format import send as tg_send
 from telegram import InputFile, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -1039,9 +1040,13 @@ class TelegramGateway:
         kind = classify_attachment(filename=name, mime=mime)
         if kind is None:
             await update.message.reply_text(
-                "I can save images, videos, and common files (zip/pdf/txt/…) — "
+                "I can save images, videos, audio and common files (zip/pdf/txt/…), "
                 f"not `{Path(name).suffix or mime or 'unknown'}` yet."
             )
+            return
+        if too_big := too_big_for_telegram(doc.file_size):
+            log.info("telegram.file_too_big", name=name[:80], size=doc.file_size)
+            await update.message.reply_text(too_big)
             return
         user = update.effective_user
         caption = (update.message.caption or "").strip()
@@ -1067,6 +1072,8 @@ class TelegramGateway:
                     f"Caption: {caption or '(none)'}\n\n"
                     f"Vision analysis:\n{description}"
                 )
+            elif kind == "audio":
+                prompt = audio_prompt(path, name=name, caption=caption)
             else:
                 prompt = (
                     f"[User sent a {label} — saved to {path}]\n"
@@ -1091,12 +1098,64 @@ class TelegramGateway:
             )
         await self._maybe_attach_continue(update, context, channel)
 
+    async def on_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """A music file sent as audio (Telegram shows it with a player and the
+        track title), not a voice note and not a document. There was no
+        handler for these, so songs he sent simply never arrived."""
+        if not update.message or not update.message.audio:
+            return
+        audio = update.message.audio
+        user = update.effective_user
+        caption = (update.message.caption or "").strip()
+        title = " - ".join(x for x in (audio.performer, audio.title) if x)
+        name = audio.file_name or (f"{title}.mp3" if title else "")
+        if too_big := too_big_for_telegram(audio.file_size):
+            log.info("telegram.file_too_big", name=name[:80], size=audio.file_size)
+            await update.message.reply_text(too_big)
+            return
+        admission = await self._admit_chat(user, update, context,
+                                           preview=caption or "(sent an audio file)")
+        if admission != "ok":
+            return
+        self._remember_user(user.id)
+        channel = f"telegram:{user.id}"
+        log.info("telegram.audio", user=user.id, name=name[:80], seconds=audio.duration,
+                 size=audio.file_size)
+        await update.message.chat.send_action("typing")
+        try:
+            self._media_dir.mkdir(parents=True, exist_ok=True)
+            from ophelia.channels.inbound_media import safe_inbound_ext
+
+            ext = safe_inbound_ext(name, kind="audio",
+                                   default=".m4a" if "mp4" in (audio.mime_type or "") else "")
+            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            file = await audio.get_file()
+            await file.download_to_drive(str(path))
+            prompt = audio_prompt(path, name=name, caption=caption, title=title,
+                                  seconds=audio.duration)
+            await self.session.handle_chat(
+                channel,
+                self._with_reply(update, prompt),
+                lambda t: self._send_reply(update, context, channel, t),
+                media_reply=lambda p, c: self._send_media_to_chat(update, p, c),
+                log_context=self._telegram_log_context(user),
+                actions=self._chat_actions(update, channel),
+            )
+        except Exception as e:
+            log.exception("telegram.audio_error")
+            await update.message.reply_text(f"Couldn't save that audio file: {e}")
+        await self._maybe_attach_continue(update, context, channel)
+
     async def on_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Native Telegram video (not sent as a document)."""
         if not update.message:
             return
         video = update.message.video or update.message.video_note or update.message.animation
         if not video:
+            return
+        if too_big := too_big_for_telegram(getattr(video, "file_size", None)):
+            await update.message.reply_text(too_big.replace("as an mp3 (a 4-minute song is "
+                                                            "about 5-10 MB)", "smaller"))
             return
         user = update.effective_user
         caption = (update.message.caption or "").strip()
@@ -1561,6 +1620,7 @@ class TelegramGateway:
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
         )
         app.add_handler(MessageHandler(filters.VOICE, self._in_background(self.on_voice)))
+        app.add_handler(MessageHandler(filters.AUDIO, self._in_background(self.on_audio)))
         app.add_handler(MessageHandler(filters.PHOTO, self._in_background(self.on_photo)))
         app.add_handler(
             MessageHandler(
