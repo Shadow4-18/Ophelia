@@ -474,6 +474,11 @@ class DiscordGateway:
                     f"Caption: {caption or '(none)'}\n\n"
                     f"Vision analysis:\n{description}"
                 )
+            elif kind == "audio":
+                from ophelia.channels.inbound_media import audio_prompt
+
+                parts.append(audio_prompt(path, name=att.filename or path.name,
+                                          caption=caption))
             else:
                 parts.append(
                     f"[User sent a {label} — saved to {path}]\n"

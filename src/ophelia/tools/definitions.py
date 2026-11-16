@@ -442,7 +442,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "name": "list_inbox_files",
             "description": (
                 "List recent files the user sent over chat — images, videos, "
-                "zips, and other saved attachments under telegram_media / "
+                "songs and other audio, zips, and other saved attachments under telegram_media / "
                 "discord_media. Returns absolute paths newest-first. Use this "
                 "when they sent a video or zip for your website "
                 "(then site_add_asset with that path)."
@@ -452,7 +452,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["all", "image", "video", "file"],
+                        "enum": ["all", "image", "video", "audio", "file"],
                         "description": "Filter by type (default all).",
                     },
                     "limit": {
