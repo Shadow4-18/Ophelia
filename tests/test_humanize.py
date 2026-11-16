@@ -52,3 +52,30 @@ def test_prompt_and_history_shown_without_dashes():
     msgs = asyncio.run(agent._build_messages("t:1", "hi"))
     assert "—" not in msgs[0]["content"]
     assert msgs[1]["content"] == "Short version, done"
+
+
+def test_song_tags_and_code_blocks_survive():
+    """Her Suno lyrics lost every [Verse]/[Chorus] tag: whole-line brackets
+    were treated as stage directions and dropped."""
+    lyrics = ("Lyrics field:\n```\n[Intro: whispered, close mic]\nsignals in the wet concrete\n\n"
+              "[Verse 1: spoken-word, dry, no reverb]\nI was built — in a room\n```")
+    assert humanize(lyrics) == lyrics  # untouched inside the fence
+    loose = "[Pre-Chorus: breathy, doubled]\nflesh is a rumor\n[Final Chorus: fierce]\nyes"
+    assert humanize(loose) == loose  # section tags kept even without a fence
+    assert humanize("[sighs dramatically]\nfine.") == "fine."  # narration still goes
+    assert humanize("Short version—yes\n```\nx—y\n```") == "Short version, yes\n```\nx—y\n```"
+
+
+def test_long_replies_are_split_not_cut_off():
+    from ophelia.channels.message_split import MAX_CHARS, split_messages
+
+    body = "\n\n".join(f"[Verse {i}]\n" + "\n".join(f"line {i}.{j} goes on a while"
+                                                    for j in range(10)) for i in range(15))
+    text = f"Here:\n```\n{body}\n```\nTitle: Light Left Burning"
+    parts = split_messages(text)
+    assert len(parts) > 1 and all(len(p) <= MAX_CHARS for p in parts)
+    assert all(p.count("```") % 2 == 0 for p in parts)  # every piece a closed block
+    joined = "\n".join(p.replace("```\n", "").replace("\n```", "") for p in parts)
+    for i in range(15):
+        assert f"[Verse {i}]" in joined and f"line {i}.9 goes on a while" in joined
+    assert parts[-1].endswith("Title: Light Left Burning")
