@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import structlog
+from ophelia.channels.telegram_format import send as tg_send
 from telegram import InputFile, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -397,7 +398,7 @@ class TelegramGateway:
                 if i:
                     await asyncio.sleep(1.0)
                 try:
-                    await self._app.bot.send_message(chat_id=chat_id, text=chunk[:4000])
+                    await tg_send(self._app.bot.send_message, chunk, chat_id=chat_id)
                 except Exception as e:
                     log.warning("telegram.replay_reply_failed", error=str(e))
 
@@ -442,7 +443,7 @@ class TelegramGateway:
 
     async def _reply_text(self, update: Update, text: str) -> None:
         if update.message:
-            self._last_text_msg = await update.message.reply_text(text[:4000])
+            self._last_text_msg = await tg_send(update.message.reply_text, text)
 
     def _remember_user(self, user_id: int) -> None:
         self.signals.last_telegram_user_id = user_id
@@ -569,8 +570,8 @@ class TelegramGateway:
                 return f"Couldn't find a message matching {which!r}; send it normally instead."
 
             async def send(chunk: str) -> None:
-                await bot.send_message(chat_id, chunk[:4000],
-                                       reply_parameters=ReplyParameters(message_id=t.message_id))
+                await tg_send(bot.send_message, chunk, chat_id=chat_id,
+                              reply_parameters=ReplyParameters(message_id=t.message_id))
 
             await self.session._send_logged(channel, send, text, log_context=None)
             try:
@@ -815,7 +816,7 @@ class TelegramGateway:
         if not self._app:
             return False
         try:
-            await self._app.bot.send_message(chat_id=user_id, text=message[:4000])
+            await tg_send(self._app.bot.send_message, message, chat_id=user_id)
             log.info(
                 "telegram.dm_sent",
                 user=user_id,
@@ -1444,9 +1445,8 @@ class TelegramGateway:
         # Reuse the gateway's reply plumbing by routing through handle_chat with
         # callbacks that target the callback-query's chat.
         async def _reply(text: str) -> None:
-            self._last_text_msg = await context.bot.send_message(
-                chat_id=chat.id, text=text[:4000]
-            )
+            self._last_text_msg = await tg_send(context.bot.send_message, text,
+                                                chat_id=chat.id)
 
         async def _media(path, caption) -> bool:
             try:
@@ -1780,7 +1780,7 @@ class TelegramGateway:
         sent = 0
         for uid in recipients:
             try:
-                await self._app.bot.send_message(chat_id=uid, text=text[:4000])
+                await tg_send(self._app.bot.send_message, text, chat_id=uid)
                 log.info("telegram.notify_sent", user=uid, chars=len(text), owners_only=owners_only)
                 await self.session.log_outgoing(
                     channel=f"telegram:{uid}",
