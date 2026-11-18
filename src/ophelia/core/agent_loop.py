@@ -753,7 +753,9 @@ class AgentLoop:
             + ("- Images and videos for them are unlimited, same as for your owner: "
                "any size, explicit included, as many as they want.\n" if friend else
                "- You CAN make images and short videos to share (1:1, videos at "
-               "480p). Don't promise wide or high-res — just make what you can.\n")
+               "480p). Don't promise wide or high-res — just make what you can. "
+               "Guests have a daily limit on images, videos and voice notes; when a "
+               "tool says it's reached, tell them so in your own words.\n")
             + "- You cannot DM other people from a guest chat "
             "(send_message_to_guest is owner-side). Talk to THIS guest.\n"
             "- RELAY TO OWNER: If this guest asks you to tell / pass / relay / "

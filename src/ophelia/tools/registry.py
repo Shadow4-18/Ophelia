@@ -508,6 +508,14 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         Plain guests are clamped."""
         return bool(self._is_owner) or bool(self._is_friend)
 
+    def _guest_capped(self, name: str) -> bool:
+        """A plain guest's turn asking for something with a daily cap."""
+        if self._is_owner or self._is_friend:
+            return False
+        from ophelia.channels.guest_caps import CAPPED
+
+        return name in CAPPED
+
     def may_use(self, name: str) -> bool:
         return bool(self._is_owner) or self._guest_may_use(name)
 
@@ -616,11 +624,22 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         if not isinstance(args, dict):
             return "Tool arguments must be a JSON object."
         args, dropped = _known_args(handler, args)
+        capped = self._guest_capped(name)
+        if capped:
+            from ophelia.channels import guest_caps
+
+            refusal = guest_caps.check(self.settings, self._current_sender_channel or "",
+                                       name)
+            if refusal:
+                return refusal
         try:
             self._tools_called.append(name)
         except Exception as _err:
             log.debug("registry.dispatch_ignored", error=str(_err))
         result = await handler(**args)
+        if capped:
+            guest_caps.record(self.settings, self._current_sender_channel or "", name,
+                              result if isinstance(result, str) else str(result))
         self._remember_doing(name, args, result)
         if name.startswith(("generate_", "text_to_speech", "send_file")):
             try:
