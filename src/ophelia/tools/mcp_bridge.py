@@ -49,6 +49,11 @@ from ophelia.config import OPHELIA_HOME
 log = structlog.get_logger()
 
 CONNECT_TIMEOUT_S = 30.0
+# How long her turn waits for servers before going on without the slow ones
+# (they finish connecting in the background and appear on a later turn).
+FIRST_WAIT_S = 8.0
+# A server that's down (phone off, no Tailscale yet) is tried again this often.
+RETRY_EVERY_S = 60.0
 CALL_TIMEOUT_S = 120.0
 MAX_RESULT_CHARS = 12000
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -238,6 +243,7 @@ class MCPServer:
             await asyncio.wait_for(self._ready.wait(), timeout=CONNECT_TIMEOUT_S)
         except asyncio.TimeoutError:
             self.error = f"didn't connect within {CONNECT_TIMEOUT_S:.0f}s"
+            log.warning("mcp.server_failed", server=self.id, error=self.error)
             await self.stop()
             return False
         if self.session is None:
@@ -354,6 +360,8 @@ class MCPBridge:
         self._definitions: list[dict[str, Any]] = []
         self._initialized = False
         self._missing: dict[str, set[str]] = {}
+        self._attempted: dict[str, float] = {}
+        self._pending: set[asyncio.Task] = set()
         self._mtime = self._config_mtime()
         self._init_lock = asyncio.Lock()
 
@@ -388,8 +396,41 @@ class MCPBridge:
                             python=sys.executable)
                 return
             self.servers = {sid: MCPServer(sid, spec) for sid, spec in specs.items()}
-            await asyncio.gather(*(s.start() for s in self.servers.values()))
-            self._rebuild()
+            await self._connect(list(self.servers.values()))
+
+    async def _connect(self, servers: list["MCPServer"]) -> None:
+        """Start ``servers``; wait a little, let slow ones finish in the
+        background (their tools appear once they're up)."""
+        now = time.monotonic()
+        tasks = []
+        for server in servers:
+            self._attempted[server.id] = now
+            task = asyncio.create_task(server.start(), name=f"mcp-connect:{server.id}")
+            task.add_done_callback(lambda _t: self._rebuild())
+            tasks.append(task)
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
+        if tasks:
+            await asyncio.wait(tasks, timeout=FIRST_WAIT_S)
+        self._rebuild()
+
+    async def retry_down(self) -> None:
+        """Try servers that aren't connected again, at most every RETRY_EVERY_S.
+        Doesn't wait for them: a reconnect shows up on a later turn."""
+        if not self._initialized or self._pending:
+            return
+        now = time.monotonic()
+        down = [s for s in self.servers.values()
+                if not s.connected and now - self._attempted.get(s.id, 0) >= RETRY_EVERY_S]
+        if not down:
+            return
+        log.info("mcp.retrying", servers=[s.id for s in down])
+        for server in down:
+            self._attempted[server.id] = now
+            task = asyncio.create_task(server.start(), name=f"mcp-retry:{server.id}")
+            task.add_done_callback(lambda _t: self._rebuild())
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
 
     def _rebuild(self) -> None:
         self._routes.clear()
@@ -418,6 +459,7 @@ class MCPBridge:
         """Pick up an edited mcp.json without a restart."""
         mtime = self._config_mtime()
         if mtime == self._mtime:
+            await self.retry_down()
             return
         self._mtime = mtime
         log.info("mcp.config_changed", path=str(self.config_path))
@@ -512,6 +554,11 @@ class MCPBridge:
         return out
 
     async def close(self) -> None:
+        for task in list(self._pending):
+            task.cancel()
+        if self._pending:
+            await asyncio.gather(*self._pending, return_exceptions=True)
+        self._pending.clear()
         await asyncio.gather(*(s.stop() for s in self.servers.values()),
                              return_exceptions=True)
         self.servers = {}
