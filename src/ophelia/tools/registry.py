@@ -215,7 +215,9 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         )
         self.artifacts_dir = Path(artifacts_dir)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.mcp = MCPBridge(config=load_mcp_config(settings.mcp_config_path))
+        self.mcp = MCPBridge(config=load_mcp_config(settings.mcp_config_path),
+                             config_path=Path(settings.mcp_config_path),
+                             artifacts_dir=self.artifacts_dir)
         self._mcp_ready = False
         # Always-on proactive fallback (consciousness); the per-turn reply
         # callback is _message_sender (context-local, see class attributes).
@@ -587,9 +589,20 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             log.debug("send_message.remember_failed", error=str(e))
 
     async def ensure_mcp(self) -> None:
+        """Connect MCP servers once; afterwards only notice mcp.json edits."""
         if not self._mcp_ready:
-            await self.mcp.initialize()
             self._mcp_ready = True
+            try:
+                await self.mcp.initialize()
+            except Exception as e:
+                log.warning("mcp.init_failed", error=str(e))
+            return
+        refresh = getattr(self.mcp, "refresh", None)
+        if refresh is not None:
+            try:
+                await refresh()
+            except Exception as e:
+                log.warning("mcp.refresh_failed", error=str(e))
 
     async def tool_definitions(self, *, for_guest: bool = False) -> list[dict[str, Any]]:
         tools = all_tool_definitions(self.settings, getattr(self, "stack", None))
