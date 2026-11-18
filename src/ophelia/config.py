@@ -448,6 +448,15 @@ class Settings(BaseSettings):
     # soul/evolution. Everyone else is a sandboxed guest. Channel-style, e.g.
     # "telegram:12345" or comma-separated "telegram:111,discord:222". If unset,
     # primary_user_channel() is treated as the owner (backward compatible).
+    # Friends: guests with a few more (scoped) tools. channels/friends.py.
+    friend_ids: str = Field(
+        default="",
+        alias="OPHELIA_FRIEND_IDS",
+        description=(
+            "Channel-style friend id(s), comma-separated: guests who get the "
+            "friend tools. The owner can also promote/demote in chat."
+        ),
+    )
     owner_id: str = Field(
         default="",
         alias="OPHELIA_OWNER_ID",

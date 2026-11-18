@@ -79,7 +79,8 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
         }
     ),
     "guests": frozenset(
-        {"list_guests", "send_message_to_guest", "set_guest_rapport", "recall_guest_chat"}
+        {"list_guests", "send_message_to_guest", "set_guest_rapport", "recall_guest_chat",
+         "set_friend"}
     ),
     "data": frozenset({"sqlite_list_databases", "sqlite_exec"}),
     # site_*, phone_* and apk_* are matched by prefix (see group_of).
@@ -91,7 +92,7 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
 GROUP_DESCRIPTIONS: dict[str, str] = {
     "media": "make/send images, video, voice (TTS); browse photos/files people sent",
     "self": "edit your soul/prompter, drives, timezone, skills, goals, curiosity trails",
-    "guests": "list guests, DM a guest, rapport, read guest chats",
+    "guests": "list guests, DM a guest, rapport, read guest chats, make someone a friend",
     "site": "your public website: pages, assets, files, preview, deploy",
     "data": "SQLite databases",
     "phone": "phone body: screen, tap, swipe, apps, games, battery, notifications, vibrate",

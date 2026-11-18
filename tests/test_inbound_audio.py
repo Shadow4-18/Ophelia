@@ -78,7 +78,7 @@ async def test_music_message_is_saved_and_handed_to_her(tmp_path):
     gw = _gateway(tmp_path)
     update, downloaded = _update()
     await gw.on_audio(update, None)
-    assert downloaded == [str(tmp_path / "in_77.mp3")]
+    assert downloaded == [str(tmp_path / "in_1_77.mp3")]
     prompt = gw.session.handle_chat.await_args.args[1]
     assert "audio file — saved to" in prompt and "Life Left Burning" in prompt
 

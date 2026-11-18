@@ -87,6 +87,7 @@ class _ChatTurn:
     sender_id: Any
     logger: Any
     sent: int = 0  # chunks sent so far (the first one is paced differently)
+    is_friend: bool = False  # a guest the owner trusts more (channels/friends.py)
 
 
 class ChannelSession:
@@ -212,17 +213,20 @@ class ChannelSession:
 
     async def _hold_while_quiet(self, channel: str, text: str, q, *, reply: ReplyFn,
                                 media_reply: MediaReplyFn | None, log_context: dict | None,
-                                actions: ChatActions | None) -> None:
+                                actions: ChatActions | None, is_owner: bool = True) -> None:
         """She's giving him the silent treatment: keep his message (history,
         log) without answering, and come back to it when the time is up."""
         q.waiting.append(text)
         q.resume = {"reply": reply, "media_reply": media_reply, "log_context": log_context,
                     "actions": actions}
         self.signals.last_user_message_at = time.time()
-        await self._log_inbound(channel, text, is_owner=True, log_context=log_context)
+        await self._log_inbound(channel, text, is_owner=is_owner, log_context=log_context)
         try:
-            await self.agent.memory.append_message(channel, "user", text,
-                                                   metadata={"type": "while_quiet"})
+            if is_owner:
+                await self.agent.memory.append_message(channel, "user", text,
+                                                       metadata={"type": "while_quiet"})
+            else:  # a friend: their history lives with the other guests'
+                await self.agent.memory.append_guest_message(channel, "user", text)
         except Exception as e:
             log.debug("quiet.store_failed", error=str(e))
         log.info("quiet.holding", channel=channel, waiting=len(q.waiting))
@@ -472,15 +476,21 @@ class ChannelSession:
         treatment, an interjection into a running turn), set the turn up, let
         the director shape the reply, compose it, deliver it, clean up."""
         is_owner = self.agent.settings.is_owner_channel(channel)
+        is_friend = False
+        if not is_owner:
+            from ophelia.channels import friends
+
+            is_friend = await friends.is_friend(self.agent.settings,
+                                                getattr(self.agent, "memory", None), channel)
         screened = await self._screen_inbound(
             channel, text, reply, is_owner=is_owner, media_reply=media_reply,
-            log_context=log_context, actions=actions)
+            log_context=log_context, actions=actions, is_friend=is_friend)
         if screened is None:
             return
         turn = _ChatTurn(channel=channel, text=screened, reply=reply, is_owner=is_owner,
                          media_reply=media_reply, log_context=log_context, actions=actions,
                          started=time.time(), sender_id=_sender_id(channel),
-                         logger=self._logger())
+                         logger=self._logger(), is_friend=is_friend)
         self._current_log_context = log_context
         await self._begin_turn(turn)
         director_decision = await self._direct(turn)
@@ -503,7 +513,7 @@ class ChannelSession:
 
     async def _screen_inbound(self, channel: str, text: str, reply: ReplyFn, *,
                               is_owner: bool, media_reply, log_context,
-                              actions) -> str | None:
+                              actions, is_friend: bool = False) -> str | None:
         """The message to answer (with a comeback note if it broke her silent
         treatment), or None when it's already been dealt with."""
         if is_owner and text.strip().lower() in ("/stop", "/stop@ophelia"):
@@ -520,6 +530,7 @@ class ChannelSession:
             return None
         if is_owner:
             self._owner_spoke()
+        if is_owner or is_friend:
             from ophelia.mind import quiet
 
             q = quiet.active(channel)
@@ -527,7 +538,8 @@ class ChannelSession:
                 if not quiet.breaks_silence(text):
                     await self._hold_while_quiet(channel, text, q, reply=reply,
                                                  media_reply=media_reply,
-                                                 log_context=log_context, actions=actions)
+                                                 log_context=log_context, actions=actions,
+                                                 is_owner=is_owner)
                     return None
                 quiet.end(channel)
                 text = f"{quiet.comeback_note(q, broken_by=text)}\n{text}"
@@ -543,6 +555,8 @@ class ChannelSession:
         await self.signals.set_agent_thinking(True)
         self.agent.tools.begin_turn_artifacts()
         self.agent.tools.set_owner(is_owner)
+        if hasattr(self.agent.tools, "set_friend"):
+            self.agent.tools.set_friend(turn.is_friend)
         self.agent.tools.set_chat_actions(actions)
         # Record who's speaking so guest-self-only tools (e.g. set_guest_name)
         # can verify the sender matches the target.

@@ -87,6 +87,7 @@ def guest_may_use(name: str) -> bool:
 # reply callbacks or undelivered files of an overlapping turn.
 _TURN_DEFAULTS: dict[str, Any] = {
     "is_owner": True,
+    "is_friend": False,
     "sender_channel": None,
     "message_sender": None,
     "media_sender": None,
@@ -137,6 +138,7 @@ def _as_result(value: ImageResult | str) -> ImageResult:
 
 class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMixin):
     _is_owner = _turn_state("is_owner")
+    _is_friend = _turn_state("is_friend")
     # The channel of the user who sent the current turn (e.g. "telegram:111").
     # Set by ChannelSession before dispatching tool calls so guests can be
     # constrained to self-only actions (e.g. set_guest_name on themselves).
@@ -298,6 +300,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             "relay_to_owner": self._relay_to_owner,
             "recall_guest_chat": self._recall_guest_chat,
             "set_guest_rapport": self._set_guest_rapport,
+            "set_friend": self._set_friend,
             "whats_changed": self._whats_changed,
             "evolve_self": self._evolve_self,
             "curiosity_trail_open": self._curiosity_trail_open,
@@ -352,12 +355,12 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         from ophelia.mind import quiet
 
         channel = self._current_sender_channel
-        if not (self._is_owner and channel):
-            return "You can only go quiet on your owner, in his chat."
+        if not ((self._is_owner or self._is_friend) and channel):
+            return "You can only go quiet on your owner or a friend, in their chat."
         cap = float(getattr(self.settings, "quiet_max_minutes", 30) or 30)
         q = quiet.start(channel, minutes, reason, cap_minutes=cap)
         mins = round((q.until - q.started) / 60)
-        return (f"You're not answering him for {mins} min. His messages wait until then; "
+        return (f"You're not answering them for {mins} min. Their messages wait until then; "
                 "an apology or anything urgent gets through. Say what you want to say "
                 "now, or nothing.")
 
@@ -493,6 +496,23 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         sandboxed guest (identity-shaping / private / costly tools disabled)."""
         self._is_owner = is_owner
 
+    def set_friend(self, is_friend: bool) -> None:
+        """A guest the owner trusts more (channels/friends.py): a few extra,
+        scoped tools. Only meaningful on a guest turn."""
+        self._is_friend = bool(is_friend)
+
+    def may_use(self, name: str) -> bool:
+        return bool(self._is_owner) or self._guest_may_use(name)
+
+    def _guest_may_use(self, name: str) -> bool:
+        """What a guest turn may use: the guest list, plus the friend extras
+        when this guest is a friend."""
+        if guest_may_use(name):
+            return True
+        from ophelia.channels.friends import FRIEND_EXTRA_TOOLS
+
+        return bool(self._is_friend) and name in FRIEND_EXTRA_TOOLS
+
     def clear_owner(self) -> None:
         self._is_owner = True
 
@@ -560,7 +580,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         tools = all_tool_definitions(self.settings, getattr(self, "stack", None))
         if for_guest:
             # Don't even show guests tools they can't call (and skip MCP).
-            return [t for t in tools if guest_may_use(t["function"]["name"])]
+            return [t for t in tools if self._guest_may_use(t["function"]["name"])]
         await self.ensure_mcp()
         tools.extend(self.mcp.definitions())
         return tools
@@ -569,7 +589,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         await self.ensure_mcp()
         # Sandbox guests: block identity-shaping / private / costly tools, and
         # block any MCP tool (unknown surface — could do anything).
-        if not self._is_owner and not guest_may_use(name):
+        if not self.may_use(name):
             if name not in self._handlers:
                 return "External tools aren't available in this conversation."
             return (
@@ -799,6 +819,21 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         )
         return await self._finalize_media_tool_result(result)
 
+    def _inbox_visible(self, path) -> bool:
+        """The owner sees every inbound file; a friend only what they sent
+        (saved as in_<their user id>_...). Older files without a sender id
+        stay owner-only."""
+        if self._is_owner:
+            return True
+        chan = (self._current_sender_channel or "").strip()
+        platform, _, uid = chan.partition(":")
+        if not uid:
+            return False
+        folder = path.parent.name
+        if folder != f"{platform}_media":
+            return False
+        return path.name.startswith(f"in_{uid}_")
+
     async def _list_inbox_images(
         self, limit: int = 10, within_hours: float = 24.0
     ) -> str:
@@ -827,7 +862,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
                 # Only inbound images — gateways save sent images with the
                 # `in_` prefix (in_<msg_id>...). Generated images live under
                 # artifacts/ with different naming.
-                if not p.name.startswith("in_"):
+                if not p.name.startswith("in_") or not self._inbox_visible(p):
                     continue
                 try:
                     if p.stat().st_mtime >= cutoff:
@@ -880,6 +915,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
                 continue
             for p in d.iterdir():
                 if not p.is_file() or not p.name.startswith("in_"):
+                    continue
+                if not self._inbox_visible(p):
                     continue
                 classified = classify_attachment(filename=p.name)
                 if classified is None:
@@ -1274,6 +1311,8 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
     async def _recall_memory(self, query: str, limit: int = 8) -> str:
         if not self.memory:
             return "Memory store unavailable."
+        if not self._is_owner:
+            return await self._recall_friend_chat(query, limit)
         hits = await self.memory.recall(query, limit=limit)
         lessons = await self.memory.search_lessons(query, limit=3)
         parts: list[str] = []
@@ -1296,7 +1335,26 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
                 parts.append(f"  - {les['lesson'][:240]}")
         return "\n".join(parts) if parts else f"No memories matched '{query}'."
 
+    async def _recall_friend_chat(self, query: str, limit: int = 8) -> str:
+        """A friend's recall: only your own history with them."""
+        chan = (self._current_sender_channel or "").strip()
+        if not chan:
+            return "No history to search here."
+        hits = await self.memory.search_guest_messages(
+            (query or "").strip(), channel=chan, limit=max(1, min(int(limit or 8), 30)))
+        if not hits:
+            return f"Nothing in your chats with them matches '{query}'."
+        lines = [f"From your chats with them ({len(hits)}):"]
+        for h in hits:
+            who = "THEM" if h["role"] == "user" else "YOU"
+            lines.append(f"  {who}: {h['content'][:240]}")
+        return "\n".join(lines)
+
     async def _recall_day(self, when: str = "", query: str = "") -> str:
+        if not self._is_owner:
+            from ophelia.mind import day_log
+
+            return day_log.shareable_day(self.settings, when)
         episodes = getattr(self, "episodes", None)
         if episodes is None:
             return "Episodic memory is off (OPHELIA_EPISODIC_MEMORY); use recall_memory."
@@ -1320,7 +1378,13 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             return "Memory store unavailable."
         from ophelia.mind.open_loops import OpenLoops
 
-        ok = await OpenLoops(self.memory.db_path).close(int(id), outcome)
+        loops = OpenLoops(self.memory.db_path)
+        if not self._is_owner:
+            mine = {lp["id"] for lp in await loops.open(self._current_sender_channel or "-",
+                                                         limit=50)}
+            if int(id) not in mine:
+                return f"No open follow-up #{id} with them."
+        ok = await loops.close(int(id), outcome)
         return f"Follow-up #{id} closed." if ok else f"No open follow-up #{id}."
 
     async def _remember_person(self, name: str, note: str) -> str:
@@ -1328,6 +1392,9 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             return "Memory store unavailable."
         from ophelia.mind.people import PeopleBook
 
+        if not self._is_owner:
+            # Say where it came from: the owner sees these notes too.
+            note = f"(from {self._current_sender_channel or 'a friend'}'s chat) {note}"
         return await PeopleBook(self.memory.db_path).remember(name, note)
 
     async def _save_lesson(

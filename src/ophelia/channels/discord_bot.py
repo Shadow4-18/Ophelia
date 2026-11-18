@@ -452,7 +452,7 @@ class DiscordGateway:
         caption = (message.content or "").strip()
         for att, kind in wanted:
             ext = safe_inbound_ext(att.filename or "", kind=kind)
-            path = self._media_dir / f"in_{message.id}_{att.id}{ext}"
+            path = self._media_dir / f"in_{message.author.id}_{message.id}_{att.id}{ext}"
             try:
                 await att.save(str(path))
             except Exception as e:
