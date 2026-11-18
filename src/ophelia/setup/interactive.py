@@ -230,7 +230,7 @@ def _summary_phone() -> str:
 
 
 def _summary_schedule() -> str:
-    tz = read_env_key("OPHELIA_TIMEZONE") or "system"
+    tz = read_env_key("OPHELIA_TIMEZONE") or "America/New_York"
     sleep = read_env_key("OPHELIA_SLEEP_HOURS")
     return f"{tz}{', sleeps ' + sleep if sleep else ''}"
 

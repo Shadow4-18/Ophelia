@@ -276,7 +276,7 @@ home phone:
 
 | Feature | Config | What it does |
 |---------|--------|--------------|
-| **Life context** | `OPHELIA_TIMEZONE` (`system`, IANA, or EST/PST/…), `OPHELIA_WORK_DAYS`, `OPHELIA_WORK_HOURS` | Authoritative date/time + inferred owner state in every prompt. Default `system` follows the host clock; chat “switch to EST” persists via the `set_timezone` tool (memory alone will not stick). |
+| **Life context** | `OPHELIA_TIMEZONE` (`system`, IANA, or EST/PST/…), `OPHELIA_WORK_DAYS`, `OPHELIA_WORK_HOURS` | Authoritative date/time + inferred owner state in every prompt. Default `America/New_York` (Eastern, with daylight saving; `system` follows the host clock); chat “switch to EST” persists via the `set_timezone` tool (memory alone will not stick). |
 | **Sleep mode** | `OPHELIA_SLEEP_HOURS`, `OPHELIA_SLEEP_MODE` | Slower ticks, dreamier dreams, softer voice, blocks outreach |
 | **Wake word** | `OPHELIA_WAKE_WORD=true`, `OPHELIA_WAKE_WORD_NAME=ophelia` | Say her name → full listen → TTS reply (Termux mic) |
 | **Spontaneous voice** | `OPHELIA_SPONTANEOUS_VOICE=true` | Consciousness `message` → Telegram voice note (Kokoro) |
