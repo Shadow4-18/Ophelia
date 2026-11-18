@@ -317,7 +317,7 @@ class MCPBridge:
                 return
             if not mcp_available():
                 log.warning("mcp.missing", servers=len(specs),
-                            hint='python -m pip install "mcp>=1.9" for MCP server support',
+                            hint='python -m pip install "mcp>=1.9,<2" for MCP server support',
                             python=sys.executable)
                 return
             self.servers = {sid: MCPServer(sid, spec) for sid, spec in specs.items()}

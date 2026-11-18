@@ -648,7 +648,7 @@ def _check_optional_tools(report: SelfCheckReport) -> None:
         name="MCP bridge (optional)",
         ok=mcp_ok or not configured,
         detail=detail,
-        hint=f"{sys.executable} -m pip install \"mcp>=1.9\"" if configured and not mcp_ok else "",
+        hint=f"{sys.executable} -m pip install \"mcp>=1.9,<2\"" if configured and not mcp_ok else "",
         required=False,
     )
 
