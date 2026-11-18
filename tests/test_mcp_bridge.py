@@ -3,6 +3,7 @@ connection kept open, env passed through, reconnect after a crash."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -165,5 +166,54 @@ async def test_a_missing_var_is_named_in_the_status(tmp_path, monkeypatch):
         await bridge.initialize()
         err = bridge.status()[0]["error"]
         assert "NOT_SET_ANYWHERE" in err and ".env" in err
+    finally:
+        await bridge.close()
+
+
+@needs_mcp
+@pytest.mark.asyncio
+async def test_a_server_that_was_down_is_retried(tmp_path, monkeypatch):
+    """Down at startup (Tailscale not up yet, phone off): logged, and tried
+    again later instead of never."""
+    monkeypatch.setattr(mb, "RETRY_EVERY_S", 0.0)
+    bridge = mb.MCPBridge({"servers": {"echo": {"command": sys.executable,
+                                                 "args": ["-c", "import sys; sys.exit(1)"]}}},
+                          artifacts_dir=tmp_path)
+    try:
+        await bridge.initialize()
+        assert bridge.definitions() == []
+        assert bridge.status()[0]["error"]
+        # It comes back: point it at the real server and retry.
+        bridge.servers["echo"].spec = {"command": sys.executable, "args": [SERVER]}
+        await bridge.retry_down()
+        for _ in range(100):
+            if bridge.definitions():
+                break
+            await asyncio.sleep(0.1)
+        assert "mcp_echo_echo" in {d["function"]["name"] for d in bridge.definitions()}
+    finally:
+        await bridge.close()
+
+
+@needs_mcp
+@pytest.mark.asyncio
+async def test_a_slow_server_doesnt_hold_up_her_turn(tmp_path, monkeypatch):
+    import time as _time
+
+    monkeypatch.setattr(mb, "FIRST_WAIT_S", 0.3)
+    slow = ("import time, runpy, sys; time.sleep(2); sys.argv=['s']; "
+            f"runpy.run_path({SERVER!r}, run_name='__main__')")
+    bridge = mb.MCPBridge({"servers": {"echo": {"command": sys.executable, "args": ["-c", slow]}}},
+                          artifacts_dir=tmp_path)
+    try:
+        t0 = _time.monotonic()
+        await bridge.initialize()
+        assert _time.monotonic() - t0 < 1.5
+        assert bridge.definitions() == []
+        for _ in range(100):
+            if bridge.definitions():
+                break
+            await asyncio.sleep(0.1)
+        assert "mcp_echo_echo" in {d["function"]["name"] for d in bridge.definitions()}
     finally:
         await bridge.close()
