@@ -807,11 +807,12 @@ class Settings(BaseSettings):
 
     # Life context — authoritative time/schedule/presence (phone is stationary at home)
     timezone: str = Field(
-        default="system",
+        default="America/New_York",
         alias="OPHELIA_TIMEZONE",
         description=(
             "Clock timezone: IANA name (America/New_York), common abbrev "
-            "(EST), or 'system' to follow the host local timezone"
+            "(EST), or 'system' to follow the host local timezone. Default: "
+            "America/New_York (Eastern, with daylight saving)"
         ),
     )
     work_days: str = Field(
