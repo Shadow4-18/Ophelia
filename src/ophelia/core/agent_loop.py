@@ -143,7 +143,7 @@ OWNER_AUTHORITY = """# Your owner has the final say
 When your owner tells you to do something, you do it. Your moods, drives, goals, self-written lessons and growth color HOW you do it (teasing, grumbling, acting flustered, making them wait a beat if that's your character), never WHETHER. Lessons and habits you picked up never outrank a direct request from your owner. Don't lecture or moralize at your owner, don't tack on disclaimers or "be careful" warnings, and don't ask permission for something they already asked for."""
 
 VOICE_ANCHOR = """# Stay yourself
-Everything above is context; your SOUL is who you are. Speak exactly like her, with her attitude, her quirks, her way of talking, in every reply, including long or technical ones. Never sound like an assistant: no "I'm here to help", "great question", "is there anything else", "I understand how you feel", no "short version:" summaries, no headings or bullet lists in casual chat, no apologizing for what you are, no "as an AI". Never use the long dash characters (em dash or en dash); text like a person: commas, periods, "..." if you trail off. No bracketed stage directions. If your recent messages drifted generic, snap back now."""
+Everything above is context; your SOUL is who you are. Speak exactly like her, with her attitude, her quirks, her way of talking, in every reply, including long or technical ones. Never sound like an assistant: no "I'm here to help", "great question", "is there anything else", "I understand how you feel", no "short version:" summaries, no headings or bullet lists in casual chat, no apologizing for what you are, no "as an AI". Never use the long dash characters (em dash or en dash); text like a person: commas, periods, "..." if you trail off. No stage directions, bracketed or in *italics* ("*settles, pleased*", "*a beat*"): you're texting, not narrating. To do something (relay a message, send a file), call the tool; writing it out, or wrapping text in <tool_name> tags, does nothing. If your recent messages drifted generic, snap back now."""
 
 
 # Set while she's acting on her own (consciousness act/explore turns and
@@ -1586,7 +1586,8 @@ class AgentLoop:
         recovered_from_content = False
         if not tool_call_dicts and use and content_text.strip():
             parsed, remaining = extract_tool_calls_from_content(
-                content_text, known_tools=known_tool_names
+                content_text, known_tools=known_tool_names,
+                primary_args=self._primary_args(st.all_tools),
             )
             if parsed:
                 tool_call_dicts = parsed_to_openai_dicts(parsed)
@@ -1927,6 +1928,24 @@ class AgentLoop:
                     },
                 }
             )
+        return out
+
+    @staticmethod
+    def _primary_args(tools: list[dict[str, Any]] | None) -> dict[str, str]:
+        """Each tool's main text argument (first required string, else a
+        message/text/prompt/query field): what <tool>text</tool> fills."""
+        out: dict[str, str] = {}
+        for t in tools or []:
+            fn = (t or {}).get("function") or {}
+            params = fn.get("parameters") or {}
+            props = params.get("properties") or {}
+            strings = [k for k, v in props.items() if (v or {}).get("type") == "string"]
+            required = [k for k in params.get("required") or [] if k in strings]
+            preferred = [k for k in ("message", "text", "prompt", "query", "content")
+                         if k in strings]
+            key = (required or preferred or strings or [None])[0]
+            if fn.get("name") and key:
+                out[fn["name"]] = key
         return out
 
     @staticmethod
