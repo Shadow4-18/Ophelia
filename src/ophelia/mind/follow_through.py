@@ -34,6 +34,21 @@ _ACTION_ASK = re.compile(
     r")\b",
     re.I,
 )
+# Asking her to carry a message to someone else (her owner or a guest):
+# needs the relay tools, so never the talk-only reaction path. "let him
+# know" and "pass this on" used to get a tool-less reply that wrote the
+# relay out as text and sent nothing.
+_RELAY_ASK = re.compile(
+    r"\b("
+    r"tell (him|her|them|okia|ophelia|eri|your owner|[a-z]+) (that |i |i'?m |im |he |she |"
+    r"you |to |about |we |it |this |my |he'?s |she'?s |hes |shes |they )|"
+    r"tell (him|her|them|your owner|okia|eri)\b|"
+    r"let (him|her|them|your owner|[a-z]+) know|pass (this|that|it|the message|my message)?"
+    r" ?(on|along)|relay|message (him|her|them)|send (him|her|them) (this|that|a|my|the)|"
+    r"say (hi|hello|goodnight|good night|it) to|give (him|her|them) (my|a) "
+    r")",
+    re.I,
+)
 # A bare nudge on its own line: "well?", "and?", "so?", "go", "now".
 _NUDGE = re.compile(r"^\s*(well|and|so|go|now|ok(ay)?|then|do it|yes|please)\s*[?!.]*\s*$", re.I)
 
@@ -203,7 +218,7 @@ def follow_through_note(line: str) -> str:
 
 def asks_for_action(owner_text: str) -> bool:
     t = (owner_text or "").strip()
-    return bool(t) and bool(_ACTION_ASK.search(t) or _NUDGE.match(t))
+    return bool(t) and bool(_ACTION_ASK.search(t) or _NUDGE.match(t) or _RELAY_ASK.search(t))
 
 
 def is_empty_promise(line: str) -> bool:
@@ -215,3 +230,49 @@ def needs_action(owner_text: str, her_last: str = "") -> bool:
     """Route to a turn that can act: he's asking for action, or she's holding
     an unkept promise from her last message."""
     return asks_for_action(owner_text) or is_empty_promise(her_last)
+
+
+# ── Relays between conversations ────────────────────────────────────────
+# A guest says "let him know…" (or he says "tell Eri…") and she answers
+# "done, told him" — or writes <relay_to_owner>…</relay_to_owner> as text —
+# with no relay tool run, so nothing crossed over. Catch it and redo once.
+RELAY_TOOLS = frozenset({"relay_to_owner", "send_message_to_guest"})
+
+_CLAIMED_RELAY = re.compile(
+    r"<\s*/?\s*(relay_to_owner|send_message_to_guest)\b|"
+    r"\b(i('| ha)?ve |i |just |already |)(told|relayed|passed|forwarded|messaged|texted|"
+    r"sent|let)\b[^.!?\n]{0,30}\b(him|her|them|okia|eri|your owner|it (on|along)|"
+    r"that (on|along)|the message|know)\b|"
+    r"\b(message|it)('s| is| was)? (sent|delivered|passed (on|along))\b|"
+    r"\bwill do\b|\bconsider it (done|sent|relayed)\b",
+    re.I,
+)
+
+
+def relay_expected(text: str) -> bool:
+    """Someone asked her to carry a message to another conversation."""
+    return bool(_RELAY_ASK.search(text or ""))
+
+
+def claimed_relay(reply: str) -> str:
+    """The line where she says she passed it on ("" when none)."""
+    for line in (reply or "").splitlines():
+        if _CLAIMED_RELAY.search(line):
+            return line.strip()
+    return ""
+
+
+def relayed(tools_called: list[str] | None) -> bool:
+    return any(t in RELAY_TOOLS for t in (tools_called or []))
+
+
+def relay_note(line: str, *, is_owner: bool) -> str:
+    if is_owner:
+        how = ("call send_message_to_guest now (platform and user_id from your guest "
+               "list) with the message in your own words")
+    else:
+        how = ("call relay_to_owner now with the message (as_self=true if they want it "
+               "to look like it came from you)")
+    return (f"[Reality check: you just wrote \"{line}\", but no relay tool ran, so nothing "
+            f"reached the other conversation. Writing it out or wrapping it in tags sends "
+            f"nothing. {how}. Then answer them briefly. Don't do anything else.]")
