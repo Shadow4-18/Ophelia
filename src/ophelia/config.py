@@ -448,6 +448,17 @@ class Settings(BaseSettings):
     # soul/evolution. Everyone else is a sandboxed guest. Channel-style, e.g.
     # "telegram:12345" or comma-separated "telegram:111,discord:222". If unset,
     # primary_user_channel() is treated as the owner (backward compatible).
+    # Daily caps for plain guests (channels/guest_caps.py). Friends and the
+    # owner are never capped. 0 = guests can't have that kind; negative = no cap.
+    guest_daily_images: int = Field(
+        default=5, alias="OPHELIA_GUEST_DAILY_IMAGES",
+        description="Images per plain guest per day (0 = none, -1 = unlimited)")
+    guest_daily_videos: int = Field(
+        default=2, alias="OPHELIA_GUEST_DAILY_VIDEOS",
+        description="Videos per plain guest per day (0 = none, -1 = unlimited)")
+    guest_daily_voice: int = Field(
+        default=10, alias="OPHELIA_GUEST_DAILY_VOICE",
+        description="Voice notes per plain guest per day (0 = none, -1 = unlimited)")
     # Friends: guests with a few more (scoped) tools. channels/friends.py.
     friend_ids: str = Field(
         default="",
