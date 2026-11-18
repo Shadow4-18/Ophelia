@@ -71,14 +71,68 @@ def mcp_available() -> bool:
     return importlib.util.find_spec("mcp") is not None
 
 
-def _expand(value: Any) -> Any:
-    """${VAR} → the environment value (missing → empty)."""
+def env_files(config_path: Path | None = None) -> list[Path]:
+    """Where ${VAR} values can come from besides the environment: her .env
+    (next to mcp.json, and in OPHELIA_HOME)."""
+    out: list[Path] = []
+    for d in ([config_path.parent] if config_path else []) + [OPHELIA_HOME]:
+        p = d / ".env"
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """KEY=value lines (quotes and `export ` allowed). Never raises."""
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        elif " #" in val:
+            val = val.split(" #", 1)[0].rstrip()
+        values[key] = val
+    return values
+
+
+def env_lookup(config_path: Path | None = None) -> dict[str, str]:
+    """The environment, with her .env filling in what it lacks. Ophelia's
+    settings read .env but don't export keys they don't know (like
+    MUSIC_REMOTE_TOKEN), so ${VAR} came out empty."""
+    merged: dict[str, str] = {}
+    for p in reversed(env_files(config_path)):
+        merged.update(_read_env_file(p))
+    merged.update(os.environ)
+    return merged
+
+
+def _expand(value: Any, env: dict[str, str] | None = None,
+            missing: set[str] | None = None) -> Any:
+    """${VAR} → its value from the environment or .env (missing → empty,
+    and named in ``missing``)."""
+    env = os.environ if env is None else env
+
+    def sub(m: re.Match) -> str:
+        name = m.group(1)
+        if name not in env and missing is not None:
+            missing.add(name)
+        return env.get(name, "")
+
     if isinstance(value, str):
-        return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        return _ENV_REF.sub(sub, value)
     if isinstance(value, list):
-        return [_expand(v) for v in value]
+        return [_expand(v, env, missing) for v in value]
     if isinstance(value, dict):
-        return {k: _expand(v) for k, v in value.items()}
+        return {k: _expand(v, env, missing) for k, v in value.items()}
     return value
 
 
@@ -128,7 +182,9 @@ async def open_transport(spec: dict):
         async with stdio_client(StdioServerParameters(**kw)) as streams:
             yield streams[0], streams[1]
         return
-    headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
+    # Stripped: an empty ${VAR} left "Bearer " (trailing space), which httpx
+    # rejects outright instead of sending and getting a clear 401.
+    headers = {str(k): str(v).strip() for k, v in (spec.get("headers") or {}).items()}
     if str(spec.get("transport") or "").lower() == "sse":
         from mcp.client.sse import sse_client
 
@@ -297,6 +353,7 @@ class MCPBridge:
         self._routes: dict[str, tuple[MCPServer, str]] = {}
         self._definitions: list[dict[str, Any]] = []
         self._initialized = False
+        self._missing: dict[str, set[str]] = {}
         self._mtime = self._config_mtime()
         self._init_lock = asyncio.Lock()
 
@@ -311,8 +368,18 @@ class MCPBridge:
             if self._initialized:
                 return
             self._initialized = True
-            specs = {sid: _expand(spec) for sid, spec in servers_from(self.config).items()
-                     if spec.get("enabled", True) and (spec.get("command") or spec.get("url"))}
+            env = env_lookup(self.config_path)
+            specs: dict[str, dict] = {}
+            self._missing = {}
+            for sid, spec in servers_from(self.config).items():
+                if not (spec.get("enabled", True) and (spec.get("command") or spec.get("url"))):
+                    continue
+                missing: set[str] = set()
+                specs[sid] = _expand(spec, env, missing)
+                if missing:
+                    self._missing[sid] = missing
+                    log.warning("mcp.missing_env", server=sid, names=sorted(missing),
+                                hint="add them to ~/.ophelia/.env")
             if not specs:
                 return
             if not mcp_available():
@@ -435,10 +502,12 @@ class MCPBridge:
                 "enabled": enabled,
                 "connected": bool(server and server.connected),
                 "tools": [tool_name(sid, t.name) for t in (server.tools if server else [])],
-                "error": (server.error if server else
+                "error": ((f"not set in ~/.ophelia/.env: {', '.join(sorted(self._missing[sid]))}; "
+                           if sid in self._missing else "")
+                          + (server.error if server else
                           ("" if not enabled else
                            "mcp package not installed" if not mcp_available() else
-                           "not started")),
+                           "not started"))),
             })
         return out
 
