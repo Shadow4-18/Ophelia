@@ -501,6 +501,13 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         scoped tools. Only meaningful on a guest turn."""
         self._is_friend = bool(is_friend)
 
+    @property
+    def _full_media(self) -> bool:
+        """Owner-level images and video (sizes, quality, retries, style
+        references, self-check, NSFW routing, 720p): the owner and friends.
+        Plain guests are clamped."""
+        return bool(self._is_owner) or bool(self._is_friend)
+
     def may_use(self, name: str) -> bool:
         return bool(self._is_owner) or self._guest_may_use(name)
 
@@ -678,7 +685,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             auto_pick=auto_pick, quality=quality, count=count, attempts=attempts,
             deliver_to=self._current_sender_channel or "",
             pose_image=(pose_image or "").strip() or None, style_terms=style_terms,
-        ), is_owner=self._is_owner)
+        ), is_owner=self._full_media)
         result = await run_image_job(self.settings, self.stack, job, self.artifacts_dir)
         result = await self._self_check_image(
             result, prompt,
@@ -694,7 +701,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         style terms for a Civitai style-LoRA search)."""
         from ophelia.media import style_reference as sr
 
-        if not self._is_owner:
+        if not self._full_media:
             return prompt, "", []
         try:
             path = await sr.local_copy(source, self.artifacts_dir / "style_refs")
@@ -717,7 +724,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         from ophelia.media import self_check
 
         result = _as_result(result)
-        if not self._is_owner or not result.ok or not self_check.wants_check(
+        if not self._full_media or not result.ok or not self_check.wants_check(
                 self.settings, prompt):
             return result
         first = await self_check.check_image(self.settings, result.paths[0], prompt,
@@ -801,10 +808,11 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         aspect_ratio: str | None = None,
         resolution: str | None = None,
     ) -> str:
-        # Guests get 1:1 + 480p only. Keeps the experience (she can make a
-        # short clip) without spending full-quality tokens on strangers.
+        # Plain guests get 1:1 + 480p only. Keeps the experience (she can make
+        # a short clip) without spending full-quality tokens on strangers.
+        # Friends get what the owner gets.
         # Note: xAI only accepts "480p" or "720p" — "low" is not a valid value.
-        if not self._is_owner:
+        if not self._full_media:
             aspect_ratio = "1:1"
             resolution = "480p"
         result = await generate_video(
@@ -818,6 +826,25 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             resolution=resolution,
         )
         return await self._finalize_media_tool_result(result)
+
+    def _shareable_with_guest(self, p) -> bool:
+        """A guest or friend can be sent what she made (artifacts/) or a file
+        they sent her, never anything else on the phone (.env, databases,
+        logs, her soul, other people's uploads)."""
+        from pathlib import Path
+
+        try:
+            arts = Path(self.artifacts_dir).expanduser().resolve()
+            if p.is_relative_to(arts):
+                return True
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        try:
+            media = (Path(self.settings.data_dir).expanduser().resolve()
+                     / p.parent.name)
+        except (OSError, ValueError, TypeError):
+            return False
+        return p.parent == media and p.name.startswith("in_") and self._inbox_visible(p)
 
     def _inbox_visible(self, path) -> bool:
         """The owner sees every inbound file; a friend only what they sent
@@ -1077,6 +1104,11 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             return f"Invalid path: {e}"
         if not p.is_file():
             return f"File not found: {path}"
+        if not self._is_owner and not self._shareable_with_guest(p):
+            log.warning("send_file.guest_blocked", path=str(p),
+                        channel=self._current_sender_channel)
+            return ("That file isn't one you can send in this chat: only things you made "
+                    "(images, videos, voice) or files they sent you.")
 
         if await self._deliver_artifact(p, caption):
             log.info("send_file.sent", path=str(p), size=p.stat().st_size)
