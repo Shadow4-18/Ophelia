@@ -133,3 +133,37 @@ async def test_guests_never_get_mcp_tools(tmp_path):
         reg.set_friend(friend)
         assert "aren't available" in await reg.dispatch("mcp_echo_echo", "{}")
     reg.mcp.dispatch.assert_not_awaited()
+
+
+def test_vars_come_from_her_env_file_too(tmp_path, monkeypatch):
+    """Ophelia's settings read ~/.ophelia/.env but don't export keys they
+    don't know, so ${MUSIC_REMOTE_TOKEN} has to be read from the file."""
+    monkeypatch.delenv("MUSIC_REMOTE_TOKEN", raising=False)
+    monkeypatch.setenv("FROM_ENV", "env wins")
+    (tmp_path / ".env").write_text(
+        "# comment\nMUSIC_REMOTE_TOKEN=abc123\nexport QUOTED=\"two words\"\nFROM_ENV=file\n")
+    env = mb.env_lookup(tmp_path / "mcp.json")
+    assert env["MUSIC_REMOTE_TOKEN"] == "abc123"
+    assert env["QUOTED"] == "two words"
+    assert env["FROM_ENV"] == "env wins"
+    missing: set[str] = set()
+    spec = mb._expand({"headers": {"Authorization": "Bearer ${MUSIC_REMOTE_TOKEN}"},
+                       "url": "http://x/${NOPE}"}, env, missing)
+    assert spec["headers"]["Authorization"] == "Bearer abc123"
+    assert missing == {"NOPE"}
+
+
+@pytest.mark.asyncio
+async def test_a_missing_var_is_named_in_the_status(tmp_path, monkeypatch):
+    monkeypatch.delenv("NOT_SET_ANYWHERE", raising=False)
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"servers": {"music": {
+        "url": "http://127.0.0.1:9/mcp",
+        "headers": {"Authorization": "Bearer ${NOT_SET_ANYWHERE}"}}}}))
+    bridge = mb.MCPBridge(config_path=cfg, artifacts_dir=tmp_path)
+    try:
+        await bridge.initialize()
+        err = bridge.status()[0]["error"]
+        assert "NOT_SET_ANYWHERE" in err and ".env" in err
+    finally:
+        await bridge.close()
