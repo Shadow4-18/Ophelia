@@ -29,7 +29,10 @@ ophelia = "ophelia.cli:main"
 [project.optional-dependencies]
 site = ["blake3>=0.4"]
 # Outside tools through MCP servers (~/.ophelia/mcp.json). tools/mcp_bridge.py.
-mcp = ["mcp>=1.9"]
+# Pinned below 2: mcp 2.x imports `cryptography` at startup, and on Termux
+# that has to be compiled for Python 3.11 and the build doesn't load. 1.x only
+# needs it for OAuth, which the bridge doesn't use. The bridge works with both.
+mcp = ["mcp>=1.9,<2"]
 # Direct game links (O.M.G.I.): read/act on patched games from the inside.
 games = ["omgi @ git+https://github.com/Shadow4-18/O.M.G.I..git"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]

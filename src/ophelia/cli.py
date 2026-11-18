@@ -395,7 +395,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
     print(f"Config: {path}" + ("" if path.is_file() else "  (not found)"))
     print(f"Python: {sys.executable} ({sys.version.split()[0]})")
     print(f"mcp package: {'installed' if mcp_available() else 'NOT installed for this Python'}"
-          + ("" if mcp_available() else '  ->  python -m pip install "mcp>=1.9"'))
+          + ("" if mcp_available() else '  ->  python -m pip install "mcp>=1.9,<2"'))
 
     async def run() -> list[dict]:
         bridge = MCPBridge(config=config, config_path=path,
