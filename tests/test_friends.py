@@ -204,3 +204,83 @@ async def test_friend_prompt_and_continuity(tmp_path, monkeypatch):
     assert "Friend mode" in text and "Guest mode" in text
     assert "has an exam friday" in text and "ask how the exam went" in text
     assert "never tap" in text
+
+
+@pytest.mark.asyncio
+async def test_friends_get_owner_media_and_guests_stay_clamped(tmp_path, monkeypatch):
+    from ophelia.tools import registry as r
+
+    seen = {}
+
+    async def fake_video(settings, stack, prompt, **kw):
+        seen.update(kw)
+        return "Video saved to /x.mp4"
+
+    monkeypatch.setattr(r, "generate_video", fake_video)
+    reg = _registry(_settings(tmp_path), None)
+    reg.stack = None
+    reg.artifacts_dir = tmp_path
+    reg._finalize_media_tool_result = AsyncMock(side_effect=lambda t, **k: t)
+    await reg._generate_video("a clip", aspect_ratio="16:9", resolution="720p")
+    assert (seen["aspect_ratio"], seen["resolution"]) == ("16:9", "720p")
+    reg.set_friend(False)
+    await reg._generate_video("a clip", aspect_ratio="16:9", resolution="720p")
+    assert (seen["aspect_ratio"], seen["resolution"]) == ("1:1", "480p")
+
+    captured = {}
+    from ophelia.providers import image_routing
+
+    real = image_routing.prepare_job
+
+    def spy(settings, job, *, is_owner):
+        captured["full"] = is_owner
+        return real(settings, job, is_owner=is_owner)
+
+    monkeypatch.setattr(image_routing, "prepare_job", spy)
+    monkeypatch.setattr(r, "run_image_job", AsyncMock(return_value="refused"))
+    for friend, want in ((True, True), (False, False)):
+        reg.set_friend(friend)
+        await reg._generate_image("a cat")
+        assert captured["full"] is want
+
+
+def test_owner_level_image_job_for_friends():
+    from ophelia.providers.image_job import ImageJob
+    from ophelia.providers.image_routing import prepare_job
+
+    s = SimpleNamespace(image_nsfw_allowed=True)
+    job = ImageJob(prompt="explicit sex, nude woman", aspect_ratio="16:9", count=3,
+                   attempts=2)
+    full = prepare_job(s, job, is_owner=True)  # owner or friend
+    assert (full.aspect_ratio, full.count, full.attempts) == ("16:9", 3, 2)
+    assert full.nsfw and full.fallback_mature
+    clamped = prepare_job(s, job, is_owner=False)
+    assert (clamped.aspect_ratio, clamped.count, clamped.attempts) == ("1:1", 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_guests_and_friends_cant_be_sent_private_files(tmp_path):
+    arts = tmp_path / "artifacts"
+    arts.mkdir()
+    (arts / "img.png").write_bytes(b"x")
+    (tmp_path / ".env").write_text("XAI_API_KEY=secret")
+    media = tmp_path / "telegram_media"
+    media.mkdir()
+    (media / "in_2_5.jpg").write_bytes(b"x")
+    (media / "in_3_6.jpg").write_bytes(b"x")
+    reg = _registry(_settings(tmp_path), None)
+    reg.artifacts_dir = arts
+    sent = []
+
+    async def deliver(p, caption):
+        sent.append(p.name)
+        return True
+
+    reg._deliver_artifact = deliver
+    for name in (".env", "telegram_media/in_3_6.jpg"):
+        assert "isn't one you can send" in await reg._send_file(str(tmp_path / name))
+    assert "Sent" in await reg._send_file(str(arts / "img.png"))
+    assert "Sent" in await reg._send_file(str(media / "in_2_5.jpg"))
+    reg.set_owner(True)
+    assert "Sent" in await reg._send_file(str(tmp_path / ".env"))  # the owner's call
+    assert sent == ["img.png", "in_2_5.jpg", ".env"]
