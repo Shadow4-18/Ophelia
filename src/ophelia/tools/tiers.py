@@ -83,6 +83,8 @@ TOOL_GROUPS: dict[str, frozenset[str]] = {
          "set_friend"}
     ),
     "data": frozenset({"sqlite_list_databases", "sqlite_exec"}),
+    # mcp_* (MCP servers from ~/.ophelia/mcp.json) are matched by prefix.
+    "mcp": frozenset(),
     # site_*, phone_* and apk_* are matched by prefix (see group_of).
     "site": frozenset(),
     "phone": frozenset(),
@@ -95,6 +97,7 @@ GROUP_DESCRIPTIONS: dict[str, str] = {
     "guests": "list guests, DM a guest, rapport, read guest chats, make someone a friend",
     "site": "your public website: pages, assets, files, preview, deploy",
     "data": "SQLite databases",
+    "mcp": "outside tools plugged in through MCP servers (mcp.json)",
     "phone": "phone body: screen, tap, swipe, apps, games, battery, notifications, vibrate",
     "apps": "app library: pull installed apps off the phone, look inside them (engine, code, assets, manifest), decompile, keep notes on how they work",
 }
@@ -111,6 +114,7 @@ _TRIGGERS: dict[str, re.Pattern[str]] = {
         "site": r"\b(site|website|web ?page|page|pages|blog|wiki|deploy|html|css|"
         r"landing|cloudflare|post)\b",
         "data": r"\b(sqlite|database|db|sql|table)\b",
+        "mcp": r"\b(mcp|plugin|plugins|integration|integrations)\b",
         "phone": r"\b(phone|screen|tap|swipe|app|apps|game|games|play|playing|"
         r"open|scroll|battery|notification|notifications|vibrate|buzz|touch|taps|"
         r"calibrate|calibration|aim|aiming)\b",
@@ -129,10 +133,12 @@ def group_of(tool_name: str) -> str:
         return "phone"
     if tool_name.startswith("apk_"):
         return "apps"
+    if tool_name.startswith("mcp_"):
+        return "mcp"
     for name, members in TOOL_GROUPS.items():
         if tool_name in members:
             return name
-    # Unknown/MCP tools ride with core so nothing silently disappears.
+    # Unknown tools ride with core so nothing silently disappears.
     return CORE
 
 

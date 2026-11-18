@@ -637,12 +637,18 @@ def _check_optional_tools(report: SelfCheckReport) -> None:
         required=False,
     )
     mcp_ok = importlib.util.find_spec("mcp") is not None
+    from ophelia.tools.mcp_bridge import load_mcp_config, servers_from
+
+    configured = servers_from(load_mcp_config())
+    detail = "installed" if mcp_ok else "not installed"
+    if configured:
+        detail += f"; {len(configured)} server(s) in mcp.json (ophelia mcp for status)"
     report.add(
         category="tools",
         name="MCP bridge (optional)",
-        ok=mcp_ok,
-        detail="installed" if mcp_ok else "not installed",
-        hint="pip install -e \".[mcp]\"",
+        ok=mcp_ok or not configured,
+        detail=detail,
+        hint="pip install -e \".[mcp]\"" if configured and not mcp_ok else "",
         required=False,
     )
 

@@ -383,6 +383,46 @@ def cmd_providers(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """Connect to every server in mcp.json and show what she'd get."""
+    import asyncio
+
+    from ophelia.tools.mcp_bridge import MCPBridge, load_mcp_config, mcp_available
+
+    settings = Settings()
+    path = Path(settings.mcp_config_path)
+    config = load_mcp_config(path)
+    print(f"Config: {path}" + ("" if path.is_file() else "  (not found)"))
+    print(f"mcp package: {'installed' if mcp_available() else 'NOT installed'}"
+          + ("" if mcp_available() else '  ->  pip install -e ".[mcp]"'))
+
+    async def run() -> list[dict]:
+        bridge = MCPBridge(config=config, config_path=path,
+                           artifacts_dir=settings.data_dir / "artifacts")
+        try:
+            await bridge.initialize()
+            return bridge.status()
+        finally:
+            await bridge.close()
+
+    rows = asyncio.run(run())
+    if not rows:
+        print("\nNo servers configured. Example ~/.ophelia/mcp.json:")
+        print('{"servers": {"name": {"command": "npx", "args": ["-y", "some-mcp-server"]}}}')
+        return 0
+    bad = 0
+    for row in rows:
+        state = ("off" if not row["enabled"] else
+                 "connected" if row["connected"] else "FAILED")
+        bad += state == "FAILED"
+        print(f"\n{row['server']} ({row['kind']}): {state}")
+        if row["error"] and state != "off":
+            print(f"  {row['error']}")
+        for t in row["tools"]:
+            print(f"  - {t}")
+    return 1 if bad else 0
+
+
 def cmd_whoami(_: argparse.Namespace) -> int:
     """Diagnose owner recognition — why you might be stuck in guest mode.
 
@@ -1613,6 +1653,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("providers", help="Show resolved AI provider routing").set_defaults(
         func=cmd_providers
     )
+    sub.add_parser("mcp", help="Connect to MCP servers in mcp.json and list their tools"
+                   ).set_defaults(func=cmd_mcp)
     sub.add_parser(
         "whoami",
         help="Diagnose owner recognition — why you might be stuck in guest mode.",

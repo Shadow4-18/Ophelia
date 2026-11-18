@@ -853,6 +853,13 @@ class Orchestrator:
             self.narrative.stop()
             if getattr(self, "episodes", None):
                 self.episodes.stop()
+            # MCP servers she started (local programs) shut down with her.
+            mcp = getattr(getattr(self, "tools", None), "mcp", None)
+            if mcp is not None and hasattr(mcp, "close"):
+                try:
+                    await asyncio.wait_for(mcp.close(), timeout=10)
+                except Exception as _err:
+                    log.debug("mcp.close_failed", error=str(_err))
             # Final flush of psyche/drives.
             try:
                 await self.memory.save_psyche(self.psyche)

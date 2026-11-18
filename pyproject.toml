@@ -28,6 +28,8 @@ ophelia = "ophelia.cli:main"
 
 [project.optional-dependencies]
 site = ["blake3>=0.4"]
+# Outside tools through MCP servers (~/.ophelia/mcp.json). tools/mcp_bridge.py.
+mcp = ["mcp>=1.9"]
 # Direct game links (O.M.G.I.): read/act on patched games from the inside.
 games = ["omgi @ git+https://github.com/Shadow4-18/O.M.G.I..git"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
