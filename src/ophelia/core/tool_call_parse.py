@@ -37,6 +37,10 @@ _LLAMA_PYTHON_TAG = re.compile(
     r"<\|python_tag\|>\s*(\{[\s\S]*?\})",
     re.IGNORECASE,
 )
+# <relay_to_owner>She says tell you...</relay_to_owner>: a tool's own name as
+# a tag around its text (she did this in a guest chat; nothing was relayed
+# and the guest saw the tags).
+_NAMED_TAG = re.compile(r"<([A-Za-z_][\w]*)>([\s\S]*?)</\1\s*>")
 _FUNCTION_EQ = re.compile(
     r"<function\s*=\s*([A-Za-z_][\w.]*)\s*>([\s\S]*?)</function>",
     re.IGNORECASE,
@@ -127,6 +131,7 @@ def extract_tool_calls_from_content(
     content: str | None,
     *,
     known_tools: set[str] | None = None,
+    primary_args: dict[str, str] | None = None,
 ) -> tuple[list[ParsedToolCall], str]:
     """Parse tool invocations embedded in assistant text.
 
@@ -153,6 +158,23 @@ def extract_tool_calls_from_content(
                 args_obj = {"raw": raw_args}
         calls.append(ParsedToolCall(name=name, arguments=_as_args_json(args_obj)))
         remaining = remaining.replace(m.group(0), "\n")
+
+    # <tool_name>text</tool_name> for a known tool: the text is its main
+    # argument (or a JSON object of arguments).
+    if known_tools:
+        for m in _NAMED_TAG.finditer(text):
+            name, body = m.group(1), (m.group(2) or "").strip()
+            if name not in known_tools or name in ("tool_call", "function"):
+                continue
+            try:
+                args_obj = json.loads(body) if body.startswith("{") else None
+            except json.JSONDecodeError:
+                args_obj = None
+            if not isinstance(args_obj, dict):
+                key = (primary_args or {}).get(name)
+                args_obj = {key: body} if key and body else ({"raw": body} if body else {})
+            calls.append(ParsedToolCall(name=name, arguments=_as_args_json(args_obj)))
+            remaining = remaining.replace(m.group(0), "\n")
 
     for blob in _iter_json_candidates(text):
         try:

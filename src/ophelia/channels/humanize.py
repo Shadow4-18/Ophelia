@@ -9,6 +9,8 @@ isn't primed to imitate them:
 - whole-line bracketed narration ("[The lighthouse with no sea is still
   standing]") is dropped, except song section tags ([Intro: whispered],
   [Chorus]...) that Suno-style lyrics need;
+- whole-line *italic* stage directions ("*settles, quietly pleased*") are
+  dropped too;
 - Kokoro voice markup ([pause:0.8s]) is removed from text — it only means
   something to the voice engine.
 
@@ -36,6 +38,9 @@ _SECTION_TAG = re.compile(
     r"guitar|piano|synth|bass|drums|silence|pause|applause|song|music)\b[^\]\n]*\]"
     r"[ \t]*$", re.IGNORECASE)
 _FENCE = re.compile(r"```")
+# A whole line in *asterisks* or _underscores_: roleplay stage directions
+# ("*settles, quietly pleased*", "_a beat, grinning_"), same tell as brackets.
+_ITALIC_LINE = re.compile(r"^[ \t]*([*_])(?!\1)[^*_\n]{2,80}?\1[ \t]*$", re.MULTILINE)
 
 
 def _replace_dash(text: str) -> str:
@@ -61,8 +66,9 @@ def _replace_dash(text: str) -> str:
 
 
 def _drop_narration(text: str) -> str:
-    return _NARRATION_LINE.sub(
+    text = _NARRATION_LINE.sub(
         lambda m: m.group(0) if _SECTION_TAG.match(m.group(0)) else "", text)
+    return _ITALIC_LINE.sub("", text)
 
 
 def _clean(text: str) -> str:
