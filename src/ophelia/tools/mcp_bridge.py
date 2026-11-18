@@ -340,6 +340,217 @@ def _is_disconnect(e: BaseException) -> bool:
     return "connection closed" in text or "closed resource" in text
 
 
+def _ns(value: Any) -> Any:
+    """JSON → attribute objects, so results read like the mcp library's."""
+    from types import SimpleNamespace
+
+    if isinstance(value, dict):
+        return SimpleNamespace(**{str(k): _ns(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_ns(v) for v in value]
+    return value
+
+
+class HttpMCPServer:
+    """A hosted server (``"url"``) spoken to directly: MCP over HTTP is a
+    handful of JSON-RPC POSTs. Doesn't need the ``mcp`` package.
+
+    On the phone the mcp library's HTTP client never connected from inside
+    her running process (it timed out every time) while plain requests to
+    the same server worked, so hosted servers use plain requests.
+    """
+
+    PROTOCOL = "2025-06-18"
+
+    def __init__(self, server_id: str, spec: dict) -> None:
+        self.id = server_id
+        self.spec = spec
+        self.tools: list[Any] = []
+        self.error = ""
+        self._client: Any = None
+        self._session: str | None = None
+        self._protocol = self.PROTOCOL
+        self._next_id = 0
+        self._lock = asyncio.Lock()
+        self._ok = False
+
+    @property
+    def connected(self) -> bool:
+        return self._ok and self._client is not None
+
+    @property
+    def call_timeout(self) -> float:
+        try:
+            return float(self.spec.get("timeout") or CALL_TIMEOUT_S)
+        except (TypeError, ValueError):
+            return CALL_TIMEOUT_S
+
+    def _headers(self) -> dict[str, str]:
+        h = {str(k): str(v).strip() for k, v in (self.spec.get("headers") or {}).items()}
+        h.setdefault("Accept", "application/json, text/event-stream")
+        h["Content-Type"] = "application/json"
+        if self._session:
+            h["Mcp-Session-Id"] = self._session
+        if self._protocol:
+            h["MCP-Protocol-Version"] = self._protocol
+        return h
+
+    async def _rpc(self, method: str, params: dict | None = None, *,
+                   notify: bool = False, timeout: float | None = None) -> Any:
+        import httpx
+
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        if not notify:
+            self._next_id += 1
+            msg["id"] = self._next_id
+        t = httpx.Timeout(timeout or self.call_timeout, connect=CONNECT_TIMEOUT_S / 3)
+        async with self._client.stream("POST", self.spec["url"], json=msg,
+                                       headers=self._headers(), timeout=t) as r:
+            if r.status_code == 401:
+                raise PermissionError("the server rejected the token (check the key in "
+                                      "~/.ophelia/.env matches the server's)")
+            if r.status_code == 404 and self._session:
+                raise ConnectionError("session expired")
+            if r.status_code >= 400:
+                body = (await r.aread()).decode("utf-8", "replace")[:200]
+                raise RuntimeError(f"HTTP {r.status_code}: {body}")
+            sid = r.headers.get("mcp-session-id")
+            if sid:
+                self._session = sid
+            if notify or r.status_code == 202:
+                await r.aread()
+                return None
+            ctype = r.headers.get("content-type", "")
+            if "text/event-stream" in ctype:
+                data: list[str] = []
+                async for line in r.aiter_lines():
+                    if line.startswith("data:"):
+                        data.append(line[5:].lstrip())
+                    elif not line.strip() and data:
+                        reply = _match(json.loads("\n".join(data)), msg["id"])
+                        data = []
+                        if reply is not None:
+                            return _unwrap(reply)
+                raise RuntimeError("the event stream ended without an answer")
+            return _unwrap(_match(json.loads(await r.aread()), msg["id"]))
+
+    async def start(self) -> bool:
+        from types import SimpleNamespace
+
+        import httpx
+
+        await self.stop()
+        self.error = ""
+        self._session = None
+        self._protocol = self.PROTOCOL
+        # trust_env off: a proxy in the environment must not reroute a
+        # private (Tailscale) address.
+        self._client = httpx.AsyncClient(trust_env=False, follow_redirects=True)
+        try:
+            init = await self._rpc("initialize", {
+                "protocolVersion": self.PROTOCOL,
+                "capabilities": {},
+                "clientInfo": {"name": "ophelia", "version": "1"},
+            }, timeout=CONNECT_TIMEOUT_S)
+            self._protocol = (init or {}).get("protocolVersion") or self.PROTOCOL
+            await self._rpc("notifications/initialized", notify=True, timeout=CONNECT_TIMEOUT_S)
+            tools: list[Any] = []
+            cursor = None
+            for _ in range(20):
+                page = await self._rpc("tools/list", {"cursor": cursor} if cursor else {},
+                                       timeout=CONNECT_TIMEOUT_S) or {}
+                for t in page.get("tools") or []:
+                    if isinstance(t, dict) and t.get("name"):
+                        # The schema stays plain JSON: it's handed to the model.
+                        tools.append(SimpleNamespace(
+                            name=t["name"], title=t.get("title"),
+                            description=t.get("description"),
+                            inputSchema=t.get("inputSchema") or {}))
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+            only = self.spec.get("tools")
+            if only:
+                keep = {t.get("name") if isinstance(t, dict) else str(t) for t in only}
+                tools = [t for t in tools if t.name in keep]
+            self.tools = tools
+            self._ok = True
+            log.info("mcp.connected", server=self.id, tools=len(tools), transport="http")
+            return True
+        except Exception as e:
+            self.error = _http_problem(e, self.spec.get("url", ""))
+            log.warning("mcp.server_failed", server=self.id, error=self.error)
+            await self.stop()
+            return False
+
+    async def call(self, name: str, args: dict) -> Any:
+        async with self._lock:
+            if not self.connected and not await self.start():
+                raise RuntimeError(self.error or "not connected")
+        try:
+            return _ns(await self._rpc("tools/call", {"name": name, "arguments": args}))
+        except PermissionError:
+            raise
+        except Exception as e:
+            if not _is_disconnect(e) and not isinstance(e, ConnectionError) \
+                    and type(e).__module__.split(".")[0] != "httpx":
+                raise
+            log.info("mcp.reconnecting", server=self.id, error=_describe(e))
+            async with self._lock:
+                if not await self.start():
+                    raise RuntimeError(self.error or "reconnect failed")
+            return _ns(await self._rpc("tools/call", {"name": name, "arguments": args}))
+
+    async def stop(self) -> None:
+        client, self._client = self._client, None
+        self._ok = False
+        if client is not None:
+            if self._session:
+                with contextlib.suppress(Exception):
+                    await client.delete(self.spec["url"], headers=self._headers(), timeout=3)
+            with contextlib.suppress(Exception):
+                await client.aclose()
+
+
+def _match(payload: Any, want_id: int) -> dict | None:
+    """The JSON-RPC response for ``want_id`` (payloads may be batches)."""
+    items = payload if isinstance(payload, list) else [payload]
+    for item in items:
+        if isinstance(item, dict) and item.get("id") == want_id and (
+                "result" in item or "error" in item):
+            return item
+    return None
+
+
+def _unwrap(reply: dict | None) -> Any:
+    if reply is None:
+        raise RuntimeError("no answer to the request")
+    if "error" in reply:
+        err = reply["error"] or {}
+        raise RuntimeError(f"server error {err.get('code')}: {err.get('message')}")
+    return reply.get("result")
+
+
+def _http_problem(e: BaseException, url: str) -> str:
+    """What went wrong reaching a hosted server, in words."""
+    from urllib.parse import urlparse
+
+    where = urlparse(url).netloc or url
+    name = type(e).__name__
+    if isinstance(e, PermissionError):
+        return str(e)
+    if name in ("ConnectTimeout", "PoolTimeout"):
+        return (f"couldn't reach {where} (timed out). Is the server running, and is "
+                "Tailscale on on both phones?")
+    if name == "ConnectError":
+        return f"couldn't connect to {where}: {e}. Wrong address, or the server is off?"
+    if name in ("ReadTimeout", "WriteTimeout"):
+        return f"{where} accepted the connection but didn't answer in time"
+    return _describe(e)
+
+
 def _describe(e: BaseException) -> str:
     inner = getattr(e, "exceptions", None)
     if inner:
@@ -390,12 +601,17 @@ class MCPBridge:
                                 hint="add them to ~/.ophelia/.env")
             if not specs:
                 return
-            if not mcp_available():
-                log.warning("mcp.missing", servers=len(specs),
-                            hint='python -m pip install "mcp>=1.9,<2" for MCP server support',
+            local = [sid for sid, spec in specs.items() if not spec.get("url")]
+            if local and not mcp_available():
+                # Hosted (url) servers don't need the package; local ones do.
+                log.warning("mcp.missing", servers=local,
+                            hint='python -m pip install "mcp>=1.9,<2" for local MCP servers',
                             python=sys.executable)
-                return
-            self.servers = {sid: MCPServer(sid, spec) for sid, spec in specs.items()}
+                specs = {sid: spec for sid, spec in specs.items() if spec.get("url")}
+            self.servers = {sid: (HttpMCPServer(sid, spec) if spec.get("url") and
+                                  str(spec.get("transport") or "").lower() != "sse"
+                                  else MCPServer(sid, spec))
+                            for sid, spec in specs.items()}
             await self._connect(list(self.servers.values()))
 
     async def _connect(self, servers: list["MCPServer"]) -> None:
@@ -548,7 +764,7 @@ class MCPBridge:
                            if sid in self._missing else "")
                           + (server.error if server else
                           ("" if not enabled else
-                           "mcp package not installed" if not mcp_available() else
+                           "mcp package not installed" if not (mcp_available() or spec.get("url")) else
                            "not started"))),
             })
         return out
