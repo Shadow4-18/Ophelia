@@ -722,6 +722,13 @@ class ChannelSession:
                     decision=director_decision,
                 )
                 used_reaction = bool(out)
+                from ophelia.mind import follow_through as _ft
+
+                if out and _ft.claimed_relay(out):
+                    # The reaction path has no tools: a "told him" there is
+                    # always a lie. Let the full turn do it for real.
+                    log.info("reaction.dropped_relay_claim", channel=channel)
+                    out, used_reaction = "", False
             except Exception as e:
                 log.debug("reaction.chat_path_failed", error=str(e))
                 out = ""
@@ -756,7 +763,44 @@ class ChannelSession:
             await self.memory.save_drives(self.drives)
         if is_owner and out:
             out = await self._catch_phantom(channel, text, out, turn_extra)
+        if out:
+            out = await self._catch_relay(channel, text, out, is_owner, turn_extra)
         return out
+
+    async def _catch_relay(self, channel: str, text: str, out: str, is_owner: bool,
+                           turn_extra: str = "") -> str:
+        """She was asked to pass something to the other conversation and says
+        she did, but no relay tool ran: redo the turn once so it really goes."""
+        from ophelia.channels.proactive_filter import strip_consciousness_tick_leak
+        from ophelia.mind import follow_through as ft
+
+        if channel in self._following_through or not ft.relay_expected(text):
+            return out
+        tools = self.agent.tools
+        if ft.relayed(list(getattr(tools, "_tools_called", None) or [])):
+            return out
+        claimed = ft.claimed_relay(out)
+        if not claimed:
+            return out
+        log.warning("follow_through.relay_phantom", channel=channel, line=claimed[:80],
+                    is_owner=is_owner)
+        self._following_through.add(channel)
+        try:
+            again = await self.agent.run_turn(channel, ft.relay_note(claimed, is_owner=is_owner),
+                                              is_owner=is_owner, system_extra=turn_extra)
+        except Exception as e:
+            log.warning("follow_through.relay_retry_failed", error=str(e))
+            return out
+        finally:
+            self._following_through.discard(channel)
+        again = strip_consciousness_tick_leak(again or "")
+        done = ft.relayed(list(getattr(tools, "_tools_called", None) or []))
+        log.info("follow_through.relay_retry", channel=channel, relayed=done)
+        if not done:
+            # Still nothing sent: never leave the claim standing.
+            again = "\n".join(ln for ln in again.splitlines()
+                              if not ft.claimed_relay(ln)).strip()
+        return again
 
     async def _deliver(self, turn: "_ChatTurn", out: str, send) -> None:
         """Send the reply in pieces, then follow-through and humor bookkeeping."""
