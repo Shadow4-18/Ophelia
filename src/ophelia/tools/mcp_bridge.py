@@ -24,7 +24,8 @@ Per server, optional: "enabled": false, "tools": ["only", "these"],
 ``${VAR}`` in env/headers/args/url is filled from the environment (so keys
 can stay in ~/.ophelia/.env). Editing mcp.json takes effect on her next turn.
 
-Works with the ``mcp`` package 1.x and 2.x (``pip install -e ".[mcp]"``).
+Works with the ``mcp`` package 1.x and 2.x (``python -m pip install -e ".[mcp]"``:
+``python -m pip``, so it lands in the Python she runs on, not whatever ``pip`` is).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -315,7 +317,8 @@ class MCPBridge:
                 return
             if not mcp_available():
                 log.warning("mcp.missing", servers=len(specs),
-                            hint='pip install -e ".[mcp]" for MCP server support')
+                            hint='python -m pip install "mcp>=1.9" for MCP server support',
+                            python=sys.executable)
                 return
             self.servers = {sid: MCPServer(sid, spec) for sid, spec in specs.items()}
             await asyncio.gather(*(s.start() for s in self.servers.values()))

@@ -619,7 +619,7 @@ and ~50 more across 8 languages.
 | `text_to_speech` | Expressive multi-backend TTS — Kokoro pauses/speed/voice mix, auto-sent to chat |
 | `send_file` | Explicitly send any saved file (audio/video/image/doc) to the chat mid-turn |
 | `save_skill` | Learn procedures → `~/.ophelia/skills/` |
-| MCP bridge | `~/.ophelia/mcp.json` (see `mcp.example.json`; Claude Desktop's `mcpServers` format works too) + `pip install -e ".[mcp]"`. Tools are discovered from each server, connections stay open, edits apply on her next turn. `ophelia mcp` shows what's connected. Owner-only. |
+| MCP bridge | `~/.ophelia/mcp.json` (see `mcp.example.json`; Claude Desktop's `mcpServers` format works too) + `python -m pip install -e ".[mcp]"` (`python -m pip`, not bare `pip`: on Termux they can be different Pythons). Tools are discovered from each server, connections stay open, edits apply on her next turn. `ophelia mcp` shows what's connected. Owner-only. |
 | Phone body | Shizuku (on-phone) or ADB (from PC) |
 
 **Sending media** — generated images, videos, and audio are detected in the
