@@ -1098,7 +1098,14 @@ class ConsciousnessLoop:
 
     async def _due_loops(self) -> list[dict]:
         try:
-            return await self._loops().due(limit=3)
+            loops = await self._loops().due(limit=3)
+            settings = getattr(self, "settings", None)
+            for lp in loops:
+                ch = lp.get("channel") or ""
+                if settings is not None and ":" in ch and not settings.is_owner_channel(ch):
+                    lp["text"] = (f"{lp['text']} (with {ch}: reach them with "
+                                  "send_message_to_guest)")
+            return loops
         except Exception as e:
             log.debug("consciousness.open_loops_failed", error=str(e))
             return []

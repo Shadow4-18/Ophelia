@@ -1002,7 +1002,7 @@ class TelegramGateway:
             self._media_dir.mkdir(parents=True, exist_ok=True)
             photo = update.message.photo[-1]
             file = await photo.get_file()
-            path = self._media_dir / f"in_{update.message.message_id}.jpg"
+            path = self._media_dir / f"in_{update.effective_user.id}_{update.message.message_id}.jpg"
             await file.download_to_drive(str(path))
             description = await self._describe_saved_image(path, caption)
             # Surface the absolute path — the agent can pass it to tools that
@@ -1061,7 +1061,7 @@ class TelegramGateway:
         try:
             self._media_dir.mkdir(parents=True, exist_ok=True)
             ext = safe_inbound_ext(name, kind=kind)
-            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            path = self._media_dir / f"in_{update.effective_user.id}_{update.message.message_id}{ext}"
             file = await doc.get_file()
             await file.download_to_drive(str(path))
             label = inbound_prompt_label(kind)
@@ -1128,7 +1128,7 @@ class TelegramGateway:
 
             ext = safe_inbound_ext(name, kind="audio",
                                    default=".m4a" if "mp4" in (audio.mime_type or "") else "")
-            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            path = self._media_dir / f"in_{update.effective_user.id}_{update.message.message_id}{ext}"
             file = await audio.get_file()
             await file.download_to_drive(str(path))
             prompt = audio_prompt(path, name=name, caption=caption, title=title,
@@ -1176,7 +1176,7 @@ class TelegramGateway:
             from ophelia.channels.inbound_media import safe_inbound_ext
 
             ext = safe_inbound_ext(name, kind="video", default=".mp4")
-            path = self._media_dir / f"in_{update.message.message_id}{ext}"
+            path = self._media_dir / f"in_{update.effective_user.id}_{update.message.message_id}{ext}"
             file = await video.get_file()
             await file.download_to_drive(str(path))
             prompt = (
@@ -1284,7 +1284,7 @@ class TelegramGateway:
 
             self._voice_dir.mkdir(parents=True, exist_ok=True)
             file = await update.message.voice.get_file()
-            ogg_path = self._voice_dir / f"in_{update.message.message_id}.ogg"
+            ogg_path = self._voice_dir / f"in_{update.effective_user.id}_{update.message.message_id}.ogg"
             await file.download_to_drive(str(ogg_path))
 
             text = await transcribe_audio(

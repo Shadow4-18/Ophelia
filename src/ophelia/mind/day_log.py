@@ -252,3 +252,29 @@ def note_tool(settings: Any, name: str, args: dict, result: str, *,
     elif name == "save_skill":
         record(settings, "skill", "saved a new skill", detail=_short(args.get("name"), 40),
                autonomous=autonomous)
+
+
+def shareable_day(settings: Any, when: str = "") -> str:
+    """Her day told to a friend: what she did, without the details (image
+    prompts, who said what to whom) that belong to her owner's chats."""
+    from datetime import timedelta
+
+    w = (when or "today").strip().lower()
+    now = _now(settings)
+    if w in ("", "today", "now"):
+        day = now
+    elif w == "yesterday":
+        day = now - timedelta(days=1)
+    else:
+        try:
+            day = datetime.strptime(w[:10], "%Y-%m-%d").replace(tzinfo=now.tzinfo)
+        except ValueError:
+            return "Ask about today, yesterday, or a date (YYYY-MM-DD)."
+    tz = _tz(settings)
+    out = []
+    for e in load(settings, day):
+        e = {k: v for k, v in e.items() if k not in ("details", "opener")}
+        out.append(_line(e, tz))
+    if not out:
+        return "Nothing written down for that day."
+    return "Your day (the broad strokes only; keep your owner's side private):\n" + "\n".join(out[-20:])

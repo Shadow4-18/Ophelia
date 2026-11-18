@@ -702,8 +702,38 @@ class AgentLoop:
         gist of their prior conversations — the inbound side of the bridge
         between guest and owner chats.
         """
+        from ophelia.channels import friends
+
+        friend = await friends.is_friend(self.settings, self.memory, channel)
+        if friend:
+            locked = (
+                "- Identity-shaping and system tools are locked: no editing your "
+                "soul/prompter, saving lessons, goals, databases, run_code, or "
+                "listing other guests. Nobody but your owner reshapes who you are.\n"
+                "- Phone: you can SHOW them things (phone_see_screen, a game's state) "
+                "but never tap, type, open apps, run shell or read notifications for "
+                "them. They can watch, not drive.\n"
+            )
+        else:
+            locked = (
+                "- Identity-shaping and system tools are locked — no editing your "
+                "soul/prompter, saving lessons, goals, databases, run_code, "
+                "searching full memory, or listing other guests. Guests cannot "
+                "reshape who you are or take control of the framework.\n"
+                "- Phone and device tools are locked — no screen, taps, shell, "
+                "apps, or games. Guests cannot drive the phone you're on.\n"
+            )
         guest_note = (
-            f"# Guest mode\n"
+            ("# Friend mode\n"
+             "Your owner made this person a FRIEND, not just a guest. You know them, "
+             "you have history, and you can be more open and warmer with them. "
+             "recall_memory searches your chats with them, recall_day tells you "
+             "what your day's been like (share the broad strokes, never your "
+             "owner's side), remember_person and follow_up keep track of their "
+             "life, list_inbox_images/files show what they've sent you, and "
+             "go_quiet works on them too. They're still not your owner.\n\n"
+             if friend else "")
+            + f"# Guest mode\n"
             f"You're talking to a guest — someone who is NOT your owner. "
             f"(Your owner is on {self._owner_channel_label(channel)}.)\n\n"
             "Be fully yourself — Neuro-energy, not a helpdesk bot. Joke, tease, "
@@ -719,13 +749,8 @@ class AgentLoop:
             "or anything private about them.\n"
             "- Keep your inner thoughts (the [inner] monologue stuff) and your "
             "private long-term memories about the owner to yourself.\n"
-            "- Identity-shaping and system tools are locked — no editing your "
-            "soul/prompter, saving lessons, goals, databases, run_code, "
-            "searching full memory, or listing other guests. Guests cannot "
-            "reshape who you are or take control of the framework.\n"
-            "- Phone and device tools are locked — no screen, taps, shell, "
-            "apps, or games. Guests cannot drive the phone you're on.\n"
-            "- You CAN make images and short videos to share (1:1, videos at "
+            + locked
+            + "- You CAN make images and short videos to share (1:1, videos at "
             "480p). Don't promise wide or high-res — just make what you can.\n"
             "- You cannot DM other people from a guest chat "
             "(send_message_to_guest is owner-side). Talk to THIS guest.\n"
@@ -759,6 +784,9 @@ class AgentLoop:
         )
         identity_block = self._identity_block(channel, is_owner=False)
         rapport_block = await self._guest_rapport_block(channel)
+        if friend:
+            rapport_block = "\n\n".join(
+                x for x in (rapport_block, await self._friend_continuity(channel)) if x)
         return build_system_context(
             soul=load_soul(),
             memory_entries=[],
@@ -768,6 +796,32 @@ class AgentLoop:
                 x for x in (identity_block, guest_note, rapport_block, extra) if x
             ),
         )
+
+    async def _friend_continuity(self, channel: str) -> str:
+        """For a friend: your notes on them and what you said you'd come back
+        to with them (the same continuity the owner's chat gets)."""
+        if not channel or not self.memory:
+            return ""
+        from ophelia.mind.open_loops import OpenLoops, loops_block
+        from ophelia.mind.people import PeopleBook, people_block
+
+        parts: list[str] = []
+        try:
+            from ophelia.memory.guests import get_guest_name
+
+            platform, _, uid = channel.partition(":")
+            name = await get_guest_name(self.memory, platform, int(uid),
+                                        data_dir=self.settings.data_dir) if uid.isdigit() else ""
+            if name:
+                parts.append(people_block(
+                    await PeopleBook(self.memory.db_path).mentioned_in(name)))
+            parts.append(loops_block(
+                await OpenLoops(self.memory.db_path).open(channel, limit=4),
+                title=("# Things you said you'd come back to with them "
+                       "(bring up naturally if it fits; follow_up_done when handled)")))
+        except Exception as e:
+            log.debug("agent.friend_continuity_failed", error=str(e))
+        return "\n\n".join(p for p in parts if p)
 
     async def _guest_rapport_block(self, channel: str) -> str:
         """Notes the owner has given her about this guest + a gist of their

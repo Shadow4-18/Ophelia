@@ -62,6 +62,9 @@ class GuestToolsMixin:
         guests = [g for g in roster if g["channel"] not in owner_channels]
         if not guests:
             return "No approved guests yet."
+        from ophelia.channels.friends import friend_channels
+
+        friend_set = await friend_channels(self.settings, self.memory)
         lines = [f"Guests you know ({len(guests)}):"]
         for g in guests:
             src = g["name_source"]
@@ -70,7 +73,8 @@ class GuestToolsMixin:
                 from ophelia.memory.guests import _format_last_seen
 
                 last = _format_last_seen(g["last_ts"])
-            lines.append(f"  • {g['channel']} — \"{g['name']}\" ({src}{last})")
+            tag = " [friend]" if g["channel"] in friend_set else ""
+            lines.append(f"  • {g['channel']} — \"{g['name']}\"{tag} ({src}{last})")
         return "\n".join(lines)
 
     async def _set_guest_name(
@@ -448,6 +452,36 @@ class GuestToolsMixin:
             role = "GUEST" if h["role"] == "user" else "YOU"
             lines.append(f"  {role}: {h['content'][:400]}")
         return "\n".join(lines)
+
+    async def _set_friend(self, guest: str, friend: bool = True) -> str:
+        """Owner-only: promote a guest to friend (or back to guest). Nothing
+        moves: their history, name, notes and follow-ups stay where they are."""
+        if not self._is_owner:
+            return "Only your owner can decide who's a friend."
+        if not self.memory:
+            return "Memory store unavailable."
+        from ophelia.channels import friends
+        from ophelia.memory.guests import get_guest_name, resolve_guest_target
+
+        resolved = await resolve_guest_target(self.settings, self.memory, (guest or "").strip())
+        if not resolved:
+            return f"Couldn't find a guest called '{guest}'. Use list_guests."
+        platform, user_id = resolved
+        channel = f"{platform}:{user_id}"
+        if self.settings.is_owner_channel(channel):
+            return "That's your owner, not a guest."
+        name = await get_guest_name(self.memory, platform, user_id,
+                                    data_dir=self.settings.data_dir) or channel
+        if not friend and channel in friends.configured(self.settings):
+            return (f"{name} is a friend through OPHELIA_FRIEND_IDS in the .env; remove "
+                    "them there to make them a guest again.")
+        await friends.set_friend(self.memory, channel, bool(friend))
+        log.info("tool.set_friend", channel=channel, friend=bool(friend))
+        if friend:
+            return (f"{name} ({channel}) is a friend now: everything you two have is still "
+                    "there, and in their chat you can look back through it, keep notes and "
+                    "follow-ups, see what they've sent, and show them the phone screen.")
+        return f"{name} ({channel}) is back to being a guest. Their history stays."
 
     async def _set_guest_rapport(
         self, platform: str, user_id: int, note: str

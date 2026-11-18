@@ -1597,6 +1597,35 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "set_friend",
+            "description": (
+                "Make a guest a friend, or back into a plain guest, when your owner "
+                "says so ('make Eri a friend', 'demote Bob'). A friend keeps all "
+                "their history; in their chat you can also search your past chats "
+                "with them, tell them about your day, keep notes and follow-ups "
+                "on them, see files they sent, look at web pages, read your site, "
+                "and show them the phone screen or a game (look only, no control). "
+                "Owner-only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "guest": {
+                        "type": "string",
+                        "description": "Their name or platform:user_id (from list_guests).",
+                    },
+                    "friend": {
+                        "type": "boolean",
+                        "description": "true to make them a friend, false for guest again.",
+                    },
+                },
+                "required": ["guest"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "set_guest_rapport",
             "description": (
                 "Remember something about a guest for future conversations — "
