@@ -1161,6 +1161,13 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
 
         if len(code) > 8000:
             return "Code too long (max 8000 chars)."
+        from ophelia.core import danger, owner_approval
+
+        why = danger.dangerous_code(code)
+        if why:
+            refused = await owner_approval.permit(code, why)
+            if refused:
+                return refused
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"

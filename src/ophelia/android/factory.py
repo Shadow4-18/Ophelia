@@ -15,4 +15,5 @@ def build_android_body(settings: Settings) -> AndroidBody | None:
         phone_control=Path(str(settings.phone_control_path)).expanduser(),
         adb_device=settings.adb_device,
         adb_root=settings.adb_root,
+        shell_mode=getattr(settings, "phone_shell_mode", "auto") or "auto",
     )

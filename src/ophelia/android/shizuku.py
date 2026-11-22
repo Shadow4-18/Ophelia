@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import time
 from pathlib import Path
 
 import structlog
@@ -47,6 +48,7 @@ class AndroidBody:
         *,
         adb_device: str | None = None,
         adb_root: bool = False,
+        shell_mode: str = "auto",
     ) -> None:
         self.phone_control = phone_control or Path.home() / "phone_control.sh"
         self.rish_path = rish_path or self._find_rish()
@@ -56,6 +58,17 @@ class AndroidBody:
         self._adb_ready = False
         self._adb_mode = "none"
         self._display_size: tuple[int, int] | None = None
+        # auto | root | shizuku | adb (OPHELIA_SHELL). Root means `su` on the
+        # phone itself: everything runs through it when it works.
+        self.shell_mode = (shell_mode or "auto").strip().lower()
+        self._root: bool | None = None
+        self._root_checked_at = 0.0
+        # Known before the first tool call: the "is the phone wired" checks
+        # read .mode synchronously, and a rooted phone needs no Shizuku.
+        if self.shell_mode not in ("shizuku", "adb") and (
+                self.shell_mode == "root" or (is_termux() and not self._use_adb())):
+            self._root = self._probe_root_sync()
+            self._root_checked_at = time.monotonic()
 
     def _find_rish(self) -> Path | None:
         for candidate in (
@@ -66,6 +79,54 @@ class AndroidBody:
             if candidate.is_file():
                 return candidate
         return shutil.which("rish") and Path(shutil.which("rish"))  # type: ignore
+
+    # --- root (su on the phone itself) ------------------------------------
+
+    _ROOT_RECHECK_S = 300.0
+
+    async def _use_root(self) -> bool:
+        """Root first: when `su` works on this phone, every command goes
+        through it (Shizuku was only ever the way around having no root)."""
+        if self.shell_mode in ("shizuku", "adb"):
+            return False
+        if self.shell_mode != "root" and (not is_termux() or self._use_adb()):
+            return False
+        stale = time.monotonic() - self._root_checked_at > self._ROOT_RECHECK_S
+        if self._root is None or (not self._root and stale):
+            self._root = await self._probe_root()
+            self._root_checked_at = time.monotonic()
+            log.info("phone.root_probe", root=self._root)
+        return bool(self._root)
+
+    @staticmethod
+    def _probe_root_sync() -> bool:
+        import subprocess
+
+        if not shutil.which("su"):
+            return False
+        try:
+            r = subprocess.run(["su", "-c", "id"], capture_output=True, text=True, timeout=15)
+        except Exception:
+            return False
+        return r.returncode == 0 and "uid=0" in (r.stdout or "")
+
+    async def _probe_root(self) -> bool:
+        if not shutil.which("su"):
+            return False
+        code, out, _ = await self._run(["su", "-c", "id"], timeout=15.0)
+        return code == 0 and "uid=0" in out
+
+    async def _root_run(self, command: str, timeout: float = 45.0) -> tuple[int, str, str]:
+        code, out, err = await self._run(["su", "-c", command], timeout=timeout)
+        if code != 0 and "permission denied" in (err or out).lower():
+            self._root = None  # su was revoked: look again next time
+        return code, out, err
+
+    async def _root_shell(self, command: str) -> str:
+        code, out, err = await self._root_run(command)
+        if code == 0:
+            return out or _no_output(err)
+        return f"root error {code}: {err or out}"
 
     async def ensure_ready(self) -> None:
         if self._adb_ready or self.mode != "adb":
@@ -87,6 +148,8 @@ class AndroidBody:
 
     @property
     def mode(self) -> str:
+        if self._root and self.shell_mode not in ("shizuku", "adb"):
+            return "root"
         if not is_termux() and self._adb_path:
             return self._adb_mode if self._adb_mode != "none" else "adb"
         if self.phone_control.is_file() and is_termux():
@@ -136,6 +199,8 @@ class AndroidBody:
         return f"adb error {code}: {err or out}"
 
     async def shell(self, command: str) -> str:
+        if await self._use_root():
+            return await self._root_shell(command)
         if self._use_adb():
             return await self._adb_shell(command)
         if self.phone_control.is_file():
@@ -158,6 +223,13 @@ class AndroidBody:
         return f"shell error {code}: {err or out}"
 
     async def ui_dump(self) -> str:
+        if await self._use_root():
+            code, out, err = await self._root_run(
+                "uiautomator dump /sdcard/ophelia_ui.xml >/dev/null && cat /sdcard/ophelia_ui.xml",
+                timeout=60.0)
+            if code == 0 and out:
+                return out[:12000]
+            return err or out or "ui-dump failed"
         if self._use_adb():
             await self.ensure_ready()
             assert self._adb_path
@@ -233,6 +305,8 @@ class AndroidBody:
         return await self.shell("input text " + "".join(safe))
 
     async def tap(self, x: int, y: int) -> str:
+        if await self._use_root():
+            return await self._root_shell(f"input tap {x} {y}")
         if self._use_adb():
             return await self._adb_shell(f"input tap {x} {y}")
         if self.phone_control.is_file():
@@ -252,6 +326,8 @@ class AndroidBody:
         y2: int,
         duration_ms: int = 300,
     ) -> str:
+        if await self._use_root():
+            return await self._root_shell(f"input swipe {x1} {y1} {x2} {y2} {duration_ms}")
         if self._use_adb():
             return await self._adb_shell(
                 f"input swipe {x1} {y1} {x2} {y2} {duration_ms}"
@@ -287,6 +363,8 @@ class AndroidBody:
             "volume_up": 24,
             "volume_down": 25,
         }
+        if await self._use_root():
+            return await self._root_shell(f"input keyevent {events[key]}")
         if self._use_adb():
             return await self._adb_shell(f"input keyevent {events[key]}")
         if self.phone_control.is_file():
@@ -299,6 +377,9 @@ class AndroidBody:
         return "key requires ADB or Shizuku"
 
     async def open_app(self, package: str) -> str:
+        if await self._use_root():
+            return await self._root_shell(
+                f"monkey -p {shlex.quote(package)} -c android.intent.category.LAUNCHER 1")
         if self._use_adb():
             return await self._adb_shell(
                 f"monkey -p {package} -c android.intent.category.LAUNCHER 1"
@@ -327,7 +408,9 @@ class AndroidBody:
         remote = "/sdcard/ophelia_screen.png"
         code = 1
         err = ""
-        if self.phone_control.is_file():
+        if await self._use_root():
+            code, _, err = await self._root_run(f"screencap -p {remote}")
+        elif self.phone_control.is_file():
             code, _, err = await self._run(
                 ["bash", str(self.phone_control), "screenshot", remote]
             )
@@ -378,6 +461,8 @@ class AndroidBody:
         return None
 
     def status_line(self) -> str:
+        if self.mode == "root":
+            return "Phone body: root (su) — full control of this phone"
         if self._use_adb():
             root = " + root" if self.adb_root else " (no root)"
             target = self.adb_device or "default USB/wireless"

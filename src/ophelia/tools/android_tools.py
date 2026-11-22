@@ -192,7 +192,14 @@ ANDROID_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "phone_shell",
-            "description": "Run shell command on phone via Shizuku (settings, pm, input, etc.).",
+            "description": (
+                "Run a shell command on your phone (settings, pm, input, dumpsys...). It runs "
+                "as root when the phone is rooted, otherwise through Shizuku. Anything "
+                "dangerous (reboot, uninstalling apps or clearing their data, writing to "
+                "system or storage partitions, formatting, root modules, SELinux, system "
+                "properties) waits for Okia to tap Allow in Telegram first; if he says no, "
+                "don't try it another way."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

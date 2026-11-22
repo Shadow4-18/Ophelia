@@ -1142,6 +1142,9 @@ def cmd_phone_status(_: argparse.Namespace) -> int:
         print("  Fix: set OPHELIA_ANDROID_ENABLED=true in ~/.ophelia/.env")
         return 1
 
+    rooted = asyncio.run(android._use_root())
+    print(f"  shell mode:       {android.shell_mode} (OPHELIA_SHELL)"
+          + ("  -> root via su" if rooted else ""))
     rish = android.rish_path
     print(f"  rish_path:        {rish or '(none found)'}")
     print(f"  adb_path:         {android._adb_path or '(none)'}")
