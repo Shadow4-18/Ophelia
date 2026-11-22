@@ -335,6 +335,51 @@ class TelegramGateway:
             except Exception as e:
                 log.warning("telegram.approval_prompt_failed", owner=cid, error=str(e))
 
+    async def _ask_owner_permission(self, approval_id: str, question: str) -> bool:
+        """Allow / Deny buttons for something dangerous she wants to run
+        (core/owner_approval). True when it reached the owner."""
+        if not self._app:
+            return False
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Allow", callback_data=f"ophelia:perm:allow:{approval_id}"),
+            InlineKeyboardButton("❌ Deny", callback_data=f"ophelia:perm:deny:{approval_id}"),
+        ]])
+        sent = False
+        for cid in self._owner_chat_ids():
+            try:
+                await self._app.bot.send_message(chat_id=cid, text=question[:4000],
+                                                 reply_markup=kb)
+                sent = True
+            except Exception as e:
+                log.warning("telegram.permission_prompt_failed", owner=cid, error=str(e))
+        return sent
+
+    async def on_permission_callback(self, update: Update,
+                                     context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Allow / Deny pressed on a permission request."""
+        from ophelia.core import owner_approval
+
+        q = update.callback_query
+        if q is None:
+            return
+        clicker = q.from_user
+        if clicker is None or not self.settings.is_owner_channel(f"telegram:{clicker.id}"):
+            await q.answer("Owner only.", show_alert=True)
+            return
+        parts = (q.data or "").split(":")  # ophelia:perm:allow|deny:<id>
+        if len(parts) < 4:
+            await q.answer()
+            return
+        allowed = parts[2] == "allow"
+        live = owner_approval.answer(parts[3], allowed)
+        await q.answer(("Allowed." if allowed else "Denied.") if live
+                       else "Too late, it expired.")
+        try:
+            note = ("✅ Allowed" if allowed else "❌ Denied") if live else "⌛ Expired"
+            await q.edit_message_text(f"{q.message.text}\n\n{note}" if q.message else note)
+        except Exception as e:
+            log.debug("telegram.permission_edit_failed", error=str(e))
+
     async def on_guest_approval_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1652,6 +1697,9 @@ class TelegramGateway:
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
         )
+        app.add_handler(
+            CallbackQueryHandler(self.on_permission_callback, pattern="^ophelia:perm:")
+        )
         app.add_handler(MessageHandler(filters.VOICE, self._in_background(self.on_voice)))
         app.add_handler(MessageHandler(filters.AUDIO, self._in_background(self.on_audio)))
         app.add_handler(MessageHandler(filters.PHOTO, self._in_background(self.on_photo)))
@@ -1693,6 +1741,9 @@ class TelegramGateway:
         await app.initialize()
         await app.start()
         await self._register_commands(app.bot)
+        from ophelia.core import owner_approval
+
+        owner_approval.set_asker(self._ask_owner_permission)
         log.info("telegram.ready")
 
     # The "/" menu shown in Telegram (each one has a CommandHandler below).

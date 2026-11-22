@@ -296,6 +296,13 @@ class PhoneToolsMixin:
             # fight with this one over the Telegram bot token) or kill her own
             # runtime. This is a safety guard, not a security boundary.
             return blocked
+        from ophelia.core import danger, owner_approval
+
+        why = danger.dangerous(command)
+        if why:
+            refused = await owner_approval.permit(command, why)
+            if refused:
+                return refused
         return await self.android.shell(command)
 
     async def _phone_swipe(

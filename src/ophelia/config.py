@@ -953,6 +953,14 @@ class Settings(BaseSettings):
         alias="OPHELIA_ADB_DEVICE",
         description="PC wireless/USB target e.g. 192.168.1.50:5555",
     )
+    phone_shell_mode: str = Field(
+        default="auto",
+        alias="OPHELIA_SHELL",
+        description=(
+            "How her phone commands run: auto (root when su works, else Shizuku/ADB) | "
+            "root | shizuku | adb"
+        ),
+    )
     adb_root: bool = Field(
         default=False,
         alias="OPHELIA_ADB_ROOT",

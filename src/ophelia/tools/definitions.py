@@ -554,7 +554,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "run_code",
-            "description": "Run a short Python snippet in a sandboxed subprocess (Termux-safe).",
+            "description": (
+                "Run a short Python snippet in a subprocess (Termux-safe). Code that runs a "
+                "dangerous command through su/rish (reboot, uninstall, wiping, flashing...) "
+                "waits for Okia's OK in Telegram first."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
