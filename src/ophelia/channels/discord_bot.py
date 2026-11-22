@@ -68,6 +68,18 @@ class DiscordGateway:
         if self._bot and self._log_channels.enabled():
             await self._log_channels.log_inner_thought(self._bot, text)
 
+    async def _mirror_web(self, entry: dict) -> None:
+        """Each search / page she opens, posted to #web-history."""
+        if not (self._bot and self._log_channels.enabled()):
+            return
+        from ophelia.mind import web_history
+
+        try:
+            await self._log_channels.log_web(
+                self._bot, web_history.format_entry(entry, self.settings))
+        except Exception as e:
+            log.debug("discord_log.web_failed", error=str(e))
+
     async def _terminal_pump(self, bot) -> None:
         """Stream new log lines into #terminal every few seconds (batched,
         rate-limited, secrets redacted by log_tap)."""
@@ -177,6 +189,10 @@ class DiscordGateway:
         async def on_ready() -> None:
             log.info("discord.ready", user=str(bot.user))
             await gw._log_channels.setup(bot)
+            if gw._log_channels.enabled():
+                from ophelia.mind import web_history
+
+                web_history.subscribe(gw._mirror_web)
             if gw._terminal_task is None and gw._log_channels.enabled() and getattr(
                     gw.settings, "discord_terminal_enabled", False) is True:
                 gw._terminal_task = asyncio.create_task(gw._terminal_pump(bot))
