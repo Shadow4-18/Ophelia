@@ -46,6 +46,7 @@ MAIN_CHANNELS: dict[str, str] = {
     "inner-thoughts": "inner-thoughts",
     "system": "system",
     "terminal": "terminal",
+    "web-history": "web-history",
 }
 
 _STATE_PATH = OPHELIA_HOME / "data" / "discord_log_channels.json"
@@ -400,6 +401,13 @@ class DiscordLogChannels:
         if ch is None:
             return
         await self._post_plain(ch, "📋 activity", text)
+
+    async def log_web(self, bot, text: str) -> None:
+        """Her browsing history (mind/web_history), one search or page per post."""
+        ch = await self._resolve_main_channel(bot, "web-history")
+        if ch is None:
+            return
+        await self._post_plain(ch, "🌐 web", text)
 
     async def post_terminal(self, bot, lines: list[str]) -> bool:
         """Post log lines to #terminal as code blocks. False if unavailable."""

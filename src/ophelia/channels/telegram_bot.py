@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -691,6 +692,37 @@ class TelegramGateway:
         for i in range(0, len(text), 3900):
             # Plain text: log lines are full of characters Markdown would eat.
             await update.message.reply_text(text[i:i + 3900])
+
+    async def cmd_web(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Owner: her browsing history (/web, /web 50, /web today, /web file)."""
+        user = update.effective_user
+        if not user or not self.settings.is_owner_channel(f"telegram:{user.id}"):
+            return
+        from ophelia.mind import web_history
+
+        args = [a.lower() for a in (context.args or [])]
+        n = next((max(1, min(200, int(a))) for a in args if a.isdigit()), 20)
+        if "file" in args:
+            entries = web_history.recent(self.settings, 100_000, days=30)
+            text = "\n".join(json.dumps(e, ensure_ascii=False) for e in entries)
+            await self._send_log_file(update, text + ("\n" if text else ""),
+                                      f"ophelia-web-{time.strftime('%Y%m%d-%H%M')}.jsonl")
+            return
+        if "today" in args:
+            entries = web_history.load(self.settings)
+        else:
+            entries = web_history.recent(self.settings, n)
+        text = web_history.render(entries, self.settings)
+        chunks, cur = [], ""
+        for block in text.split("\n\n"):
+            if len(cur) + len(block) + 2 > 3900 and cur:
+                chunks.append(cur)
+                cur = ""
+            cur = f"{cur}\n\n{block}" if cur else block
+        chunks.append(cur)
+        for chunk in chunks:
+            # Plain text, no link previews: a wall of result URLs otherwise.
+            await update.message.reply_text(chunk, disable_web_page_preview=True)
 
     def _image_ledger_file(self) -> tuple[str, str]:
         """The last 200 image generations (what was sent to which backend
@@ -1615,6 +1647,7 @@ class TelegramGateway:
         app.add_handler(CommandHandler("update", self.cmd_update))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
         app.add_handler(CommandHandler("logs", self.cmd_logs))
+        app.add_handler(CommandHandler("web", self.cmd_web))
         app.add_handler(CallbackQueryHandler(self.on_continue_callback, pattern="^ophelia:continue$"))
         app.add_handler(
             CallbackQueryHandler(self.on_guest_approval_callback, pattern="^ophelia:(approve|deny):")
@@ -1667,6 +1700,7 @@ class TelegramGateway:
         ("stop", "stop what she's doing right now"),
         ("status", "what's on / running / pending"),
         ("logs", "her terminal (/logs 50, /logs warn, /logs file, /logs images)"),
+        ("web", "what she searched / opened online (/web 50, /web today, /web file)"),
         ("pause", "pause autonomous outreach"),
         ("resume", "resume autonomous outreach"),
         ("continue", "resume an unfinished task"),

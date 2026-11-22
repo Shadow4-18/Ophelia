@@ -1195,10 +1195,49 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
         return out or "(no output)"
 
     async def _web_search(self, query: str, max_results: int = 8) -> str:
-        return await search_web(query, max_results=max_results, settings=self.settings)
+        result = await search_web(query, max_results=max_results, settings=self.settings)
+        await self._note_web("search", query=query, result=result)
+        return result
 
     async def _fetch_url(self, url: str, max_chars: int = 8000) -> str:
-        return await fetch_url(url, max_chars=max_chars, settings=self.settings)
+        result = await fetch_url(url, max_chars=max_chars, settings=self.settings)
+        await self._note_web("read", url=url, result=result)
+        return result
+
+    async def _web_who(self) -> str:
+        """Who a web visit was for, for her browsing history."""
+        from ophelia.core.agent_loop import _AUTONOMOUS
+
+        chan = (self._current_sender_channel or "").strip()
+        if _AUTONOMOUS.get() or not chan or chan == "consciousness":
+            return "on her own"
+        if self._is_owner:
+            return "for you"
+        label = chan
+        platform, _, uid = chan.partition(":")
+        if self.memory and uid.isdigit():
+            try:
+                from ophelia.memory.guests import get_guest_name
+
+                name = await get_guest_name(self.memory, platform, int(uid),
+                                            data_dir=self.settings.data_dir)
+                if name:
+                    label = name
+            except Exception as _err:
+                log.debug("web_history.name_failed", error=str(_err))
+        return f"for {'friend' if self._is_friend else 'guest'} {label}"
+
+    async def _note_web(self, kind: str, *, query: str = "", url: str = "",
+                        result: str = "", note: str = "") -> None:
+        try:
+            from ophelia.mind import web_history
+
+            web_history.record(
+                self.settings, kind, who=await self._web_who(), query=query, url=url,
+                results=web_history.results_in(result) if kind == "search" else None,
+                ok=not web_history.failed(result), note=note)
+        except Exception as e:
+            log.debug("web_history.note_failed", error=str(e))
 
     async def _look_at_web_page(
         self, url: str, width: str = "phone", question: str = "", full_page: bool = False
@@ -1212,6 +1251,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
                 url, self.artifacts_dir / "page_views", width=px, full_page=bool(full_page)
             )
         except Exception as e:
+            await self._note_web("look", url=url, result="couldn't render", note=question)
             return (
                 f"Couldn't render {url}: {e}. If the phone body is on, you can open it in "
                 "Chrome with phone_open_app and use phone_see_screen instead."
@@ -1224,6 +1264,7 @@ class ToolRegistry(GuestToolsMixin, SiteToolsMixin, PhoneToolsMixin, ApkToolsMix
             + (f" Specifically: {question}" if question else "")
         )
         seen = await describe_image_file(self.settings, shot, question=ask, stack=self.stack)
+        await self._note_web("look", url=url, note=question)
         return f"{seen}\n\n(screenshot file: {shot} — send_file it if the owner should see it)"
 
     async def _save_skill(self, name: str, description: str, content: str) -> str:
