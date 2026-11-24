@@ -367,6 +367,7 @@ class ConsciousnessLoop:
             )
             try:
                 await tick
+                self._heal_hook()
             except asyncio.CancelledError:
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
@@ -377,6 +378,42 @@ class ConsciousnessLoop:
             finally:
                 self._pending_wake_reason = None
                 await self.signals.set_agent_thinking(False)
+
+    # Her own upkeep script (she wrote it): archives log noise, checks her
+    # health. It keeps its own once-a-day cadence and one-run lock; this only
+    # knocks, and at most every HEAL_KNOCK_S so a busy day isn't hundreds of
+    # bash starts.
+    HEAL_KNOCK_S = 600.0
+    _last_heal_knock = 0.0
+
+    def _heal_script(self):
+        from ophelia.config import OPHELIA_HOME
+
+        return OPHELIA_HOME / "scripts" / "heal_loop.sh"
+
+    def _heal_hook(self) -> None:
+        """Knock on her self-heal loop after a check-in. Detached, so a slow
+        heal never holds the tick; an error here is a log line, never a crash."""
+        import subprocess
+        import time as _time
+
+        now = _time.monotonic()
+        if self._last_heal_knock and now - self._last_heal_knock < self.HEAL_KNOCK_S:
+            return
+        try:
+            script = self._heal_script()
+            if not script.exists():
+                return
+            self._last_heal_knock = now
+            subprocess.Popen(
+                ["bash", str(script), "--hook"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:  # never let upkeep break the tick
+            log.warning("consciousness.heal_hook_failed", error=str(e))
 
     async def _tick(self, idle_seconds: float, *, wake_reason: str | None = None) -> None:
         """One check-in: is anything pushing her, does the director let her
