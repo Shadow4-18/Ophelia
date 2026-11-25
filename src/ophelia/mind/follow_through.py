@@ -93,7 +93,13 @@ _CLAIMED = re.compile(
     r"\blast one\b|\bthis is (the|my) (face|one|pic|photo|shot|look)\b|"
     r"\b(just )?sent (it|you|two|three|another|one|them)\b|"
     r"\b(two|three) more( just now)?\b|\bone more (pic|photo|image|shot)\b|"
-    r"\banother one\b|\blook at (this|it|that)\b|^\s*trying\b|\bthere\. (no|now)\b)",
+    r"\banother one\b|\blook at (this|it|that)\b|^\s*trying\b|\bthere\. (no|now)\b|"
+    # From a guest chat where she claimed five pictures she never made:
+    # "Sent. Selfie angle...", "Image went out this time, I watched it leave",
+    # "There. Arm out, flash on her face", "Telegram says it went. Twice."
+    r"^\s*(sent|there)[.!]\s|^\s*sent[.!]?\s*$|"
+    r"\b(image|pic|photo|picture|selfie|it|that|this one)\s+(went|is gone|has gone)\s+"
+    r"(out|through)\b|\bwatched it (leave|go)\b|\b(telegram|discord) says it went\b)",
     re.I | re.M,
 )
 
@@ -154,7 +160,8 @@ _DELIVERY_ASK = re.compile(
     r"\b(send|sent|show|make|draw|generate|record|snap|take (a|another)|another|more|"
     r"again|pics?|pictures?|photos?|images?|selfies?|nudes?|videos?|voice|"
     r"didn'?t (get|receive|come|arrive)|still nothing|where is it|where'?s the|"
-    r"never (came|arrived|sent))\b", re.I)
+    r"never (came|arrived|sent)|(not|isn'?t|never) (sending|coming|showing|arriving|"
+    r"loading)|try again|one more)\b", re.I)
 
 
 def delivery_expected(owner_text: str) -> bool:
@@ -165,18 +172,18 @@ def delivery_expected(owner_text: str) -> bool:
 
 
 def phantom_note(line: str) -> str:
-    return (f"[Reality check: you just wrote \"{line}\" as if you sent him something, "
-            "but no tool ran this turn, so nothing reached him. Make exactly that thing "
+    return (f"[Reality check: you just wrote \"{line}\" as if you sent them something, "
+            "but no tool ran this turn, so nothing reached them. Make exactly that thing "
             "now with the right tool (generate_image, text_to_speech, send_file...). If "
             "it was already sent in an earlier turn, just say so plainly. Don't start "
-            "anything else, don't blame the tool or his phone, and don't describe it "
-            "instead of sending it.]")
+            "anything else, don't blame the tool, Telegram or their phone, and don't "
+            "describe it instead of sending it.]")
 
 
 def failed_note(line: str, why: str) -> str:
-    return (f"[Reality check: you were about to tell him \"{line}\", but it didn't send. "
-            f"The tool said: {why}. He hasn't seen your message yet. Fix it and try "
-            "again (different model or wording if it was refused), or tell him plainly "
+    return (f"[Reality check: you were about to say \"{line}\", but it didn't send. "
+            f"The tool said: {why}. They haven't seen your message yet. Fix it and try "
+            "again (different model or wording if it was refused), or tell them plainly "
             "what went wrong. Don't say it was sent.]")
 
 

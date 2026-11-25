@@ -775,8 +775,11 @@ class ChannelSession:
         if is_owner:
             self.drives.on_user_message(text)
             await self.memory.save_drives(self.drives)
-        if is_owner and out:
-            out = await self._catch_phantom(channel, text, out, turn_extra)
+        if out:
+            # Guests too: a guest was told five times that pictures went out
+            # when she never made them, and nothing checked.
+            out = await self._catch_phantom(channel, text, out, turn_extra,
+                                            is_owner=is_owner)
         if out:
             out = await self._catch_relay(channel, text, out, is_owner, turn_extra)
         return out
@@ -891,7 +894,7 @@ class ChannelSession:
               name="follow_through")
 
     async def _catch_phantom(self, channel: str, owner_text: str, out: str,
-                             turn_extra: str = "") -> str:
+                             turn_extra: str = "", *, is_owner: bool = True) -> str:
         """Her reply says she sent a picture but nothing went out (no tool ran,
         or it failed): don't send that. Redo the turn once with the truth, so
         he gets the image (or an honest reason) instead of a claim."""
@@ -919,7 +922,7 @@ class ChannelSession:
             if hasattr(tools, "_tools_called"):
                 tools._tools_called = []
                 tools._doing_results = []
-            again = await self.agent.run_turn(channel, note, is_owner=True,
+            again = await self.agent.run_turn(channel, note, is_owner=is_owner,
                                               system_extra=turn_extra)
         except Exception as e:
             log.warning("follow_through.phantom_retry_failed", error=str(e))

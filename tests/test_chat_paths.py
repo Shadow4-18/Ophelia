@@ -55,7 +55,7 @@ def _session(tmp_path, *, owner=True, out="hello you"):
     s.try_interject = AsyncMock(return_value=False)
     s._log_inbound = AsyncMock()
     s._maybe_follow_through = MagicMock()
-    s._catch_phantom = AsyncMock(side_effect=lambda ch, t, out, extra: out)
+    s._catch_phantom = AsyncMock(side_effect=lambda ch, t, out, extra, **kw: out)
     return s, agent, tools, signals, drives
 
 
@@ -93,7 +93,8 @@ async def test_guest_turn_leaves_her_drives_alone(tmp_path):
     drives.on_user_message.assert_not_called()
     tools.set_owner.assert_called_with(False)
     s._maybe_follow_through.assert_not_called()
-    s._catch_phantom.assert_not_awaited()
+    # Phantom claims are caught in guest chats too, as the guest.
+    assert s._catch_phantom.await_args.kwargs == {"is_owner": False}
 
 
 @pytest.mark.asyncio
