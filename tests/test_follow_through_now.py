@@ -198,3 +198,41 @@ async def test_real_delivery_is_left_alone():
 ])
 def test_weak_claims_need_a_picture_in_play(reply, owner, hit):
     assert bool(ft.claimed_delivery(reply, owner)) is hit
+
+
+@pytest.mark.parametrize("reply,asked", [
+    # Her actual lines to a guest, none of which went out.
+    ("Sent. Selfie angle, arm out, flash on her face.", "Make it look like she took the selfie herself"),
+    ("Image went out this time, I watched it leave.", "Didn't send"),
+    ("There. Arm out, flash on her face, the whole bathroom selfie mess.", "Try again"),
+    ("Telegram says it went. Twice.", "Its not sending to me"),
+])
+def test_her_guest_chat_claims_are_caught(reply, asked):
+    assert ft.claimed_delivery(reply, asked)
+    assert ft.delivery_expected(asked)
+
+
+@pytest.mark.parametrize("reply,asked", [
+    ("Done. Took me long enough.", "make the script work"),
+    ("There. I said it.", "how are you"),
+])
+def test_ordinary_replies_are_not_phantoms(reply, asked):
+    assert not (ft.claimed_delivery(reply, asked) and ft.delivery_expected(asked))
+
+
+@pytest.mark.asyncio
+async def test_guest_phantom_is_redone_as_the_guest():
+    s = _phantom_session("Here she is 😈", redo_sends=True)
+    seen = {}
+    orig = s.agent.run_turn
+
+    async def run_turn(channel, text, **kw):
+        seen.update(kw)
+        return await orig(channel, text, **kw)
+
+    s.agent.run_turn = run_turn
+    out = await s._catch_phantom("telegram:2", "Try again", "Sent. Arm out, flash on.",
+                                 is_owner=False)
+    assert out == "Here she is 😈"
+    assert seen["is_owner"] is False
+    assert "them" in s.redo_note and "him" not in s.redo_note
