@@ -1524,6 +1524,11 @@ class TelegramGateway:
         pending = getattr(self.session.agent, "_pending_resume", {})
         if channel not in pending:
             return
+        if (pending.get(channel) or {}).get("autonomous"):
+            # Work she set aside (or her own work that ran long) is hers to
+            # finish on her own time; it stays queued through his turns, so
+            # it put a Continue button on every one of her replies.
+            return
         kb = self._continue_keyboard()
         last = self._last_text_msg
         if last is not None and last.chat is not None:

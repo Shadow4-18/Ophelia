@@ -7,6 +7,7 @@ from typing import Any
 
 import contextvars
 import itertools
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -206,6 +207,30 @@ def _without_repeats(rows: list[dict], *, overlap: float = 0.6) -> list[dict]:
     return list(reversed(kept))
 
 
+# "Don't stop", "nobody told you to stop", "didn't want you to stop until":
+# the word stop, meaning the opposite.
+_NOT_STOP = (r"\b(don'?t (you dare )?stop|(dint|didn'?t|don'?t|do not) want you to stop|"
+             r"(nobody|no ?body|no one|i never|i didn'?t) (told|asked) you to stop|"
+             r"stop(ping)? (only )?(when|until) i)\b")
+# He's waiting on, or urging on, what she's already doing. Never a reason to
+# drop it, unless the same message also tells her to stop.
+_KEEP_GOING = re.compile(
+    r"\b(show me|i'?m (still )?waiting|still waiting|waiting|come ?one?|c'?mon|don'?t (you dare )?"
+    r"stop|keep going|keep it coming|go on|hurry( up)?|where is it|send it|let me see|"
+    r"i want to see|can'?t wait|do it|finish it)\b|" + _NOT_STOP, re.I)
+_STOP_WORDS = re.compile(
+    r"\b(stop(?! until)|hold on|hang on|wait up|never ?mind|nvm|cancel|forget (it|that)|"
+    r"instead|actually,? (no|wait)|drop it|change of plans?|not now)\b", re.I)
+
+
+def keep_going(text: str) -> bool:
+    """His message only waits on or urges on what she's doing."""
+    t = text or ""
+    if _STOP_WORDS.search(re.sub(_NOT_STOP, "", t, flags=re.I)):
+        return False
+    return bool(_KEEP_GOING.search(t))
+
+
 _CHOOSE_PROMPT = """You're in the middle of a task and he just sent a message.
 What you're doing:
 {status}
@@ -213,7 +238,8 @@ What you're doing:
 His message: {message}
 
 Decide, as yourself, what to do with it:
-- "interrupt": drop the task for now (you can pick it up later) and give him your full attention. For a change of plan, something urgent, a new request that matters more, or when he plainly wants you now.
+- "interrupt": drop the task for now (you can pick it up later) and give him your full attention. For a change of plan, something urgent, a new request that matters more, or when he tells you to stop.
+If he's waiting on or urging on the very thing you're doing ("show me", "I'm waiting", "come on", "don't stop", a reaction to what you just sent), that is NOT a reason to stop: stopping leaves him without the thing he's waiting for. Fold it in or finish.
 - "fold": take it into the task (an extra detail, a correction, "also do X") or answer it between steps and keep going.
 - "finish": finish the task first, then reply. Only when you're nearly done and his message can wait a few minutes.
 Reply with JSON only: {{"choice": "interrupt|fold|finish", "say": "one short line to him, in your own voice, saying which you're doing"}}"""
@@ -2046,6 +2072,11 @@ class AgentLoop:
             data = {}
         choice = str(data.get("choice") or "").strip().lower()
         if choice not in ("interrupt", "fold", "finish"):
+            choice = "fold"
+        if choice == "interrupt" and keep_going(text):
+            # "Show me baby", "I'm waiting": she kept dropping the picture
+            # he was waiting for, set it aside, and it never came.
+            log.info("interjection.keep_going", channel=channel, preview=text[:60])
             choice = "fold"
         say = " ".join(str(data.get("say") or "").split())[:200]
         return choice, say
